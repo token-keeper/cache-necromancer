@@ -143,10 +143,11 @@ claude -p "." --resume <session_id> --fork-session --no-session-persistence
 
 **개인 지표 (1주일 사용 후)**
 
-| 지표 | 목표 |
-|---|---|
-| 캐시 hit rate (cache_read_input_tokens / 전체 input) | 60% 이상 |
-| 자동 갱신 성공률 (시도 대비 cache_read > 0) | 95% 이상 |
+| 지표 | 정의 | 목표 |
+|---|---|---|
+| **fire hit률** | cache-necromancer가 fire한 호출 중 `cache_read > 0` 발생 비율 | 95% 이상 |
+| **전체 사용 hit률** (Phase 4 측정) | 사용자 인터랙티브 세션 전체 input 토큰 대비 cache_read 비율 | 80% 이상 |
+| **Net saved** | Gross saved − Fire cost (아래 "절약 모델" 참조) | > 0 (음수면 fire 낭비) |
 | 사용자 보이는 인터랙티브 세션 영향 | 0건 |
 | 데몬 비정상 종료 / 좀비 프로세스 | 0건 |
 
@@ -159,6 +160,31 @@ claude -p "." --resume <session_id> --fork-session --no-session-persistence
 | Critical bug report | 0건 |
 | 사용자 보고 환경 (macOS 13~15, linux 베타) | 모두 정상 |
 
+### 절약 모델 (대시보드 계산 기반)
+
+**언제 절약이 발생하나**:
+- fire 자체는 절약 0 (단지 TTL 연장).
+- **사용자가 자리 비운 후 돌아와 input 보낼 때 cache_read 발생** → 그 turn이 "necromancer 덕분에 살아있는 캐시 활용".
+- fire를 여러 번 했어도 사용자 활용 turn 1번 = 절약 1회.
+
+**계산 공식** (토큰 1개당 정상 input 단가를 1.0 단위로):
+
+| 항목 | 계산 |
+|---|---|
+| **Gross saved** | Σ (사용자 활용 turn의 `cache_read` 토큰) × (1.0 − 0.1) |
+| **Fire cost** | Σ (모든 fire의 `cache_create × 1.25 + cache_read × 0.1`) |
+| **Net saved** | Gross saved − Fire cost |
+
+**판정 규칙**:
+- "사용자 활용 turn" = 직전 사용자 입력(`last_user_input_at`)이 N분 이상 전 (예: 55분) + 그 사이에 fire가 있었던 UserPromptSubmit.
+- Net saved가 음수면 fire가 낭비된 것 (사용자가 안 돌아옴) → `max_refresh_count` 조정 신호.
+
+**측정에 필요한 데이터** (v1 log에 기록):
+- 매 fire: `timestamp | fire | sid | model | cache_read | cache_create | input | output`
+- 매 user_turn (자리 비운 후 첫 input의 응답): `timestamp | user_turn | sid | model | cache_read | cache_create | input | output | after_fire=true|false`
+
+이 raw log만 v1에서 정확히 기록하면 Phase 4 대시보드는 후처리(파싱 + 가격 테이블 곱)만으로 모든 지표 계산 가능. 데이터 구조(SQLite/JSON)는 Phase 4에서 실제 사용 데이터 보고 결정.
+
 ---
 
 ## 무엇을 만드는가 (범위)
@@ -170,6 +196,7 @@ claude -p "." --resume <session_id> --fork-session --no-session-persistence
 - macOS 알림 (`osascript`) + 터미널 벨
 - 데몬 lifecycle (lazy 기동, lockfile, stale PID 처리)
 - `notify` 모드 동작
+- **fire log 한 줄 기록** (timestamp / sid / model / cache_read / cache_create / input / output) — Phase 4 대시보드의 raw 데이터
 - 사용자용 `README.md`
 
 **Phase 2 — 자동 갱신 (PR 1개, ~150줄)**
@@ -179,6 +206,7 @@ claude -p "." --resume <session_id> --fork-session --no-session-persistence
 - macOS sleep/wake 감지 + 5분 유예
 - fire 후 watchdog (silent 정지 방지)
 - 갱신 성공/실패 결과 cache_read 토큰 측정으로 검증
+- **user_turn log 기록** (UserPromptSubmit 발화 시점 + 대응 Stop hook에서 transcript jsonl 마지막 turn usage 추출) — `after_fire=true|false` 판정 포함
 
 **Phase 3 — 공개 배포 준비 (PR 1개)**
 - Anthropic Claude Code plugin marketplace 등록 (`.claude-plugin/marketplace.json`)
@@ -188,8 +216,10 @@ claude -p "." --resume <session_id> --fork-session --no-session-persistence
 - 데모 GIF / 영상 (선택)
 
 **Phase 4 — 통계/대시보드 (별도 spec, v0.2 이후)**
-- 절약 토큰 추정 (transcript 파싱)
-- 갱신 히스토리 / 일별 절감 비용 추정
+- v1 log 파싱 → Gross saved / Fire cost / Net saved 집계
+- 모델별 가격 테이블 (시세 변동 대응, 별도 reference 파일)
+- 일별 / 주별 절감 비용 차트
+- 갱신 히스토리 / 시간대별 사용 패턴
 - Linux 알림 어댑터 (notify-send)
 
 ---
@@ -197,10 +227,9 @@ claude -p "." --resume <session_id> --fork-session --no-session-persistence
 ## 무엇은 안 만드는가 (Out of Scope, v1 기준)
 
 - ❌ **Windows 지원** — v2 이후 커뮤니티 PR 검토
-- ❌ **transcript 직접 파싱한 cache hit 측정** — Phase 4. v1은 log 기반 추정만
+- ❌ **transcript 통계 집계 / 대시보드** — Phase 4. v1은 raw log만 남김
 - ❌ **Discord/Slack 외부 채널 통합** — 사용자가 직접 자기 hook으로 통합 (다른 Stop hook과 공존 가능)
 - ❌ **GUI / 웹 대시보드**
-- ❌ **유료 기능 / 텔레메트리** — 100% 로컬, 통계 외부 전송 없음
 - ❌ **인터랙티브 세션 화면에 시각적 카운트다운** — 백그라운드 동작이라 시각 표시 없음. 알림으로만 인지.
 
 > **v1 변경점 (v2 PRD 업데이트)**: tmux 의존성 / 터미널 환경별 어댑터 / AppleScript 권한 요청 — 모두 불필요해짐. headless CLI 메커니즘이 환경 독립.
