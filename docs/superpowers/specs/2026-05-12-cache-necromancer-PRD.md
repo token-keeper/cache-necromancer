@@ -19,15 +19,28 @@ Claude Code의 프롬프트 캐시가 죽기 직전(1시간 TTL 만료 5분 전)
 - 캐시 TTL은 1시간. 사용자가 점심 먹거나 회의 들어가면 그대로 만료.
 - 만료된 뒤 다시 작업하면 처음부터 fresh request → **돈 새는 소리**.
 - "응답 끝나고 가만히 두면 캐시가 마지막에 1분 + 1초 더 살아있을 텐데 그걸 살릴 수 있는 자동 도구"가 필요.
-- 개인 사용 목적. Anthropic 공식 권장은 아닌 회색지대.
+- 공개 Claude Code 플러그인으로 배포 예정 (Anthropic 공식 권장은 아닌 회색지대 도구. 사용자 책임 하에 사용).
 
 ---
 
 ## 누구를 위한 도구인가
 
-- macOS + iTerm2 + tmux 환경에서 Claude Code를 상시 띄워두는 개발자 (= 브로디 본인)
-- 여러 프로젝트를 tmux 탭에 띄워두고 오가는 사용 패턴
-- 캐시 비용에 민감하고, 자동화로 비용 절감을 보고 싶은 사람
+**1차 타겟 — 공개 plugin 사용자 (Claude Code 일반 사용자)**
+- Claude Code를 자주/장시간 사용하면서 프롬프트 캐시 비용을 줄이고 싶은 모든 사용자
+- macOS + tmux 환경에서 Claude Code를 운영하는 개발자
+- 자리를 비우는 시간이 있어도 작업 컨텍스트가 캐시에 살아있길 원하는 사용자
+- 여러 프로젝트/워크트리를 tmux 탭에 띄워두고 오가는 사용 패턴
+
+**2차 타겟 — 헤비 유저**
+- Claude Code 상시 실행하는 1인 개발자 / 인디 해커
+- 여러 에이전트를 병렬로 돌리는 사용자
+
+**환경 요구사항 (v1)**
+- macOS (osascript 알림 + `ps -o lstart=` 의존)
+- tmux (`send-keys` 주입 메커니즘 핵심)
+- Claude Code v2.x 이상 + 플러그인 시스템
+
+linux 지원과 비-tmux 환경은 v2 이후 검토.
 
 ---
 
@@ -82,7 +95,9 @@ Claude Code의 프롬프트 캐시가 죽기 직전(1시간 TTL 만료 5분 전)
 
 ---
 
-## 성공 지표 (1주일 사용 후)
+## 성공 지표
+
+**개인 지표 (1주일 사용 후)**
 
 | 지표 | 목표 |
 |---|---|
@@ -90,6 +105,15 @@ Claude Code의 프롬프트 캐시가 죽기 직전(1시간 TTL 만료 5분 전)
 | 자동 갱신 성공률 (fire 시도 대비 OK) | 95% 이상 |
 | 잘못된 주입 사고 (사용자 입력 중 `.` 끼어듦) | 0건 |
 | 데몬 비정상 종료 / 좀비 프로세스 | 0건 |
+
+**공개 배포 지표 (출시 후 1개월)**
+
+| 지표 | 목표 |
+|---|---|
+| GitHub stars | 50+ |
+| `/plugin install` 다운로드 수 | 100+ |
+| Critical bug report | 0건 |
+| 사용자 보고 환경별 동작 (macOS 13~15) | 모두 정상 |
 
 ---
 
@@ -102,6 +126,7 @@ Claude Code의 프롬프트 캐시가 죽기 직전(1시간 TTL 만료 5분 전)
 - macOS 알림 + 터미널 벨
 - `notify` 모드 동작
 - 데몬 자체 lifecycle 관리 (lazy 기동, lockfile)
+- 사용자용 `README.md` (설치 / 설정 / 트러블슈팅)
 
 **Phase 2 — 자동 주입 (PR 1개)**
 - `tmux send-keys "."` 안전 주입 (5단계 검증)
@@ -110,21 +135,28 @@ Claude Code의 프롬프트 캐시가 죽기 직전(1시간 TTL 만료 5분 전)
 - macOS sleep/wake 보정
 - fire 후 watchdog (silent 정지 방지)
 
-**Phase 3 — 통계/대시보드 (별도 spec, 차후)**
-- 절약 토큰 추정
-- 갱신 히스토리
+**Phase 3 — 공개 배포 준비 (PR 1개)**
+- Anthropic Claude Code plugin marketplace 등록 (`.claude-plugin/marketplace.json` 또는 GitHub plugin)
+- `/plugin install` 한 줄로 설치 가능하게
+- 사용자가 처음 설치 시 모드 선택 안내 (`userConfig` 활용 검토)
+- 라이센스 (MIT 권장), CHANGELOG, 이슈 템플릿
+- 데모 영상/GIF (선택)
+
+**Phase 4 — 통계/대시보드 (별도 spec, v0.2 이후)**
+- 절약 토큰 추정 (transcript에서 cache_read_input_tokens 집계)
+- 갱신 히스토리 / 일별 절감 비용 추정
 
 ---
 
-## 무엇은 안 만드는가 (Out of Scope)
+## 무엇은 안 만드는가 (Out of Scope, v1 기준)
 
-- ❌ Linux/Windows 지원 (macOS 전용)
-- ❌ tmux 외부 환경 (iTerm 단독, VS Code 통합 터미널 등) — `$TMUX` 없으면 비활성
-- ❌ 캐시 hit 직접 측정 — Anthropic API 응답 metric 별도 조회 안 함, log 기반 추정만
-- ❌ Discord/Slack 같은 외부 채널 통합 (기존 Stop hook으로 이미 구성된 게 있음)
-- ❌ tmux 상태바 카운트다운 — macOS 알림 + 벨만 사용
-- ❌ statusline.py 통합 — 별도 도구로 독립
-- ❌ GUI / 웹 대시보드
+- ❌ **Linux/Windows 지원** — macOS 전용 (v2 이후 커뮤니티 PR로 검토 가능)
+- ❌ **tmux 외부 환경** (iTerm 단독, VS Code 통합 터미널 등) — `$TMUX` 없으면 비활성. 향후 screen/zellij 지원은 별도 spec.
+- ❌ **캐시 hit 직접 측정** — Anthropic API 응답 metric 별도 조회 안 함, log 기반 추정만 (Phase 4에서 transcript 파싱 검토)
+- ❌ **Discord/Slack 외부 채널** — 사용자가 직접 자기 hook으로 통합 (이미 다른 Stop hook과 공존 가능)
+- ❌ **tmux 상태바 카운트다운 / statusline 통합** — macOS 알림 + 벨로 충분. 사용자가 원하면 외부에서 state JSON 읽어 직접 statusline 구성 가능
+- ❌ **GUI / 웹 대시보드**
+- ❌ **유료 기능 / 텔레메트리** — 100% 로컬, 통계 외부 전송 없음
 
 ---
 
