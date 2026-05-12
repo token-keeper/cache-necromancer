@@ -257,8 +257,9 @@ cache-necromancer/
 class StateLockTimeout(Exception):
     pass
 
-def acquire_state_lock_with_timeout(lock_path: Path, timeout: float = 5.0) -> IO:
-    """Non-blocking flock + deadline retry (10ms 간격). 5초 초과 시 StateLockTimeout."""
+def acquire_state_lock_with_timeout(lock_path: Path, timeout: float = STATE_LOCK_DEADLINE) -> IO:
+    """Non-blocking flock + deadline retry (10ms 간격).
+    timeout(기본 STATE_LOCK_DEADLINE = 4.0초) 초과 시 StateLockTimeout."""
     deadline = time.monotonic() + timeout
     # 'a+' 모드: 락 획득 전 truncate 안 함, 락 획득 후 안전하게 read/write
     f = open(lock_path, "a+")
@@ -274,7 +275,14 @@ def acquire_state_lock_with_timeout(lock_path: Path, timeout: float = 5.0) -> IO
 
 STATE_LOCK_DEADLINE = 4.0          # hook timeout(5s) - cleanup margin(1s)
 
-def update_state(sid_hash: str, mutator):
+def update_state(sid_hash: str, mutator, *, allow_create: bool = False):
+    """Read-modify-write state. allow_create=False면 파일 없을 때 write 생략.
+
+    호출자 분류:
+      - hook 측 (Stop/UserPromptSubmit): allow_create=True — 신규 세션 생성 OK.
+      - daemon 측 (poller/watchdog/handle_fire_result): allow_create=False —
+        SessionEnd가 삭제한 state를 stale write로 재생성 금지 (v4 MAJOR #2).
+    """
     path = STATE_DIR / f"{sid_hash}.json"
     lock_path = STATE_DIR / f"{sid_hash}.lock"
     try:
@@ -284,8 +292,16 @@ def update_state(sid_hash: str, mutator):
         return  # hook은 graceful exit 0, 데몬은 다음 사이클에 재시도
     try:
         # 락 획득 후에만 read-modify-write
-        data = json.loads(path.read_text()) if path.exists() else {}
+        if not path.exists():
+            if not allow_create:
+                log_info(f"state already deleted, skip update: {sid_hash}")
+                return  # stale daemon-origin write 차단
+            data = {}
+        else:
+            data = json.loads(path.read_text())
         data = mutator(data)
+        if data is None:
+            return  # mutator가 명시적으로 abort
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data, indent=2))
         os.replace(tmp, path)  # atomic rename (POSIX 보장)
@@ -320,6 +336,9 @@ def delete_state(sid_hash: str):
 - timeout 시 hook은 log 후 exit 0 경로를 반드시 탄다 (silent 유실 방지).
 - `os.replace`는 동일 파일시스템 내 atomic이며, `~/.cache-necromancer/` 내부에서만 사용하므로 안전.
 - `delete_state()`도 동일 lock 획득 후 삭제 (MINOR #1: SessionEnd/GC가 update_state와 경합해 stale write로 부활하는 race 방지).
+- `update_state(allow_create=False)`가 추가 안전망: lock 직렬화 통과 이후라도 daemon 측 mutator가 삭제된 state를 빈 dict로 재생성하지 못하도록 차단 (v4 MAJOR #2). 호출자별로:
+  - Stop / UserPromptSubmit hook → `allow_create=True` (신규 세션 또는 첫 입력 OK)
+  - watchdog_check, handle_fire_result, postpone_all_sessions, daemon 내부 → `allow_create=False`
 
 ### 갱신 판정 (전부 AND)
 
@@ -355,7 +374,7 @@ def watchdog_check(s: State, now: datetime, config: Config):
             )).isoformat(),
             "last_fire_at": None,
             "imminent_notified": False,
-        })
+        }, allow_create=False)  # daemon-origin, stale 재생성 차단
 ```
 
 폴링 루프의 후보 처리 루프에서 매 사이클 호출. `fire_stop_watchdog_seconds`는 2분 기본 (정상 응답 끝나기 충분한 시간).
@@ -556,7 +575,9 @@ def fire(state: dict, prompt: str = ".") -> Tuple[bool, FireReason]:
 - `NO_PANE_ID`: state 정합성 오류 → log + 해당 state 삭제.
 
 ```python
-def handle_fire_result(s: State, success: bool, reason: FireReason):
+def handle_fire_result(s: State, success: bool, reason: FireReason, config: Config):
+    """v4 MINOR #1: config 인자 추가로 send_keys_max_consecutive_failures 실제 사용."""
+    max_failures = config.advanced.send_keys_max_consecutive_failures
     if success:
         update_state(s.sid_hash, lambda x: {**x,
             "refresh_count": x["refresh_count"] + 1,
@@ -564,7 +585,7 @@ def handle_fire_result(s: State, success: bool, reason: FireReason):
             "last_fire_at": now_iso(),
             "imminent_notified": False,
             "send_keys_failures": 0,
-        })
+        }, allow_create=False)
         return
     if reason in PERMANENT_REASONS or reason == FireReason.NO_PANE_ID:
         delete_state(s.sid_hash)
@@ -573,8 +594,8 @@ def handle_fire_result(s: State, success: bool, reason: FireReason):
         update_state(s.sid_hash, lambda x: {**x,
             "send_keys_failures": x.get("send_keys_failures", 0) + 1,
             **({"tmux_target": None, "pane_id": None}
-               if x.get("send_keys_failures", 0) + 1 >= 3 else {}),
-        })
+               if x.get("send_keys_failures", 0) + 1 >= max_failures else {}),
+        }, allow_create=False)
         return
     # 일시적 실패 — 다음 사이클 재시도
     log_info(f"transient fire failure: sid={s.sid_hash} reason={reason}")
@@ -809,12 +830,20 @@ def run_poll_loop(config: Config):
 ```python
 def execute_mode(s: State, mode: str, config: Config):
     if mode == "notify":
+        # v4 MINOR #2: 매 폴링마다 반복 알림 방지 — 1회만 알림 후 next_refresh_at 전진
+        if s.imminent_notified:
+            return  # 이미 이번 윈도우에서 알림 보냄
         notifier.notify(f"🔄 {s.session_id[:8]} 캐시 갱신 시점 도달")
         log_info(f"[would-fire] sid={s.sid_hash} mode=notify")
+        update_state(s.sid_hash, lambda x: {**x,
+            "imminent_notified": True,
+            # next_refresh_at은 다음 Stop hook에서 재설정될 때까지 그대로 둠.
+            # 사용자가 응답을 하면 Stop hook이 imminent_notified=False로 리셋.
+        }, allow_create=False)
 
     elif mode == "auto":
         success, reason = refresh.fire(s.to_dict(), prompt=config.refresh.prompt)
-        handle_fire_result(s, success, reason)
+        handle_fire_result(s, success, reason, config)
 
     elif mode == "hybrid":
         notifier.notify(
@@ -834,7 +863,7 @@ def execute_mode(s: State, mode: str, config: Config):
             log_info(f"[cancel] sid={s.sid_hash} state deleted during hybrid wait")
             return
         success, reason = refresh.fire(fresh.to_dict(), prompt=config.refresh.prompt)
-        handle_fire_result(fresh, success, reason)
+        handle_fire_result(fresh, success, reason, config)
 ```
 
 `fire(state: dict)` 시그니처를 모든 호출자가 일관되게 사용 (v4 MAJOR #1). `handle_fire_result`가 reason 기반 정책 분기를 단일 위치에서 담당 (MAJOR #2).
@@ -902,29 +931,28 @@ stdin: {"session_id": "...", "transcript_path": "...", "cwd": "...", "hook_event
        log_info("[stop] tmux 외부, 비활성")
        exit 0
 
-3. try acquire_state_lock_with_timeout(timeout=5.0)
-   except StateLockTimeout: log_warn + exit 0
+3. update_state(sid_hash, mutator=stop_mutator, allow_create=True)
+   # hook 측이므로 allow_create=True (첫 Stop이면 새 세션 생성).
+   # 내부적으로 acquire_state_lock_with_timeout(timeout=STATE_LOCK_DEADLINE) 사용.
+   # StateLockTimeout 시 log_warn + 위 함수가 graceful return.
 
-4. with state lock:
-     s = load_or_create(sid_hash)
-     s.last_stop_at = now
-     s.tmux_target = captured["tmux_target"]
-     s.pane_id = captured["pane_id"]
-     window = config.recursion_window_seconds
-
-     if is_injected_response(s, now, window):
-         # injected Stop: refresh_count 유지, next_refresh_at 재설정
-         s.next_refresh_at = now + timedelta(minutes=config.refresh_interval_minutes)
-         s.last_fire_at = None        # 명시적 정리
-         was_injected = True
-     else:
-         # 사용자 turn의 정상 응답 Stop
-         s.next_refresh_at = now + timedelta(minutes=config.refresh_interval_minutes)
-         s.imminent_notified = False
-         s.last_fire_at = None        # window 경과 시에도 명시적 정리 (stale 잔존 방지)
-         was_injected = False
-
-     save(s)
+   def stop_mutator(x):
+       s = State.from_dict(x) if x else State.empty(sid_hash)
+       s.session_id = session_id
+       s.last_stop_at = now
+       s.tmux_target = captured["tmux_target"]
+       s.pane_id = captured["pane_id"]
+       window = config.recursion_window_seconds
+       if is_injected_response(s, now, window):
+           # injected Stop: refresh_count 유지, next_refresh_at 재설정
+           s.next_refresh_at = now + timedelta(minutes=config.refresh_interval_minutes)
+           s.last_fire_at = None        # 명시적 정리
+       else:
+           # 사용자 turn의 정상 응답 Stop
+           s.next_refresh_at = now + timedelta(minutes=config.refresh_interval_minutes)
+           s.imminent_notified = False
+           s.last_fire_at = None        # window 경과 시에도 명시적 정리
+       return s.to_dict()
 
 5. log: f"[stop] sid={sid_hash} next={s.next_refresh_at} injected={was_injected}"
 6. spawn_daemon_if_needed()
@@ -937,10 +965,9 @@ stdin: {"session_id": "...", "transcript_path": "...", "cwd": "...", "hook_event
 stdin: {..., "prompt": "...", "hook_event_name": "UserPromptSubmit"}
 
 1. sid_hash = sanitize(session_id)
-2. with state lock:
-     s = load_or_create(sid_hash)
-     s.last_user_input_at = now
-     save(s)
+2. update_state(sid_hash, mutator=lambda s: {**s, "last_user_input_at": now},
+                allow_create=True)
+   # hook 측이므로 allow_create=True (신규 세션의 첫 입력일 수 있음)
 3. log: "[user] sid=..."
 4. exit 0
 ```
@@ -964,7 +991,7 @@ stdin: {..., "prompt": "...", "hook_event_name": "UserPromptSubmit"}
 |------|------|
 | tmux 외부 hook | state 안 만들고 silent exit 0 |
 | state JSON 손상 | `.corrupt`로 이름 변경 후 제거, log 경고 |
-| state lock acquire 실패 (timeout) | 5초 timeout, 초과 시 log 경고 후 hook exit 0 |
+| state lock acquire 실패 (timeout) | STATE_LOCK_DEADLINE(4초) timeout, 초과 시 log 경고 후 hook exit 0 |
 | 데몬 spawn 실패 | hook이 log만 남기고 exit 0 |
 | 데몬 중복 기동 | lock + stale PID 처리로 단일 실행 보장 |
 | send-keys 실패 (pane 없음) | log + 해당 state 파일 삭제 (pane 영구 사라짐) |
@@ -984,7 +1011,7 @@ stdin: {..., "prompt": "...", "hook_event_name": "UserPromptSubmit"}
 
 - `lib/state.py`
   - atomic write: 동시 쓰기 시 lost update 없음
-  - lock timeout 5초 후 graceful fail
+  - lock timeout 4초(STATE_LOCK_DEADLINE) 후 graceful fail
   - 손상 JSON `.corrupt` 백업
 - `lib/session_id.py`
   - 정상 sid: pass-through
