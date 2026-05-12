@@ -331,7 +331,7 @@ claude -p "." --resume <session_id> --fork-session --no-session-persistence
 3. **외부 서버 전송 없음** — 100% 로컬 동작. session JSONL 데이터는 Anthropic API로만 전송 (당신이 평소 Claude Code 쓸 때와 동일).
 
 ### 비용 폭증 방지
-4. **사용자가 작업 중일 땐 갱신 안 함** — `last_user_input_at` vs `last_stop_at` 비교.
+4. **사용자가 작업 중일 땐 갱신 안 함** — Stop hook이 `last_stop_at`을 갱신하면 `next_refresh_at = last_stop_at + 55min`도 자동으로 미래로 밀림. 별도 "작업 중 감지" 메커니즘 없이 자연스럽게 처리. 사용자가 input 보내면 그 turn이 끝날 때까지 fire 후보가 되지 않음.
 5. **macOS sleep/wake 후 일제히 갱신 안 함** — `time.monotonic()` 드리프트 감지 후 5분 유예.
 6. **갱신 횟수 한도 자동 중지** — `max_refresh_count` (기본 10) 도달 시 자동 멈춤.
 7. **중복 데몬 차단** — lockfile + PID start_time으로 단일 인스턴스 보장. PID 재사용 오인 방지.
