@@ -20,8 +20,9 @@ _PROJECT_ROOT = _HERE.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from daemon.transcript import extract_last_turn_usage  # noqa: E402
 from lib.config import load_config  # noqa: E402
-from lib.logger import log_info, log_warn  # noqa: E402
+from lib.logger import log_info, log_user_turn, log_warn  # noqa: E402
 from lib.session_id import sanitize  # noqa: E402
 from lib.state import default_state, parse_iso, update_state  # noqa: E402
 
@@ -49,6 +50,9 @@ def _build_stop_mutator(stdin: dict, now: datetime, config) -> callable:
     sid_hash = sanitize(session_id) if session_id else None
     transcript_path = stdin.get("transcript_path", "")
     cwd = stdin.get("cwd", "")
+    usage = extract_last_turn_usage(
+        Path(transcript_path) if transcript_path else None
+    )
 
     def mutator(x: dict) -> dict:
         # 빈 dict면 default_state로 base 채움 (CRITICAL fix)
@@ -60,6 +64,33 @@ def _build_stop_mutator(stdin: dict, now: datetime, config) -> callable:
                 cwd=cwd,
                 now=now,
             )
+
+        # after_fire 판정: 현재 turn 시작 시점 이전에 fire 가 있었는가
+        prev_turn_start = x.get("current_turn_started_at")
+        prev_last_fire = x.get("last_fire_at")
+        after_fire = False
+        if prev_turn_start and prev_last_fire:
+            try:
+                tstart = parse_iso(prev_turn_start)
+                tfire = parse_iso(prev_last_fire)
+                if tstart and tfire:
+                    after_fire = tfire < tstart
+            except (ValueError, TypeError):
+                after_fire = False
+
+        # usage + 진짜 user turn 종료(prev_turn_start 존재) 일 때만 기록
+        if usage and prev_turn_start and sid_hash:
+            try:
+                log_user_turn(
+                    sid_hash=sid_hash,
+                    session_id=session_id,
+                    usage=usage,
+                    after_fire=after_fire,
+                    now=now,
+                )
+            except OSError:
+                pass
+
         return {
             **x,
             "session_id": session_id,
@@ -73,7 +104,7 @@ def _build_stop_mutator(stdin: dict, now: datetime, config) -> callable:
             "imminent_notified": False,
             "current_turn_started_at": None,  # turn 종료
             "cache_cold_retries": 0,  # 사용자 활동 = 새 사이클
-            # last_fire_at은 건드리지 않음 (after_fire 판정용, Phase 2)
+            # last_fire_at은 건드리지 않음 (after_fire 판정용)
         }
 
     return mutator, sid_hash

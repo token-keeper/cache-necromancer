@@ -10,7 +10,7 @@ from typing import Optional
 from lib.config import Config
 from lib.state import parse_iso, update_state, load_all_states
 
-from daemon import notifier, scheduler
+from daemon import notifier, scheduler, watchdog
 from daemon.clock import DriftDetector
 from lib.logger import log_info, log_warn
 
@@ -180,6 +180,10 @@ def run_poll_loop(config: Config) -> None:
             return
 
         now = datetime.now(timezone.utc)
+
+        # watchdog: fire→Stop 누락 세션 복구 (다른 처리보다 먼저 실행)
+        for s in sessions:
+            watchdog.watchdog_check(s, now, config)
 
         for s in sessions:
             handle_session(s, now, config)
