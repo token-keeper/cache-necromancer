@@ -76,6 +76,13 @@ def test_auth_error_patterns_lowercase():
         assert keyword in joined
 
 
+def test_auth_patterns_exclude_bare_forbidden():
+    """MINOR 회귀 가드: 'forbidden' 단독 패턴은 false positive 위험으로 제외."""
+    from daemon.refresh import AUTH_ERROR_PATTERNS
+
+    assert "forbidden" not in AUTH_ERROR_PATTERNS
+
+
 def test_fire_result_defaults():
     from daemon.refresh import FireReason, FireResult
 
@@ -142,6 +149,66 @@ def test_fire_bad_output_on_invalid_json():
     assert result.success is False
     assert result.reason is refresh.FireReason.BAD_OUTPUT
     assert "not-json" in result.raw_stdout
+
+
+@pytest.mark.parametrize("payload", ["[1, 2, 3]", "42", '"hello"', "null"])
+def test_fire_bad_output_when_top_level_not_object(payload):
+    """MAJOR 회귀 가드: JSON top-level이 dict가 아니면 BAD_OUTPUT (AttributeError 차단)."""
+    from daemon import refresh
+
+    s = _make_state()
+    proc = MagicMock(returncode=0, stdout=payload, stderr="")
+    with patch("daemon.refresh.subprocess.run", return_value=proc):
+        result = refresh.fire(s, Config())
+
+    assert result.success is False
+    assert result.reason is refresh.FireReason.BAD_OUTPUT
+
+
+@pytest.mark.parametrize("usage_value", [[], "string", 42, [{"a": 1}]])
+def test_fire_bad_output_when_usage_not_mapping(usage_value):
+    """MAJOR 회귀 가드: usage가 dict 아니면 BAD_OUTPUT (.get() AttributeError 차단)."""
+    from daemon import refresh
+
+    s = _make_state()
+    payload = json.dumps({"usage": usage_value})
+    proc = MagicMock(returncode=0, stdout=payload, stderr="")
+    with patch("daemon.refresh.subprocess.run", return_value=proc):
+        result = refresh.fire(s, Config())
+
+    assert result.success is False
+    assert result.reason is refresh.FireReason.BAD_OUTPUT
+
+
+def test_fire_handles_missing_usage_as_cache_cold():
+    """usage 키가 아예 없으면 cache_read=0 → CACHE_COLD (스키마 안전 fallback)."""
+    from daemon import refresh
+
+    s = _make_state()
+    proc = MagicMock(returncode=0, stdout='{"modelUsage": {}}', stderr="")
+    with patch("daemon.refresh.subprocess.run", return_value=proc):
+        result = refresh.fire(s, Config())
+
+    assert result.reason is refresh.FireReason.CACHE_COLD
+
+
+def test_fire_handles_malformed_modelusage_silently():
+    """modelUsage가 dict 아니어도 fire는 OK 분기 진행, model=None."""
+    from daemon import refresh
+
+    s = _make_state()
+    payload = json.dumps({
+        "usage": {"cache_read_input_tokens": 100, "input_tokens": 1, "output_tokens": 1},
+        "modelUsage": "not-a-dict",
+    })
+    proc = MagicMock(returncode=0, stdout=payload, stderr="")
+    with patch("daemon.refresh.subprocess.run", return_value=proc):
+        result = refresh.fire(s, Config())
+
+    assert result.success is True
+    assert result.reason is refresh.FireReason.OK
+    assert result.cache_read == 100
+    assert result.model is None
 
 
 def test_fire_auth_error_pattern_in_stderr():
@@ -291,18 +358,24 @@ def test_disable_session_can_skip_notify():
     mock_notify.assert_not_called()
 
 
-def test_disable_session_update_state_oserror_swallowed():
-    """update_state OSError가 caller까지 전파되지 않음 (daemon 보호)."""
+def test_disable_session_update_state_oserror_swallowed_and_skips_notify():
+    """MAJOR 회귀 가드: update_state OSError 시 예외 흡수 + notify 스킵.
+
+    저장 실패하면 사용자에게 "비활성화됨" 알림 보내지 않아야 함 — 다음
+    poll cycle에서 재시도되므로 알림 폭주/오인 방지.
+    """
     from daemon import refresh
 
     s = _make_state(sid_hash="abc")
     with patch(
         "daemon.refresh.update_state",
         side_effect=OSError("disk full"),
-    ), patch("daemon.refresh.notifier.notify"), \
+    ), patch("daemon.refresh.notifier.notify") as mock_notify, \
        patch("daemon.refresh.log_warn") as mock_warn:
         # 예외 전파 없이 종료
         refresh.disable_session(s, reason="auth_error", message="❌")
 
     mock_warn.assert_called_once()
     assert "disable_session update_state failed" in mock_warn.call_args.args[0]
+    # 저장 실패 → notify 도 발사하지 않음 (사용자 오인 방지)
+    mock_notify.assert_not_called()

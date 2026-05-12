@@ -37,7 +37,10 @@ TRANSIENT_REASONS: frozenset[FireReason] = frozenset({
 
 PERMANENT_REASONS: frozenset[FireReason] = frozenset({FireReason.AUTH_ERROR})
 
-# stderr.lower() 매칭용 — 전부 lowercase
+# stderr.lower() 매칭용 — 전부 lowercase.
+# "forbidden" 단독은 HTTP 403 등에서 false positive 위험으로 제외 (인증 외 사유도
+# 403을 쓰므로 영구 disable 트리거 부적합). 진짜 인증 실패는 다른 패턴이 잡고,
+# 만약 누락돼도 PR 5의 5회 연속 실패 누적 disable이 backstop.
 AUTH_ERROR_PATTERNS: tuple[str, ...] = (
     "authentication",
     "unauthorized",
@@ -45,7 +48,6 @@ AUTH_ERROR_PATTERNS: tuple[str, ...] = (
     "credential",
     "api key",
     "expired token",
-    "forbidden",
 )
 
 _RAW_STDOUT_LIMIT = 500
@@ -113,9 +115,31 @@ def fire(state: dict, config) -> FireResult:
             raw_stdout=(proc.stdout or "")[:_RAW_STDOUT_LIMIT],
         )
 
-    usage = data.get("usage") or {}
-    model_usage = data.get("modelUsage") or {}
-    model = next(iter(model_usage.keys()), None) if isinstance(model_usage, dict) else None
+    # JSON top-level이 object가 아니면 (list/숫자/문자열 등) 스키마 깨짐 → BAD_OUTPUT
+    if not isinstance(data, dict):
+        return FireResult(
+            success=False,
+            reason=FireReason.BAD_OUTPUT,
+            raw_stdout=(proc.stdout or "")[:_RAW_STDOUT_LIMIT],
+        )
+
+    # usage 키가 mapping이 아닌 타입으로 오면 스키마 깨짐 → BAD_OUTPUT.
+    # None / 누락은 빈 dict로 fallback (cache_read=0 → CACHE_COLD 흐름).
+    usage = data.get("usage")
+    if usage is None:
+        usage = {}
+    if not isinstance(usage, dict):
+        return FireResult(
+            success=False,
+            reason=FireReason.BAD_OUTPUT,
+            raw_stdout=(proc.stdout or "")[:_RAW_STDOUT_LIMIT],
+        )
+    model_usage = data.get("modelUsage")
+    model = (
+        next(iter(model_usage.keys()), None)
+        if isinstance(model_usage, dict)
+        else None
+    )
 
     result = FireResult(
         success=True,
@@ -142,7 +166,9 @@ def disable_session(
 ) -> None:
     """delete 대신 disabled 마커로 보존. /cn:status에서 원인 확인 가능.
 
-    update_state OSError는 흡수 — daemon 중단 방지.
+    update_state OSError는 흡수 — daemon 중단 방지. 저장이 실패하면 알림도
+    발사하지 않는다 (사용자가 disable 됐다고 오인하는 것을 막기 위함). 다음
+    poll cycle에서 재시도된다.
     """
     now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -164,6 +190,7 @@ def disable_session(
             f"[refresh] disable_session update_state failed "
             f"sid={s.get('sid_hash')} err={e}"
         )
+        return
 
     if notify:
         notifier.notify(message)
