@@ -2,6 +2,7 @@
 
 작성일: 2026-05-12 (KST)
 v2 업데이트: 2026-05-13 — headless CLI 메커니즘으로 전환 (실험으로 검증 완료)
+v3 업데이트: 2026-05-13 — codex PRD 리뷰 반영 (공개 plugin 신뢰성 보강)
 상태: 검토 대기
 
 ---
@@ -45,19 +46,37 @@ claude -p "." --resume <session_id> --fork-session --no-session-persistence
 - 디스크 흔적: 없음 ✅
 - 비용: 캐시 hit 가격 = 정상 input의 10%
 
+**왜 안전한가 (사용자 관점 3문장)**
+
+1. **무엇을 읽나** — Claude Code가 이미 디스크에 저장해둔 당신의 session JSONL(`~/.claude/projects/.../<id>.jsonl`)을 읽기만 함. 외부 서버로 아무것도 보내지 않음.
+2. **무엇을 보내나** — 당신의 기존 대화 prefix + 짧은 `.` 문자 한 글자를 Anthropic API에 보냄 (당신이 평소 Claude를 쓸 때 보내는 것과 동일한 데이터, 추가 정보 없음).
+3. **무엇을 절대 수정 안 하나** — 원본 session JSONL, 인터랙티브 화면, 다른 Claude Code 설정. fork session은 한 번 쓰고 디스크에 안 남김 (`--no-session-persistence`).
+
 ---
 
 ## 누구를 위한 도구인가
 
-**1차 타겟 — 공개 plugin 사용자 (Claude Code 일반 사용자)**
-- Claude Code를 자주/장시간 사용하면서 프롬프트 캐시 비용을 줄이고 싶은 모든 사용자
-- 자리를 비우는 시간이 있어도 작업 컨텍스트가 캐시에 살아있길 원하는 사용자
-- 여러 프로젝트를 동시에 띄워두고 오가는 사용 패턴
+**1차 타겟 — 큰 컨텍스트를 유지한 채 자리 비웠다 1시간 안팎으로 복귀하는 Claude Code 사용자**
+- 한 세션에서 **수만 토큰 prefix**(긴 대화, 큰 코드베이스, 두꺼운 system prompt)를 쌓아둔 상태
+- 점심, 회의, 짧은 외출, 오후 작업 마무리 등 **자리 비움 패턴이 일과에 자주 있음**
+- 돌아왔을 때 같은 컨텍스트를 이어가는 패턴 (새 세션 시작이 아님)
+- 자리 비움 간격이 1시간 안팎이라 1회 갱신만으로 큰 효과
 
 **2차 타겟 — 헤비 유저**
 - Claude Code 상시 실행하는 1인 개발자 / 인디 해커
 - 여러 에이전트를 병렬로 돌리는 사용자
 - 비용 민감한 스타트업/팀
+
+### 추천 / 비추천 사용 패턴
+
+| 패턴 | 추천 여부 | 이유 |
+|---|---|---|
+| 점심/회의 후 같은 컨텍스트로 돌아옴, prefix > 10K 토큰 | ✅ 강력 추천 | Net saved 명확히 양수 |
+| 하루 종일 띄워두는 상시 세션 | ✅ 추천 | `max_refresh_count` 한도 안에서 안정적 절약 |
+| 자리 비움이 1시간 이내가 대부분 | 🟡 보통 | 갱신 안 해도 캐시 살아있음 → 효과 작음 |
+| 한 번 작업하고 다음날까지 안 돌아옴 | ❌ 비추천 | fire 비용만 누적, Net saved < 0 위험 |
+| 매번 새 프로젝트/새 세션 시작 패턴 | ❌ 비추천 | 캐시 hit 자체가 잘 안 됨 |
+| Windows 환경 | ❌ 미지원 | v2 이후 커뮤니티 PR 검토 |
 
 **환경 요구사항 (v1)**
 - Claude Code v2.x 이상
@@ -81,6 +100,8 @@ claude -p "." --resume <session_id> --fork-session --no-session-persistence
 5. **As a 절약은 좋아하지만 무한 갱신은 위험한 사용자**, 갱신 횟수에 상한을 두고 (기본 10회 = 약 10시간) 그 이상은 자동 중지하길 원한다.
 
 6. **As a 사용자, 내가 보는 Claude Code 화면이 자동 갱신 때문에 더럽혀지지 않길 원한다** — 백그라운드 호출이라 인터랙티브 세션 화면에 흔적 없음.
+
+7. **As a 처음 설치한 사용자, "이 플러그인이 내 세션을 진짜 안 건드리는지" 직접 확인하고 싶다** — `/cn:status` 명령으로 추적 중인 세션 / 다음 갱신 시각 / 직전 fire 결과를 볼 수 있고, `/cn:dry-run` 명령으로 실제 fire 안 하고 시뮬레이션만 가능. `~/.cache-necromancer/daemon.log`에서 어떤 명령이 언제 실행됐는지 모두 확인 가능.
 
 ---
 
@@ -137,6 +158,36 @@ claude -p "." --resume <session_id> --fork-session --no-session-persistence
 각 세션은 자기 환경 무관하게 독립적으로 갱신됨.
 ```
 
+### 시나리오 6: 중복 데몬 / 동일 세션 동시 추적 방지
+```
+12:00  Claude Code 세션 A 응답 → 데몬1 spawn
+12:05  사용자가 같은 터미널을 실수로 재시작 → 데몬2 spawn 시도
+12:05  데몬2: ~/.cache-necromancer/daemon.lock 획득 시도
+        → 데몬1 PID 살아있음 확인 (os.kill(pid, 0))
+        → 즉시 종료 (단일 owner만 폴링)
+12:55  데몬1만 세션 A에 fire (한 번만)
+```
+중복 fire로 인한 비용 폭증 방지. lockfile에 PID + start_time 함께 기록해 PID 재사용으로 인한 오인도 차단.
+
+### 시나리오 7: 1시간 이상 자리 비웠다 돌아온 경우 (이미 캐시 만료)
+```
+12:00  Claude 응답 종료, TTL 13:00
+12:55  데몬 fire 시도 (정상)
+        → cache_read=45,000 → 성공, TTL 13:55
+        → refresh_count = 1
+13:50  fire 또 시도, TTL 14:50
+        ...
+다음날 02:00  refresh_count = 10 도달 (max 한도)
+02:00  fire 중지. log: "[limit] refresh cap reached"
+        TTL 자연 만료, 캐시 사라짐.
+다음날 09:00  사용자 출근, 같은 세션에서 작업 재개
+        → cache_read=0 (캐시 만료 후 첫 요청)
+        → 데몬: log "[expired] sid=... cache cold at first turn"
+        → 새 캐시 생성 (정상 비용)
+        → 이후 사이클은 정상 작동
+```
+자리 비움이 너무 길어 캐시가 이미 죽었을 땐 별도 사고 없이 새 캐시로 정상 복귀. 비용은 정상 1회분만 추가됨.
+
 ---
 
 ## 성공 지표
@@ -175,9 +226,24 @@ claude -p "." --resume <session_id> --fork-session --no-session-persistence
 | **Fire cost** | Σ (모든 fire의 `cache_create × 1.25 + cache_read × 0.1`) |
 | **Net saved** | Gross saved − Fire cost |
 
+**Output 토큰 비용은 의도적으로 제외**. 이유: fire가 보내는 `.` 응답의 output은 매번 거의 동일한 짧은 응답(예: 50~250 토큰)이고, 사용자가 실제로 작업할 때의 output과 무관함. cache-necromancer가 절약하는 건 input prefix 비용이지 output이 아님. Phase 4 대시보드에서 "참고용 fire output 합계"는 별도로 표시할 수 있지만 Net saved 계산엔 포함 안 함.
+
 **판정 규칙**:
 - "사용자 활용 turn" = 직전 사용자 입력(`last_user_input_at`)이 N분 이상 전 (예: 55분) + 그 사이에 fire가 있었던 UserPromptSubmit.
-- Net saved가 음수면 fire가 낭비된 것 (사용자가 안 돌아옴) → `max_refresh_count` 조정 신호.
+- Net saved가 음수면 fire가 낭비된 것 (사용자가 안 돌아옴) → 사용 패턴 재검토 신호.
+
+### Net saved < 0일 때 사용자 조치 (단계별 권고)
+
+대시보드(Phase 4) 또는 `/cn:status` 명령이 Net saved 음수를 감지하면 다음 권고를 표시:
+
+| 패턴 | 권고 |
+|---|---|
+| 사용자 활용 turn이 거의 없음 (fire 10번, 활용 1번 미만) | **mode를 `notify`로 전환** — 자동 fire 끄고 알림만 받기 |
+| 사용자 활용은 있지만 fire 비율이 과함 (예: fire 20번, 활용 3번) | **`max_refresh_count` 감소** (10 → 5) |
+| 자리 비움 시간이 보통 1시간 이내 (자연 캐시 hit) | **플러그인 비활성화 권고** — 이미 자연스럽게 캐시 활용 중이라 도구 불필요 |
+| 첫 fire가 매번 `cache_read=0` | **세션 사용 패턴 점검** — 매번 새 세션 시작이면 캐시 갱신 의미 없음 |
+
+자동 조치 없음 — 사용자가 보고 직접 조정. 데몬은 어떤 경우에도 mode를 사용자 동의 없이 바꾸지 않음.
 
 **측정에 필요한 데이터** (v1 log에 기록):
 - 매 fire: `timestamp | fire | sid | model | cache_read | cache_create | input | output`
@@ -189,6 +255,11 @@ claude -p "." --resume <session_id> --fork-session --no-session-persistence
 
 ## 무엇을 만드는가 (범위)
 
+### 출시 컷
+
+> **v1 = Phase 1 + Phase 2 + Phase 3 (release hardening 포함)**
+> Phase 4(통계/대시보드)는 **v0.2** 이후 별도 spec.
+
 **Phase 1 — 기반 (PR 1개, ~200줄)**
 - `.claude-plugin/plugin.json`, `hooks/hooks.json` 매니페스트
 - Hook 3개 (Stop / UserPromptSubmit / SessionEnd) — timestamp 추적용
@@ -196,8 +267,10 @@ claude -p "." --resume <session_id> --fork-session --no-session-persistence
 - macOS 알림 (`osascript`) + 터미널 벨
 - 데몬 lifecycle (lazy 기동, lockfile, stale PID 처리)
 - `notify` 모드 동작
+- `/cn:status` 명령 (추적 중인 세션 / 다음 갱신 시각 / 직전 fire 결과 표시)
 - **fire log 한 줄 기록** (timestamp / sid / model / cache_read / cache_create / input / output) — Phase 4 대시보드의 raw 데이터
 - 사용자용 `README.md`
+- **검증 가능한 것**: 사용자가 점심 후 돌아왔을 때 macOS 알림으로 임박 시점을 인지함. `/cn:status`로 추적 상태 확인.
 
 **Phase 2 — 자동 갱신 (PR 1개, ~150줄)**
 - `claude -p` 호출 wrapper
@@ -206,21 +279,28 @@ claude -p "." --resume <session_id> --fork-session --no-session-persistence
 - macOS sleep/wake 감지 + 5분 유예
 - fire 후 watchdog (silent 정지 방지)
 - 갱신 성공/실패 결과 cache_read 토큰 측정으로 검증
+- 연속 fire 실패 N회 시 사용자 알림 (인지 가능한 실패)
+- `/cn:dry-run` 명령 (실제 fire 안 하고 시뮬레이션)
 - **user_turn log 기록** (UserPromptSubmit 발화 시점 + 대응 Stop hook에서 transcript jsonl 마지막 turn usage 추출) — `after_fire=true|false` 판정 포함
+- **검증 가능한 것**: 자리 비웠다 돌아오면 cache_read > 0 으로 캐시 활용 확인. log에서 갱신 비용 추적 가능.
 
 **Phase 3 — 공개 배포 준비 (PR 1개)**
 - Anthropic Claude Code plugin marketplace 등록 (`.claude-plugin/marketplace.json`)
 - `/plugin install` 한 줄 설치
-- `userConfig` 활용한 첫 설치 시 모드 안내 (선택)
+- `userConfig` 활용한 첫 설치 시 모드 안내
 - 라이센스 (MIT), CHANGELOG, 이슈 템플릿
 - 데모 GIF / 영상 (선택)
+- README에 "추천/비추천 사용 패턴" + "안전성 확인 방법" 명시
+- **검증 가능한 것**: 외부 사용자가 `/plugin install`로 설치 후 README만 보고 안전하게 사용 시작.
 
 **Phase 4 — 통계/대시보드 (별도 spec, v0.2 이후)**
 - v1 log 파싱 → Gross saved / Fire cost / Net saved 집계
 - 모델별 가격 테이블 (시세 변동 대응, 별도 reference 파일)
 - 일별 / 주별 절감 비용 차트
 - 갱신 히스토리 / 시간대별 사용 패턴
+- Net saved < 0 시 사용자에게 권고 메시지 표시
 - Linux 알림 어댑터 (notify-send)
+- **검증 가능한 것**: 사용자가 1주일 사용 후 실제 절약 금액 + 자기 패턴이 추천/비추천 중 어느 쪽인지 확인.
 
 ---
 
@@ -231,6 +311,7 @@ claude -p "." --resume <session_id> --fork-session --no-session-persistence
 - ❌ **Discord/Slack 외부 채널 통합** — 사용자가 직접 자기 hook으로 통합 (다른 Stop hook과 공존 가능)
 - ❌ **GUI / 웹 대시보드**
 - ❌ **인터랙티브 세션 화면에 시각적 카운트다운** — 백그라운드 동작이라 시각 표시 없음. 알림으로만 인지.
+- ❌ **자동 비용 최적화 / 모델별 동적 의사결정** — v1은 단순 시간 기반 fire만. "사용 패턴 분석해서 fire 시점/빈도 자동 조정"이나 "모델별 fire 가치 계산 후 전략 변경" 같은 지능형 튜닝은 미포함.
 
 > **v1 변경점 (v2 PRD 업데이트)**: tmux 의존성 / 터미널 환경별 어댑터 / AppleScript 권한 요청 — 모두 불필요해짐. headless CLI 메커니즘이 환경 독립.
 
@@ -251,16 +332,33 @@ claude -p "." --resume <session_id> --fork-session --no-session-persistence
 
 ---
 
-## 안전 보장 정책 (v2 변경: PTY 관련 항목 → headless 관련으로 교체)
+## 안전 보장 정책 (v3)
 
+### 데이터 / 세션 보호
 1. **사용자 인터랙티브 세션은 절대 건드리지 않음** — `claude -p` 별도 프로세스. `--fork-session`으로 원본 jsonl 보호.
 2. **fork된 임시 session 디스크에 안 남김** — `--no-session-persistence`.
-3. **사용자가 작업 중일 땐 갱신 안 함** — `last_user_input_at` vs `last_stop_at` 비교. 사용자가 응답 중이면 데몬이 알아서 대기.
-4. **macOS sleep/wake 후 일제히 갱신 안 함** — `time.monotonic()` 드리프트 감지 후 5분 유예. 한꺼번에 여러 세션 토큰 비용 폭증 방지.
-5. **갱신 횟수 한도 도달 시 자동 중지** — 무한 갱신으로 비용 폭증 방지.
-6. **Hook이 실패해도 Claude Code 동작에 영향 없음** — 모든 hook은 항상 `exit 0`, stdout 비움.
-7. **claude CLI 호출 실패 시 silent fallback** — 네트워크/인증 오류 시 log 기록 후 다음 사이클 재시도. 사용자 작업에 영향 없음.
-8. **갱신 성공 검증** — `cache_read_input_tokens > 0`으로 실제 hit 발생 확인. 0이면 log 경고 (캐시 만료된 후 fire였을 수 있음).
+3. **외부 서버 전송 없음** — 100% 로컬 동작. session JSONL 데이터는 Anthropic API로만 전송 (당신이 평소 Claude Code 쓸 때와 동일).
+
+### 비용 폭증 방지
+4. **사용자가 작업 중일 땐 갱신 안 함** — `last_user_input_at` vs `last_stop_at` 비교.
+5. **macOS sleep/wake 후 일제히 갱신 안 함** — `time.monotonic()` 드리프트 감지 후 5분 유예.
+6. **갱신 횟수 한도 자동 중지** — `max_refresh_count` (기본 10) 도달 시 자동 멈춤.
+7. **중복 데몬 차단** — lockfile + PID start_time으로 단일 인스턴스 보장. PID 재사용 오인 방지.
+
+### 인지 가능한 실패 (silent failure 방지)
+8. **연속 fire 실패 시 사용자 알림** — 3회 연속 fire가 `cache_read=0` 또는 에러 → macOS 알림으로 사용자에게 알림. 5회 도달 시 해당 세션 자동 비활성화 + 알림.
+9. **상태 확인 명령 제공** — `/cn:status`로 추적 중인 세션 / 다음 갱신 시각 / 직전 결과 / 누적 fire 비용 확인 가능. 사용자가 언제든 상태를 체크.
+10. **Hook이 실패해도 Claude Code 동작에 영향 없음** — 모든 hook은 항상 `exit 0`, stdout 비움. 단, 데몬 spawn 실패는 일별 1회 알림으로 사용자에게 통지.
+
+### 갱신 검증
+11. **`cache_read > 0`으로 hit 확인** — fire 응답에서 cache_read 토큰이 0이면 캐시가 이미 만료된 상태 → log 경고 + 해당 세션 다음 사이클 중단(이미 cold이므로 더 fire해도 의미 없음).
+
+### Raw log 민감정보 처리 (공개 plugin 신뢰성)
+12. **log 저장 위치 / 필드 / 보존 기간 명시**:
+    - 위치: `~/.cache-necromancer/daemon.log.YYYY-MM-DD` (사용자 홈 디렉토리, 외부 전송 없음).
+    - 기록 필드: timestamp, sid_hash (실제 session_id 아닌 sha256 hash), model명, 토큰 수 4종.
+    - **사용자 프롬프트 내용, 응답 본문, 파일 경로, cwd 절대 기록 안 함**.
+    - 보존: 7일 후 자동 삭제. 사용자가 즉시 삭제하려면 `rm ~/.cache-necromancer/daemon.log.*`.
 
 ---
 
@@ -272,16 +370,14 @@ claude -p "." --resume <session_id> --fork-session --no-session-persistence
 
 ---
 
-## 검토 포인트 (브로디용)
+## 검토 포인트 (브로디용, v3)
 
-이 PRD에 대해 답해주세요:
-
-1. **메커니즘 설명**이 명확한가? (headless CLI가 왜 우월한지)
-2. **타겟 사용자 확장**이 적절한가? (tmux 제약 사라짐)
-3. **시나리오 5개** 중 빠뜨린 케이스 있는가? (특히 멀티 세션 / 사용자 작업 중)
-4. **성공 지표 목표값**이 합리적인가?
-5. **범위**(Phase 1 + 2)가 적절한가? Phase 3(공개 배포)도 v1 출시에 포함 OK인가?
-6. **안전 보장 8가지**로 충분한가?
-7. **Out of Scope** 중 사실은 포함해야 할 게 있는가?
+1. **메커니즘 + "왜 안전한가" 3문장** — 일반 사용자가 충분히 이해할 수 있는가?
+2. **추천/비추천 사용 패턴 표** — 정확하고 사용자가 자기 판단에 활용 가능한가?
+3. **유저 스토리 7개** + **시나리오 7개** — 빠뜨린 케이스 있는가?
+4. **절약 모델 + Net < 0 권고** — 사용자가 자기 데이터 보고 행동 결정 가능한가?
+5. **v1 출시 컷 (Phase 1+2+3) + Phase별 검증 가능한 것** — 출시 경계 명확한가?
+6. **안전 보장 12가지** — 데이터/비용/실패 인지/log 민감정보 4영역 다 충분한가?
+7. **Out of Scope** — 자동 비용 최적화 명시까지 OK?
 
 OK 사인 주시면 TECH_SPEC v5 작성으로 진행합니다.
