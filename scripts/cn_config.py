@@ -42,7 +42,13 @@ def main() -> int:
     print(f"  max_refresh_count: {config.max_refresh_count}회 (세션당)")
     print(f"  hybrid_wait:       {config.refresh.hybrid_wait_seconds}초")
     print(f"  fire_timeout:      {config.refresh.fire_timeout_seconds}초")
-    print(f"  prompt:            {config.refresh.prompt!r}")
+    # 기본값 "." 이면 그대로 표시, 사용자 커스텀 값이면 길이만 표시 (transcript 노출 회피)
+    prompt_display = (
+        repr(config.refresh.prompt)
+        if config.refresh.prompt == "."
+        else f"(사용자 지정, {len(config.refresh.prompt)} chars)"
+    )
+    print(f"  prompt:            {prompt_display}")
     print(f"  terminal_bell:     {config.notify.terminal_bell}")
     print(f"  system_notification: {config.notify.system_notification}")
     print(f"  imminent_threshold: {config.notify.imminent_threshold_minutes}분")

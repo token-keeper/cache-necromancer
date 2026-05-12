@@ -28,10 +28,15 @@ def mode_help_text() -> str:
 
 
 def config_change_hint(config_path) -> str:
-    """현재 config.toml 편집 안내."""
+    """현재 config.toml 편집 안내.
+
+    예시 명령은 printf 사용 — bash single quote 안의 ``\\n`` 은 literal로 들어가
+    TOML 줄바꿈이 깨지므로 echo는 부적합.
+    """
     return (
         f"설정 변경: {config_path}\n"
         "  편집 후 다음 Stop hook 부터 적용. 데몬 재시작 필요 없음.\n"
         "예시:\n"
-        '  echo \'[general]\\nmode = "auto"\' > ~/.cache-necromancer/config.toml'
+        "  mkdir -p ~/.cache-necromancer\n"
+        '  printf \'[general]\\nmode = "auto"\\n\' > ~/.cache-necromancer/config.toml'
     )
