@@ -1,4 +1,39 @@
 {
-  "description": "cache-necromancer hooks (Phase 1b에서 scripts/ 추가 후 활성화 예정)",
-  "hooks": {}
+  "description": "Track session timestamps to drive background cache refresh",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/on_stop.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/on_user_prompt.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/on_session_end.py\"",
+            "timeout": 5,
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
 }
