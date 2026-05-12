@@ -1,10 +1,21 @@
 # cache-necromancer 설계 v5 (headless CLI 기반)
 
 작성일: 2026-05-13
+v5.1 업데이트: 2026-05-13 — codex v5 리뷰 MAJOR 9 + MINOR 3 인라인 반영
 상태: 설계 (구현 전)
 이전 버전: v1 / v2 / v3 / v4 (PTY 주입 시대, 폐기)
 
 **v5 개정 사유**: 실험으로 `claude -p "." --resume <id> --fork-session --no-session-persistence` 1줄이 캐시 hit + TTL 갱신을 일으킴이 확인됨 (cache_read 46,115 tokens, 원본 jsonl 무영향, 디스크 흔적 없음). 이로 인해 v4의 PTY 주입 / 5단계 안전 검증 / 어댑터 패턴 / recursion 차단 등 약 50%가 불필요해짐. v5는 headless CLI 기반으로 단순화 + PRD v3의 신뢰성 요구(`/cn:status`, `/cn:dry-run`, 인지 가능한 실패) 반영.
+
+**v5.1 변경 (codex v5 리뷰 반영)**: 9가지 핵심 결함 수정:
+- 스케줄러 정합성: 성공 fire 후 `next_refresh_at`을 데몬이 직접 갱신 (watchdog 의존 안 함)
+- transient 실패 시 exponential backoff + jitter
+- CACHE_COLD / AUTH_ERROR 복구 경로 추가 (disabled 마커, delete 대신 보존)
+- transcript bounded tail (Stop hook 100ms 보장)
+- `current_turn_started_at` 신설 (after_fire 판정 정확화)
+- UserPromptSubmit `allow_create=False` (불완전 state 생성 차단)
+- 디스크 흔적 보장 문구 정확화 ("원본 transcript 무변경" / "fork transcript 임시 생성 가능")
+- `CLAUDE_CODE_SESSION_ID` 환경변수로 `/cn:status` 현재 세션 식별
 
 **관련 문서**: PRD v3 `2026-05-12-cache-necromancer-PRD.md`
 
@@ -14,7 +25,9 @@
 
 Claude Code 플러그인. 데몬이 백그라운드에서 `claude -p` headless CLI로 짧은 프롬프트를 보내 캐시 hit을 일으켜 TTL을 1시간 연장.
 
-핵심: **사용자가 보는 인터랙티브 세션을 절대 건드리지 않음**. fire는 별도 프로세스 + fork session + no-persistence라 원본 jsonl / 화면 / 디스크 모두 무영향.
+핵심: **사용자가 보는 인터랙티브 세션을 절대 건드리지 않음**. fire는 별도 프로세스 + fork session + no-persistence라:
+- **원본 transcript JSONL: 절대 무변경 보장** (인터랙티브 세션 영향 0)
+- **fork transcript: claude CLI 내부에서 일시 생성될 수 있음** — `--no-session-persistence` 덕분에 claude CLI 프로세스 종료 시 정리됨. 백업 도구/인덱서/보안 스캐너가 그 짧은 윈도우 동안 잡을 가능성은 있음. v1은 이를 cleanup 의무로 보지 않음 (claude CLI 자체 책임).
 
 ---
 
@@ -199,17 +212,32 @@ cache-necromancer/
   "cwd": "/Users/brody/projects/vdit",
   "last_stop_at": "2026-05-12T14:30:00+09:00",
   "last_user_input_at": "2026-05-12T14:25:00+09:00",
+  "current_turn_started_at": null,
   "last_fire_at": null,
   "refresh_count": 0,
   "next_refresh_at": "2026-05-12T15:25:00+09:00",
   "imminent_notified": false,
   "consecutive_fire_failures": 0,
   "last_fire_reason": null,
+  "backoff_until": null,
+  "disabled": false,
+  "disabled_reason": null,
+  "disabled_at": null,
+  "cache_cold_retries": 0,
   "created_at": "2026-05-12T13:00:00+09:00"
 }
 ```
 
-`next_refresh_at`이 `null`이면 fire 직후 상태 (다음 Stop hook 대기). `last_fire_at`이 채워져 있고 watchdog 시간 초과면 자동 복구.
+**필드 설명 (v5.1 신설)**:
+- `current_turn_started_at`: UserPromptSubmit 시점에 기록. **현재 진행 중인 turn 시작 시각**. `last_user_input_at`은 매번 덮어쓰지만 이건 turn 동안 유지됨. Stop hook이 turn 종료 시 `last_user_input_at`을 덮어쓰기 직전의 값을 보존하는 용도. `after_fire` 판정에 사용.
+- `backoff_until`: transient 실패 시 exponential backoff. `next_refresh_at`과 별개로 "이 시각 전엔 재시도 금지" 가드.
+- `disabled` / `disabled_reason` / `disabled_at`: AUTH_ERROR 또는 연속 5회 실패 / CACHE_COLD 2회 retry 후 영구 비활성화. `delete_state` 대신 보존해 `/cn:status`에서 원인 확인 가능.
+- `cache_cold_retries`: CACHE_COLD 발생 횟수. 2회 도달하면 영구 disabled (1회는 일시적 가능성 인정).
+
+**상태 의미**:
+- `next_refresh_at`이 `null` AND `last_fire_at`도 `null` → 신규 세션 또는 disabled
+- `next_refresh_at`이 `null` AND `last_fire_at`이 채워짐 → fire 직후 watchdog 복구 대기 (예외 케이스. v5.1에서 정상 fire는 next_refresh_at 직접 갱신하므로 발생 빈도 매우 낮음)
+- `disabled=true` → 후보에서 영구 제외. `/cn:status`로 원인 확인 가능.
 
 ### 동시성
 
@@ -279,19 +307,31 @@ def delete_state(sid_hash: str):
 - `on_stop.py`, `on_user_prompt.py` → `True` (신규 세션 생성 OK)
 - `daemon/*` (poller, watchdog, refresh) → `False`
 
-### 갱신 판정 (전부 AND)
+### 갱신 판정 (전부 AND, v5.1)
 
 ```python
-def is_refresh_candidate(s: State, now: datetime, max_count: int) -> bool:
-    return (
-        s.next_refresh_at is not None
-        and now >= s.next_refresh_at
-        and s.refresh_count < max_count
-        and s.consecutive_fire_failures < 5  # 자동 비활성화 한도
-    )
+INTERACTIVE_INPUT_QUIET_SECONDS = 30  # 인터랙티브 input 직후 N초간 fire 금지 (rate limit 경쟁 완화)
+
+def is_refresh_candidate(s: State, now: datetime, config) -> bool:
+    if s.disabled:
+        return False
+    if s.next_refresh_at is None:
+        return False
+    if now < s.next_refresh_at:
+        return False
+    if s.refresh_count >= config.max_refresh_count:
+        return False
+    if s.backoff_until is not None and now < s.backoff_until:
+        return False  # transient 실패 후 backoff 중
+    # rate limit 경쟁 완화: 사용자 input 직후 30초 내 fire 금지
+    if (now - s.last_user_input_at).total_seconds() < INTERACTIVE_INPUT_QUIET_SECONDS:
+        return False
+    return True
 ```
 
-**v5에서 변경**: `last_stop_at > last_user_input_at` 비교 **제거**. headless는 인터랙티브 화면 안 건드리니 사용자 작업 중 보호는 `next_refresh_at` 자연 갱신만으로 충분.
+**v5.1 변경**: `disabled` / `backoff_until` 가드 + 인터랙티브 input quiet window 추가. `consecutive_fire_failures` 한도는 `disabled` 마커로 통합.
+
+**v4 → v5 변경 (참고)**: `last_stop_at > last_user_input_at` 비교 제거. headless는 인터랙티브 화면 안 건드리니 사용자 작업 중 보호는 `next_refresh_at` 자연 갱신만으로 충분.
 
 ---
 
@@ -301,21 +341,36 @@ def is_refresh_candidate(s: State, now: datetime, max_count: int) -> bool:
 
 ```python
 import subprocess, json
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Tuple, Optional
+from typing import Optional
 
 class FireReason(str, Enum):
     OK = "ok"
     CACHE_COLD = "cache_cold"              # cache_read=0 (캐시 이미 만료)
-    NETWORK_ERROR = "network_error"        # claude CLI 실패 (네트워크/일시)
+    NETWORK_ERROR = "network_error"        # 네트워크 / 일시적 API 오류
     AUTH_ERROR = "auth_error"              # 인증/권한 오류 (영구)
-    PROCESS_ERROR = "process_error"        # subprocess 자체 실패
+    PROCESS_ERROR = "process_error"        # subprocess 자체 실패 (claude 미설치 등)
     TIMEOUT = "timeout"                    # claude -p 응답 timeout
     BAD_OUTPUT = "bad_output"              # JSON 파싱 실패
 
-TRANSIENT_REASONS = {FireReason.NETWORK_ERROR, FireReason.TIMEOUT, FireReason.PROCESS_ERROR}
+# v5.1: BAD_OUTPUT은 transient로 분류 (claude CLI 일시 버그 가능성).
+# 단, BAD_OUTPUT 카운터가 2회 누적되면 별도 영구 disable (스키마 변경 가능성).
+TRANSIENT_REASONS = {
+    FireReason.NETWORK_ERROR,
+    FireReason.TIMEOUT,
+    FireReason.PROCESS_ERROR,
+    FireReason.BAD_OUTPUT,
+}
 PERMANENT_REASONS = {FireReason.AUTH_ERROR}
 
+# AUTH 감지 패턴 확장 (v5.1 MAJOR #4)
+AUTH_ERROR_PATTERNS = (
+    "authentication", "unauthorized", "login required",
+    "credential", "api key", "expired token", "forbidden",
+)
+
+@dataclass
 class FireResult:
     success: bool
     reason: FireReason
@@ -346,11 +401,11 @@ def fire(state: dict, config) -> FireResult:
         return FireResult(success=False, reason=FireReason.TIMEOUT)
     except (FileNotFoundError, PermissionError) as e:
         return FireResult(success=False, reason=FireReason.PROCESS_ERROR,
-                          raw_stdout=str(e))
+                          raw_stdout=str(e)[:500])
 
     if proc.returncode != 0:
-        # 인증 오류는 stderr 패턴으로 감지
-        if "authentication" in proc.stderr.lower() or "unauthorized" in proc.stderr.lower():
+        stderr_lower = proc.stderr.lower()
+        if any(p in stderr_lower for p in AUTH_ERROR_PATTERNS):
             return FireResult(success=False, reason=FireReason.AUTH_ERROR,
                               raw_stdout=proc.stderr[:500])
         return FireResult(success=False, reason=FireReason.NETWORK_ERROR,
@@ -373,68 +428,130 @@ def fire(state: dict, config) -> FireResult:
             result.success = False
             result.reason = FireReason.CACHE_COLD
         return result
-    except (json.JSONDecodeError, KeyError) as e:
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
         return FireResult(success=False, reason=FireReason.BAD_OUTPUT,
                           raw_stdout=proc.stdout[:500])
 ```
 
-### 호출 후 결과 처리
+### 호출 후 결과 처리 (v5.1 — 스케줄러 정합성 + backoff + 복구 경로)
 
 ```python
+import random
+from datetime import datetime, timedelta, timezone
+
+def _backoff_seconds(failure_count: int, base: float = 30.0, cap: float = 1800.0) -> float:
+    """exponential backoff with jitter. 30s, 60s, 120s, ... cap 30min."""
+    exp = min(cap, base * (2 ** (failure_count - 1)))
+    return exp * (0.5 + random.random() * 0.5)  # ±25% jitter
+
+def disable_session(s: State, reason: str, message: str, *, notify: bool = True):
+    """delete 대신 disabled 마커로 보존. /cn:status에서 원인 확인 가능."""
+    now = datetime.now(timezone.utc)
+    update_state(s.sid_hash, lambda x: {**x,
+        "disabled": True,
+        "disabled_reason": reason,
+        "disabled_at": now.isoformat(),
+        "next_refresh_at": None,
+        "last_fire_at": None,
+        "last_fire_reason": reason,
+    }, allow_create=False)
+    if notify:
+        notifier.notify(message)
+    log_warn(f"[disabled] sid={s.sid_hash} reason={reason}")
+
 def handle_fire_result(s: State, result: FireResult, config) -> None:
     max_fail = config.advanced.consecutive_fire_failures_disable  # 기본 5
+    max_cache_cold_retries = config.advanced.cache_cold_max_retries  # 기본 2
+    refresh_min = config.refresh_interval_minutes
+    now = datetime.now(timezone.utc)
 
     # 1. 모든 결과를 fire log에 기록 (Phase 4 raw data)
-    log_fire(s, result)
+    log_fire(s, result, now)
 
     if result.success:
+        # v5.1 핵심 수정 (MAJOR #1): 다음 갱신 시점을 데몬이 직접 설정.
+        # headless fire는 Stop hook을 만들지 않으므로 next_refresh_at 자동 갱신 안 됨.
+        # watchdog은 예외 복구 전용으로 둠.
         update_state(s.sid_hash, lambda x: {**x,
             "refresh_count": x["refresh_count"] + 1,
-            "next_refresh_at": None,
-            "last_fire_at": now_iso(),
+            "next_refresh_at": (now + timedelta(minutes=refresh_min)).isoformat(),
+            "last_fire_at": now.isoformat(),
             "imminent_notified": False,
             "consecutive_fire_failures": 0,
+            "cache_cold_retries": 0,
+            "backoff_until": None,
             "last_fire_reason": result.reason.value,
         }, allow_create=False)
         return
 
     # 실패 분기
+
+    # 영구 실패 (AUTH_ERROR): disabled 마커로 보존 (delete 안 함)
     if result.reason in PERMANENT_REASONS:
-        # AUTH_ERROR: 즉시 비활성화 + 사용자 알림
-        notifier.notify(f"🛑 {s.session_id[:8]} 인증 오류로 캐시 갱신 중지. "
-                        f"`/cn:status`로 확인.")
-        delete_state(s.sid_hash)
+        disable_session(
+            s, reason=result.reason.value,
+            message=(f"🛑 cache-necromancer: {s.session_id[:8]} "
+                     f"인증 오류로 비활성화. `/cn:status`로 확인."),
+        )
         return
 
+    # CACHE_COLD: 1회는 일시적 가능성 (스키마/timing) → retry. 2회 누적 시 영구 disable.
     if result.reason == FireReason.CACHE_COLD:
-        # 캐시 이미 만료. 더 fire해도 의미 없음 → next_refresh_at 비움.
-        log_info(f"[cache_cold] sid={s.sid_hash} ceasing refresh")
+        new_retries = s.cache_cold_retries + 1
+        if new_retries >= max_cache_cold_retries:
+            disable_session(
+                s, reason="cache_cold_persistent",
+                message=(f"💀 cache-necromancer: {s.session_id[:8]} "
+                         f"캐시가 계속 cold 상태. 비활성화. `/cn:status`로 확인."),
+            )
+            return
+        # 1회 retry: backoff 후 다음 사이클 재시도. refresh_count 증가 안 함.
+        backoff = _backoff_seconds(new_retries, base=120.0, cap=600.0)
+        log_warn(f"[cache_cold] sid={s.sid_hash} retry {new_retries}/{max_cache_cold_retries} "
+                 f"in {backoff:.0f}s")
         update_state(s.sid_hash, lambda x: {**x,
-            "next_refresh_at": None,
-            "last_fire_at": None,
-            "consecutive_fire_failures": 0,
+            "cache_cold_retries": new_retries,
+            "backoff_until": (now + timedelta(seconds=backoff)).isoformat(),
             "last_fire_reason": result.reason.value,
         }, allow_create=False)
         return
 
-    # 일시적 실패 (TRANSIENT_REASONS) → 카운터 증가
-    update_state(s.sid_hash, lambda x: {**x,
-        "consecutive_fire_failures": x.get("consecutive_fire_failures", 0) + 1,
-        "last_fire_reason": result.reason.value,
-    }, allow_create=False)
-
-    # 한도 도달 시 알림
-    new_count = s.consecutive_fire_failures + 1
-    if new_count == 3:
-        # 3회 연속 → 알림 (인지 가능한 실패)
-        notifier.notify(f"⚠️ {s.session_id[:8]} 3회 연속 fire 실패 ({result.reason.value})")
-    if new_count >= max_fail:
-        # 5회 연속 → 자동 비활성화
-        notifier.notify(f"🛑 {s.session_id[:8]} 5회 연속 실패로 자동 비활성화")
+    # 일시적 실패 (TRANSIENT_REASONS): exponential backoff + 카운터 증가
+    if result.reason in TRANSIENT_REASONS:
+        new_count = s.consecutive_fire_failures + 1
+        backoff = _backoff_seconds(new_count)
         update_state(s.sid_hash, lambda x: {**x,
-            "next_refresh_at": None,  # 더 이상 fire 후보 안 됨
+            "consecutive_fire_failures": new_count,
+            "backoff_until": (now + timedelta(seconds=backoff)).isoformat(),
+            "last_fire_reason": result.reason.value,
         }, allow_create=False)
+
+        # 3회 연속 → 알림 (인지 가능한 실패)
+        if new_count == 3:
+            notifier.notify(
+                f"⚠️ cache-necromancer: {s.session_id[:8]} 3회 연속 실패 "
+                f"({result.reason.value}). 다음 시도까지 {backoff:.0f}s."
+            )
+        # 5회 연속 → 영구 비활성화
+        if new_count >= max_fail:
+            disable_session(
+                s, reason=f"consecutive_failures_{result.reason.value}",
+                message=(f"🛑 cache-necromancer: {s.session_id[:8]} "
+                         f"{max_fail}회 연속 실패로 비활성화. `/cn:status`로 확인."),
+                notify=True,
+            )
+        return
+
+    # 도달 안 함 (모든 reason 분기 처리 완료)
+    log_warn(f"[unhandled_fire_reason] sid={s.sid_hash} reason={result.reason}")
 ```
+
+**v5.1 변경 요약 (MAJOR #1, #2, #3, #4)**:
+- 성공 fire 후 `next_refresh_at`을 데몬이 직접 갱신 → watchdog 의존 제거.
+- 실패 시 `backoff_until` 설정 → 즉시 재시도 안 함.
+- CACHE_COLD: 1회 retry 허용 후 영구 disable (스키마/timing 일시적 가능성 인정).
+- AUTH_ERROR: `delete_state` 대신 `disabled` 마커 보존 → `/cn:status`에서 원인 확인 가능.
+- 모든 영구 비활성화는 `disable_session()` 헬퍼를 통과해 disabled_reason 기록.
 
 ---
 
@@ -682,41 +799,81 @@ def sleep_with_cancel(seconds: float, sid_hash: str,
 
 ## Hook 흐름
 
-### Stop hook (`on_stop.py`)
+### Stop hook (`on_stop.py`) — v5.1
 
 ```
 stdin: { session_id, transcript_path, cwd, hook_event_name: "Stop", ... }
 
 1. sid_hash = sanitize(session_id)
-2. update_state(sid_hash, mutator, allow_create=True)
-     mutator: x → x | {
-         session_id: ...,
-         transcript_path: stdin["transcript_path"],  # user_turn log용
-         cwd: stdin["cwd"],                          # fire 시 cwd
-         last_stop_at: now,
-         next_refresh_at: now + 55min,
-         imminent_notified: False,
-         last_fire_at: None,                        # watchdog 복구 정리
-     }
-3. log [stop] sid=... next=...
-4. spawn_daemon_if_needed()
-5. exit 0
+2. transcript usage 추출 (bounded tail, ≤100ms):
+     usage = extract_last_turn_usage(stdin["transcript_path"])
+3. update_state(sid_hash, stop_mutator, allow_create=True)
+     # Stop hook이 유일한 세션 생성 권한 보유 (필수 필드 모두 채움).
+
+   def stop_mutator(x):
+       prev_user_input = x.get("last_user_input_at")
+       prev_turn_start = x.get("current_turn_started_at")
+       prev_last_fire = x.get("last_fire_at")
+
+       # after_fire 판정 (v5.1 MAJOR #7):
+       # 현재 turn 시작 시점 이전에 마지막 fire가 있었으면 = "necromancer 살린 캐시 활용"
+       after_fire = (
+           prev_turn_start is not None
+           and prev_last_fire is not None
+           and parse_iso(prev_last_fire) < parse_iso(prev_turn_start)
+       )
+
+       # user_turn log 기록 (Phase 2부터)
+       if usage and prev_turn_start:
+           log_user_turn(sid_hash, x.get("session_id"), usage, after_fire, now)
+
+       return {
+           **x,
+           "session_id": stdin["session_id"],
+           "sid_hash": sid_hash,
+           "transcript_path": stdin["transcript_path"],
+           "cwd": stdin["cwd"],
+           "last_stop_at": now.isoformat(),
+           "next_refresh_at": (now + timedelta(
+               minutes=config.refresh_interval_minutes)).isoformat(),
+           "imminent_notified": False,
+           "current_turn_started_at": None,    # turn 종료 → 다음 input 대기
+           # last_fire_at는 건드리지 않음 (watchdog/after_fire 판정용)
+           "created_at": x.get("created_at", now.isoformat()),
+       }
+
+4. log [stop] sid=... next=... after_fire=...
+5. spawn_daemon_if_needed()
+6. exit 0
 ```
 
-### UserPromptSubmit hook (`on_user_prompt.py`)
+**v5.1 변경 (MAJOR #7, #8)**:
+- `current_turn_started_at`은 UserPromptSubmit에서 설정되고 Stop에서 None으로 클리어. **이 turn 동안만 유효**.
+- after_fire 판정: `last_fire_at < current_turn_started_at` (현재 turn 시작 전에 fire가 있었는가).
+- Stop hook이 유일한 세션 생성 권한. session_id / sid_hash / transcript_path / cwd / created_at 모두 채움.
+
+### UserPromptSubmit hook (`on_user_prompt.py`) — v5.1
 
 ```
 stdin: { session_id, transcript_path, cwd, prompt, hook_event_name: "UserPromptSubmit" }
 
 1. sid_hash = sanitize(session_id)
 2. update_state(sid_hash,
-       mutator=lambda x: {**x, "last_user_input_at": now},
-       allow_create=True)
-   # last_user_input_at: hybrid cancel + after_fire 판정 + idle 셧다운에만 사용.
-   # 폴링 갱신 판정에는 영향 없음.
-3. log [user] sid=...
+       mutator=lambda x: {**x,
+           "last_user_input_at": now.isoformat(),
+           "current_turn_started_at": now.isoformat(),   # turn 시작 (v5.1)
+       },
+       allow_create=False)   # v5.1: 세션 생성 권한 없음 (Stop만).
+   # Stop hook이 한 번도 발화 안 한 신규 세션엔 state 파일이 없음. → skip.
+   # (실무: 신규 세션의 첫 input → 첫 응답 → Stop hook → state 생성 → 이후 input부터 정상 추적)
+3. log [user] sid=... (state 미존재 시 skip log)
 4. exit 0
 ```
+
+**v5.1 변경 (MAJOR #8)**:
+- `allow_create=False` → 신규 세션의 첫 input은 state 파일 못 만듦. 첫 Stop hook이 정식으로 생성.
+- 단점: 첫 사용자 input은 추적 안 됨 (~5분의 손실). 첫 fire는 첫 Stop 이후 55분.
+- 장점: 모든 state가 완전 필드 보유. `/cn:status`, idle shutdown, fire 후보 판정 모두 안전.
 
 ### SessionEnd hook (`on_session_end.py`)
 
@@ -754,30 +911,75 @@ UserPromptSubmit + Stop hook 페어로 추적. Stop hook이 transcript_path에�
 
 `after_fire` 판정: Stop hook 시점에 `(now - s.last_user_input_at) > config.advanced.user_idle_threshold_minutes` (기본 55분) 이고 그 사이에 fire가 있었으면 `true`.
 
-### `daemon/transcript.py` — transcript jsonl 마지막 turn 추출
+### `daemon/transcript.py` — transcript jsonl 마지막 turn 추출 (v5.1 bounded tail)
+
+**문제 (codex MAJOR #6)**: transcript JSONL을 처음부터 끝까지 순회하면 긴 세션에선 5초 hook timeout 초과 위험. Stop hook 비기능 요구사항은 `< 100ms`.
+
+**해법**: Stop hook은 **파일 끝에서 bounded tail 역방향 탐색**만 수행. 마지막 N KB만 읽고 가장 최근 assistant 메시지의 usage 추출.
 
 ```python
+import os
+from pathlib import Path
+from typing import Optional, Iterator
+import json
+
+TAIL_BYTES = 64 * 1024     # 마지막 64KB만 읽음 (대부분 assistant turn 1개 안에 포함)
+MAX_REVERSE_LINES = 200    # 안전 한도
+
+def _read_tail(path: Path, max_bytes: int) -> str:
+    """파일 끝에서 max_bytes만 읽음. UTF-8 boundary 안전 처리."""
+    with open(path, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        size = f.tell()
+        offset = max(0, size - max_bytes)
+        f.seek(offset)
+        chunk = f.read()
+    # UTF-8 multi-byte boundary 안전: 첫 번째 newline 이후부터 사용
+    if offset > 0:
+        idx = chunk.find(b"\n")
+        if idx >= 0:
+            chunk = chunk[idx + 1:]
+    try:
+        return chunk.decode("utf-8", errors="replace")
+    except UnicodeDecodeError:
+        return ""
+
 def extract_last_turn_usage(transcript_path: Path) -> Optional[dict]:
-    """Claude Code의 transcript JSONL에서 마지막 assistant 메시지의 usage 추출."""
-    if not transcript_path.exists():
+    """transcript JSONL 끝에서 역방향으로 가장 최근 assistant usage 탐색.
+    100ms 이내 완료 보장 (64KB read + 최대 200줄 파싱).
+    """
+    if not transcript_path or not transcript_path.exists():
         return None
-    last_assistant = None
-    with open(transcript_path) as f:
-        for line in f:
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if entry.get("type") == "assistant" or entry.get("role") == "assistant":
-                last_assistant = entry
-    if last_assistant is None:
+    try:
+        tail = _read_tail(transcript_path, TAIL_BYTES)
+    except (OSError, PermissionError):
         return None
-    # transcript 스키마에 따라 usage 위치가 다름. 안전한 키 탐색:
-    return (
-        last_assistant.get("message", {}).get("usage")
-        or last_assistant.get("usage")
-    )
+
+    lines = tail.splitlines()[-MAX_REVERSE_LINES:]
+    # 역방향 탐색: 가장 최근 assistant 메시지
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        entry_type = entry.get("type") or entry.get("role")
+        if entry_type != "assistant":
+            continue
+        usage = (
+            entry.get("message", {}).get("usage")
+            or entry.get("usage")
+        )
+        if usage:
+            return usage
+    return None
 ```
+
+**Stop hook이 호출**: ~50ms 이내 완료. 64KB는 대부분 assistant turn 한 개를 포함. 만약 매우 큰 단일 응답이 64KB를 초과하면 (드문 케이스) usage 못 찾고 None 반환 → user_turn log 그 turn은 누락 (acceptable degradation).
+
+**전체 transcript 파싱은 비동기 daemon job**: Phase 4 대시보드 영역에서 별도 처리 (Stop hook 안에서 안 함).
 
 **민감정보 미기록**: log에는 토큰 수와 sid_hash만. 사용자 프롬프트 내용, 응답 본문, 파일 경로, cwd 절대 기록 안 함. 7일 후 자동 삭제 (logger 회전).
 
@@ -798,30 +1000,44 @@ allowed-tools: Bash
 !`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/cn_status.py"`
 ```
 
+**현재 세션 식별 (v5.1 MAJOR #5)**: Claude Code는 Bash tool 서브프로세스에 `CLAUDE_CODE_SESSION_ID` 환경변수를 노출함. `cn_status.py`는 `os.environ.get("CLAUDE_CODE_SESSION_ID")`로 현재 세션을 확인하고, 그 세션을 `(this)`로 마킹. 환경변수가 없으면 `(this)` 표시 생략 (best-effort).
+
 `scripts/cn_status.py` 출력 예시:
 
 ```
 cache-necromancer 상태
 ─────────────────────
 데몬: 살아있음 (PID 12345, 시작 2026-05-12 12:00:00)
-추적 중인 세션: 2개
+추적 중인 세션: 3개 (active 2, disabled 1)
 
-[1] sid=a4f8c2 (this) 
+[1] sid=a4f8c2 (this)
     last_stop_at:        2026-05-12 14:30:00
+    current_turn:        없음 (idle)
     next_refresh_at:     2026-05-12 15:25:00 (in 5m 12s)
     refresh_count:       3 / 10
     last_fire:           14:25:00 (cache_read=45,844 ✅)
     consecutive_failures: 0
+    backoff_until:       —
 
 [2] sid=b5g9d3
     last_stop_at:        2026-05-12 13:50:00
-    next_refresh_at:     null (fire 후 watchdog 대기)
+    current_turn:        시작 14:46:00 (사용자 input 응답 대기 중)
+    next_refresh_at:     2026-05-12 14:45:00 (스케줄됨)
     refresh_count:       1 / 10
-    last_fire:           14:45:00 (cache_cold ⚠️)
+    last_fire:           14:30:00 (cache_read=42,100 ✅)
+    consecutive_failures: 0
 
-최근 24h fire 통계: 8회 (성공 7, 캐시콜드 1, 실패 0)
+[3] sid=c6h0e4  🛑 DISABLED
+    disabled_reason:     auth_error
+    disabled_at:         2026-05-12 14:10:00
+    조치:                claude --version 확인 후 인증 갱신
+                         그 후 새 세션을 시작하면 자동 추적 재개
+
+최근 24h fire 통계: 12회 (성공 10, cache_cold retry 1, network_error 1)
 설정: mode=hybrid, max_refresh_count=10
 ```
+
+`(this)` 마킹은 슬래시 명령이 Bash tool로 실행될 때 `CLAUDE_CODE_SESSION_ID`가 노출되는 것에 의존. 노출 안 되면 (다른 트리거 경로) 표시 생략.
 
 ### `/cn:dry-run`
 
@@ -880,8 +1096,11 @@ clock_drift_threshold_seconds = 30
 clock_drift_postpone_minutes = 5
 fire_stop_watchdog_seconds = 120
 consecutive_fire_failures_disable = 5        # 5회 연속 실패 시 자동 비활성화
+cache_cold_max_retries = 2                   # v5.1: CACHE_COLD 2회 누적 시 영구 disable
+backoff_base_seconds = 30.0                  # v5.1: transient 실패 시 exponential backoff 기본
+backoff_cap_seconds = 1800.0                 # v5.1: backoff 최대 (30분)
+interactive_input_quiet_seconds = 30         # v5.1: 사용자 input 후 N초 fire 금지
 state_lock_deadline_seconds = 4.0
-user_idle_threshold_minutes = 55             # after_fire 판정 기준
 ```
 
 ---
@@ -897,7 +1116,7 @@ user_idle_threshold_minutes = 55             # after_fire 판정 기준
 | claude CLI 미설치 | `FireReason.PROCESS_ERROR` → 연속 실패 카운터 |
 | 네트워크 오류 | `NETWORK_ERROR` → 3회 알림, 5회 자동 비활성화 |
 | 인증 오류 (auth_error) | 즉시 비활성화 + 사용자 알림 (영구) |
-| 캐시 이미 만료 (cache_read=0) | `CACHE_COLD` → 해당 세션 다음 사이클 중단 |
+| 캐시 이미 만료 (cache_read=0) | `CACHE_COLD` → 1회 retry (backoff 후) → 2회 누적 시 영구 disabled |
 | fire 응답 timeout (120s) | `TIMEOUT` → 일시적 실패 카운트 |
 | transcript jsonl 손상 | usage 추출 실패 → user_turn log 없이 진행 |
 | 시계 역행 (NTP) | DriftDetector가 monotonic 기반이라 무관 |
@@ -951,59 +1170,79 @@ user_idle_threshold_minutes = 55             # after_fire 판정 기준
 
 ---
 
-## 빌드 단계 (PR 분해)
+## 빌드 단계 (PR 분해, v5.1 — 기능 단위)
 
-### Phase 1 — 기반 + notify 모드 + `/cn:status` (PR ~200줄)
+PR 라인 수보다 **"이 PR이 완료되면 검증할 수 있는 것"** 단위로 분해. 각 PR은 그 자체로 동작 + 테스트 통과.
 
-1. 디렉토리 구조 + `plugin.json` + `hooks/hooks.json` + `config.toml.example`
-2. `lib/session_id.py` + tests
-3. `lib/state.py` (atomic + flock + allow_create) + tests
-4. `lib/lockfile.py` (stale PID + start_time) + tests
-5. `lib/config.py`, `lib/logger.py`
-6. `scripts/on_stop.py`, `on_user_prompt.py`, `on_session_end.py`
-7. `daemon/notifier.py` (osascript + bell)
-8. `daemon/clock.py` (DriftDetector) + tests
-9. `daemon/poller.py` (notify 모드만, 후보 판정)
-10. `daemon/__main__.py` (lockfile + run_poll_loop)
-11. `commands/cn:status.md` + `scripts/cn_status.py`
-12. fire.log 기록 (notify는 fire 없지만 imminent 알림 기록)
-13. 통합 테스트 + 수동 시나리오 #1, #4
+### Phase 1a — 상태/락/세션ID 기반 (PR 1)
+- `lib/session_id.py` + tests (sanitize + sha256 fallback)
+- `lib/state.py` (atomic + flock + allow_create) + tests
+- `lib/lockfile.py` (stale PID + start_time) + tests
+- `lib/config.py`, `lib/logger.py`
+- `.claude-plugin/plugin.json` + `config.toml.example`
+- **검증**: 단위 테스트 통과. 동시 쓰기 / stale PID / 손상 JSON 시나리오 모두 통과.
 
-**검증 가능한 것**: 55분 후 macOS 알림 발생 + `/cn:status`로 상태 확인 가능.
+### Phase 1b — Hook + 데몬 골격 + notify 모드 (PR 2)
+- `hooks/hooks.json`
+- `scripts/on_stop.py`, `on_user_prompt.py`, `on_session_end.py`
+- `daemon/notifier.py` (osascript + bell)
+- `daemon/clock.py` (DriftDetector) + tests
+- `daemon/poller.py` (notify 모드만)
+- `daemon/__main__.py` (lockfile + run_poll_loop)
+- fire.log 골격 (notify는 imminent 알림만 기록)
+- **검증**: 실제 Claude Code에서 55분 후 macOS 알림 발생 + 데몬 자동 기동/종료.
 
-### Phase 2 — fire + auto/hybrid + watchdog + user_turn log + `/cn:dry-run` (PR ~150줄)
+### Phase 1c — `/cn:status` 명령 (PR 3)
+- `commands/cn:status.md` + `scripts/cn_status.py`
+- `CLAUDE_CODE_SESSION_ID` 환경변수 활용 + `(this)` 마킹
+- 데몬 상태 / 추적 세션 / disabled 세션 표시
+- **검증**: `/cn:status` 호출 시 v5.1 출력 예시와 동일한 결과.
 
-1. `daemon/refresh.py` (claude -p 호출 + 결과 파싱 + FireReason 분기) + tests
-2. `handle_fire_result` (PERMANENT / TRANSIENT / CACHE_COLD 분기) + tests
-3. `daemon/watchdog.py` (fire→Stop 누락 복구) + tests
-4. `daemon/transcript.py` (jsonl 마지막 turn usage 추출) + tests
-5. `poller.py`에 auto/hybrid 분기 추가 + sleep_with_cancel
-6. user_turn log 기록 (Stop hook이 transcript 파싱해서 after_fire 판정)
-7. 연속 실패 알림 (3회) + 자동 비활성화 (5회)
-8. `commands/cn:dry-run.md` + `scripts/cn_dry_run.py`
-9. 통합 테스트 + 수동 시나리오 #2, #3, #5, #6, #7
+### Phase 2a — fire 호출 + FireReason 분기 (PR 4)
+- `daemon/refresh.py` (claude -p 호출 + JSON 파싱) + tests (subprocess mock)
+- `FireResult` dataclass + 7개 `FireReason` 모든 분기
+- AUTH_ERROR 패턴 감지 + `disable_session()` 헬퍼
+- **검증**: 단위 테스트 + 실제 `claude -p hi` 통합 테스트 (cache_read 측정 확인).
 
-**검증 가능한 것**: 실제 fire 발생 + cache_read > 0 + Net saved 추정 가능 + 실패 시 사용자 알림.
+### Phase 2b — auto/hybrid 모드 + 스케줄러 (PR 5)
+- `handle_fire_result` (성공 시 next_refresh_at 직접 갱신, 실패 시 backoff)
+- exponential backoff + jitter (`_backoff_seconds`)
+- `INTERACTIVE_INPUT_QUIET_SECONDS=30` 가드
+- poller에 auto/hybrid 분기 + `sleep_with_cancel`
+- CACHE_COLD 1회 retry → 2회 누적 시 disable
+- **검증**: 자동 fire 발생 + 실패 시 backoff 대기 + 연속 5회 자동 disable.
 
-### Phase 3 — 공개 배포 준비 (PR ~50줄 + 문서)
+### Phase 2c — watchdog + user_turn log + `/cn:dry-run` (PR 6)
+- `daemon/watchdog.py` (예외 복구 전용, fire→Stop 누락 시)
+- `daemon/transcript.py` (bounded tail, 100ms 이내)
+- `current_turn_started_at` 기반 `after_fire` 판정
+- user_turn log 기록 (Phase 4 raw data)
+- `commands/cn:dry-run.md` + `scripts/cn_dry_run.py`
+- 연속 실패 알림 (3회 / 5회) + AUTH_ERROR 즉시 알림
+- **검증**: 모든 수동 시나리오 (PRD v3 6개) 통과 + log에서 Net saved 추정 가능.
 
-1. `marketplace.json` (Anthropic plugin marketplace 등록 정보)
-2. `userConfig` 활용한 첫 설치 시 모드 안내
-3. README (설치 / 추천 사용 패턴 / 안전성 확인 / 트러블슈팅)
-4. LICENSE (MIT), CHANGELOG, ISSUE_TEMPLATE
-5. 데모 GIF (선택)
+### Phase 3 — 공개 배포 준비 (PR 7)
+- `marketplace.json`
+- `userConfig` 활용한 첫 설치 시 모드 안내
+- README (설치 / 추천 사용 패턴 / 안전성 확인 / 트러블슈팅)
+- LICENSE (MIT), CHANGELOG, ISSUE_TEMPLATE
+- 데모 GIF (선택)
+- **검증**: 외부 사용자가 `/plugin install` 한 줄로 설치 후 README만 보고 안전하게 사용 시작.
 
-**검증 가능한 것**: 외부 사용자가 `/plugin install` 한 줄로 설치 후 README 보고 안전하게 사용 시작.
+**v5.1 변경 (MINOR #3)**: 라인 수 목표 제거. PR 7개로 세분화 (1a/1b/1c/2a/2b/2c/3). 각 PR은 단일 검증 가능한 기능 단위.
 
 ---
 
 ## 한계 (사용자에게 명시)
 
-- **캐시 hit 보장 불가**: Anthropic 캐시 정책이 변경되면 fire 효과 없을 수 있음. `cache_read=0`이면 log 경고 + 해당 사이클 중단.
-- **사용자 타이핑 중 입력 끼어듦은 헤드레스라 발생 안 함**: fire는 별도 프로세스라 인터랙티브 화면 영향 0. 단, fire가 점유하는 동안 단기 네트워크 / API rate limit이 인터랙티브 호출과 경쟁할 수 있음 (Anthropic API의 동시 호출 제한).
+- **캐시 hit 보장 불가**: Anthropic 캐시 정책이 변경되면 fire 효과 없을 수 있음. CACHE_COLD 2회 누적 시 영구 disable.
+- **사용자 타이핑 중 입력 끼어듦은 헤드레스라 발생 안 함**: fire는 별도 프로세스라 인터랙티브 화면 영향 0. 단:
+  - fire가 점유하는 동안 단기 네트워크 / Anthropic API rate limit이 인터랙티브 호출과 경쟁 가능. v5.1은 `INTERACTIVE_INPUT_QUIET_SECONDS=30`으로 사용자 input 후 30초 내 fire 금지 → 경쟁 완화.
 - **자동 비용 최적화 없음**: v1은 시간 기반 fire만. 사용 패턴 분석은 v0.2 대시보드에서.
 - **모델별 가격 동적 계산 없음**: log에는 토큰 수만. Phase 4에서 가격 테이블 곱.
-- **fork session jsonl이 디스크에 잠시 생성 후 즉시 삭제**: 실험으로 확인. `--no-session-persistence` 덕분.
+- **fork session transcript 일시 생성**: claude CLI 내부에서 `--no-session-persistence`로 처리되지만, 프로세스 실행 중인 짧은 윈도우 동안 디스크에 일시 파일이 있을 수 있음. v1은 이를 명시적 책임으로 보지 않음 (claude CLI 자체 정리에 위임).
+- **신규 세션의 첫 input은 추적 안 됨**: UserPromptSubmit `allow_create=False` (불완전 state 방지). 첫 Stop hook 발화 이후부터 정식 추적 시작 (~5분 손실).
+- **transcript bounded tail (64KB)을 초과하는 큰 응답의 usage는 누락 가능**: 매우 드문 케이스. user_turn log에 해당 turn만 빠짐 (절약 모델 추정에 미세 영향).
 
 ---
 
