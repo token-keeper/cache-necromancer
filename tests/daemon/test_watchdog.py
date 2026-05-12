@@ -41,8 +41,9 @@ def test_watchdog_noop_when_next_refresh_at_present():
         last_fire_at=(now - timedelta(seconds=200)).isoformat(),
     )
     with patch("daemon.watchdog.update_state") as mock_update:
-        watchdog.watchdog_check(s, now, Config())
+        result = watchdog.watchdog_check(s, now, Config())
     mock_update.assert_not_called()
+    assert result is False
 
 
 def test_watchdog_noop_when_last_fire_at_missing():
@@ -83,8 +84,9 @@ def test_watchdog_recovers_after_threshold():
     )
     with patch("daemon.watchdog.update_state") as mock_update, \
          patch("daemon.watchdog.log_warn") as mock_warn:
-        watchdog.watchdog_check(s, now, Config())
+        result = watchdog.watchdog_check(s, now, Config())
 
+    assert result is True  # caller가 sessions 재로드 결정에 활용
     mock_warn.assert_called_once()
     assert "watchdog" in mock_warn.call_args.args[0]
     mock_update.assert_called_once()
@@ -137,8 +139,9 @@ def test_watchdog_update_state_oserror_swallowed():
         "daemon.watchdog.update_state",
         side_effect=OSError("disk full"),
     ), patch("daemon.watchdog.log_warn") as mock_warn:
-        watchdog.watchdog_check(s, now, Config())
+        result = watchdog.watchdog_check(s, now, Config())
 
+    assert result is False  # OSError 발생 시 변경 실패 → False
     # watchdog 본체 + update_state 실패 로그 두 줄
     messages = [c.args[0] for c in mock_warn.call_args_list]
     assert any("watchdog" in m and "fire→Stop" in m for m in messages)

@@ -181,9 +181,18 @@ def run_poll_loop(config: Config) -> None:
 
         now = datetime.now(timezone.utc)
 
-        # watchdog: fire→Stop 누락 세션 복구 (다른 처리보다 먼저 실행)
+        # watchdog: fire→Stop 누락 세션 복구 (다른 처리보다 먼저 실행).
+        # 어떤 세션이라도 복구됐으면 sessions snapshot이 stale 하므로 재로드해
+        # handle_session 이 갱신된 next_refresh_at 으로 동작하게 한다.
+        recovered = False
         for s in sessions:
-            watchdog.watchdog_check(s, now, config)
+            if watchdog.watchdog_check(s, now, config):
+                recovered = True
+        if recovered:
+            sessions = load_all_states()
+            if not sessions:
+                log_info("[daemon] no sessions after watchdog; shutting down")
+                return
 
         for s in sessions:
             handle_session(s, now, config)

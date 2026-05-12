@@ -69,6 +69,9 @@ def extract_last_turn_usage(transcript_path: Optional[Path]) -> Optional[dict]:
         entry_type = entry.get("type") or entry.get("role")
         if entry_type != "assistant":
             continue
+        # **첫 assistant entry에서 결정** — 더 이전 entry로 fallback 금지.
+        # 그 안에 usage가 없으면 이번 turn은 usage 미상이므로 None 반환
+        # (이전 turn의 usage를 잘못 사용해 user_turn log를 오염시키는 결함 차단).
         message = entry.get("message")
         usage = None
         if isinstance(message, dict):
@@ -77,4 +80,5 @@ def extract_last_turn_usage(transcript_path: Optional[Path]) -> Optional[dict]:
             usage = entry.get("usage")
         if isinstance(usage, dict) and usage:
             return usage
+        return None
     return None

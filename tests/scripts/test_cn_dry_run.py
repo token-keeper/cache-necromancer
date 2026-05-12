@@ -31,7 +31,7 @@ def test_dry_run_no_sessions(dry_module, capsys, monkeypatch):
 def test_dry_run_lists_sessions_with_next_refresh(dry_module, capsys):
     now = datetime.now(timezone.utc)
     state = {
-        "session_id": "abc12345",
+        "session_id": "abc12345-full-session-id-xyz",
         "sid_hash": "abc12345",
         "transcript_path": "/t",
         "cwd": "/t",
@@ -59,6 +59,9 @@ def test_dry_run_lists_sessions_with_next_refresh(dry_module, capsys):
     assert "--resume" in out
     assert "--fork-session" in out
     assert "--no-session-persistence" in out
+    # MAJOR 회귀 가드: full session_id 가 그대로 노출되면 안 됨 — sid_hash로 마스킹
+    assert "abc12345-full-session-id-xyz" not in out
+    assert "<sid:abc12345>" in out
 
 
 def test_dry_run_marks_disabled_sessions(dry_module, capsys):

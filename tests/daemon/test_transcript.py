@@ -133,6 +133,25 @@ def test_extract_returns_none_when_all_assistant_lack_usage(tmp_path):
     assert extract_last_turn_usage(path) is None
 
 
+def test_extract_does_not_fallback_to_older_turn_usage(tmp_path):
+    """MAJOR 회귀 가드: 최신 assistant에 usage 없으면 None — 더 이전 turn 사용 금지.
+
+    이전 turn의 usage를 잘못 가져와 user_turn log를 오염시키는 결함 차단.
+    """
+    from daemon.transcript import extract_last_turn_usage
+
+    path = tmp_path / "t.jsonl"
+    _write_jsonl(path, [
+        # 과거 assistant — usage 있음
+        {"type": "assistant", "message": {"usage": {"cache_read_input_tokens": 99999}}},
+        {"type": "user", "message": {"content": "next user turn"}},
+        # 최신 assistant — usage 없음 (이번 turn은 usage 미상)
+        {"type": "assistant", "message": {"content": "no usage here"}},
+    ])
+    # 과거 99999가 아니라 None 반환
+    assert extract_last_turn_usage(path) is None
+
+
 def test_extract_handles_permission_error(tmp_path):
     """파일 읽기 OSError/PermissionError → None (Stop hook 안전 보장)."""
     from daemon.transcript import extract_last_turn_usage

@@ -65,18 +65,23 @@ class FireResult:
     raw_stdout: str = ""
 
 
-def fire(state: dict, config) -> FireResult:
-    """``claude -p`` 헤드레스 호출. usage 추출 후 FireReason 분기.
-
-    cwd는 원본 세션 cwd로 실행 — credential / claude config 정합.
-    """
-    cmd = [
+def build_fire_command(state: dict, config) -> list[str]:
+    """``claude -p`` 호출 argv. 실제 호출과 dry-run 출력이 공유."""
+    return [
         "claude", "-p", config.refresh.prompt,
         "--resume", state["session_id"],
         "--fork-session",
         "--no-session-persistence",
         "--output-format", "json",
     ]
+
+
+def fire(state: dict, config) -> FireResult:
+    """``claude -p`` 헤드레스 호출. usage 추출 후 FireReason 분기.
+
+    cwd는 원본 세션 cwd로 실행 — credential / claude config 정합.
+    """
+    cmd = build_fire_command(state, config)
     try:
         proc = subprocess.run(
             cmd,

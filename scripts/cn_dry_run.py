@@ -6,6 +6,7 @@
 - backoff_until / refresh_count / consecutive_fire_failures 같은 운영 정보 함께 표시
 """
 import os
+import shlex
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,8 +16,25 @@ _PROJECT_ROOT = _HERE.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from daemon.refresh import build_fire_command  # noqa: E402
 from lib.config import load_config  # noqa: E402
 from lib.state import load_all_states, parse_iso  # noqa: E402
+
+
+def _redact_command(cmd: list[str], sid_hash: str) -> str:
+    """`--resume <full-id>` 의 full id를 sid_hash로 마스킹해 출력 안전 보장.
+
+    실제 호출은 원본 argv로 가지만, dry-run 텍스트가 transcript 등으로 새 나가도
+    원본 session_id 가 그대로 노출되지 않도록 한다.
+    """
+    redacted = list(cmd)
+    try:
+        idx = redacted.index("--resume")
+    except ValueError:
+        return shlex.join(redacted)
+    if idx + 1 < len(redacted):
+        redacted[idx + 1] = f"<sid:{sid_hash}>"
+    return shlex.join(redacted)
 
 
 def _resolve_root() -> Path:
@@ -65,12 +83,8 @@ def _format_active(s: dict, now: datetime, config) -> list[str]:
     lines.append(
         f"      mode:         {_mode_label(config.mode, config)}"
     )
-    cmd = (
-        f'claude -p "{config.refresh.prompt}" '
-        f'--resume {s.get("session_id", "<sid>")} '
-        f'--fork-session --no-session-persistence --output-format json'
-    )
-    lines.append(f"      command:      {cmd}")
+    argv = build_fire_command(s, config)
+    lines.append(f"      command:      {_redact_command(argv, sid)}")
     cwd = s.get("cwd")
     if cwd:
         lines.append(f"      cwd:          {cwd}")

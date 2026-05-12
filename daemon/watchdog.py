@@ -28,23 +28,25 @@ def _safe_parse_iso(s: dict, field: str) -> Optional[datetime]:
         return None
 
 
-def watchdog_check(s: dict, now: datetime, config: Config) -> None:
+def watchdog_check(s: dict, now: datetime, config: Config) -> bool:
     """누락된 fire→Stop 흐름 복구.
 
     조건:
     - ``next_refresh_at`` 이 None
     - ``last_fire_at`` 이 채워짐
     - 경과 시간 > ``fire_stop_watchdog_seconds``
+
+    return: state를 갱신했으면 True (caller 가 sessions 재로드 결정에 활용).
     """
     if s.get("next_refresh_at") is not None:
-        return
+        return False
     last_fire = _safe_parse_iso(s, "last_fire_at")
     if last_fire is None:
-        return
+        return False
     elapsed = (now - last_fire).total_seconds()
     threshold = config.advanced.fire_stop_watchdog_seconds
     if elapsed <= threshold:
-        return
+        return False
 
     log_warn(
         f"[watchdog] fire→Stop missing for {elapsed:.0f}s, "
@@ -64,7 +66,9 @@ def watchdog_check(s: dict, now: datetime, config: Config) -> None:
 
     try:
         update_state(s["sid_hash"], _mut, allow_create=False)
+        return True
     except OSError as e:
         log_warn(
             f"[watchdog] update_state failed sid={s.get('sid_hash')} err={e}"
         )
+        return False
