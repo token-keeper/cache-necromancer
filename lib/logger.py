@@ -49,8 +49,13 @@ def _append(filename_prefix: str, line: str) -> None:
         except OSError:
             pass
         path = LOG_DIR / f"{filename_prefix}.{_today_suffix()}"
-        # 파일이 없으면 0600으로 생성, 있으면 그대로 append
+        # 파일이 없으면 0600으로 생성, 있어도 매번 fchmod로 강제 적용
+        # (기존 파일이 더 관대한 권한이어도 0600 보장)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+        except OSError:
+            pass
         try:
             with os.fdopen(fd, "a") as f:
                 f.write(line + "\n")

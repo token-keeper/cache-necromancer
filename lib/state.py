@@ -75,11 +75,15 @@ def acquire_state_lock_with_timeout(
 ) -> IO:
     """non-blocking flock + deadline retry (10ms 간격).
 
+    Lock 파일은 0600 권한으로 생성. ``os.open`` 으로 mode 인자 명시해
+    umask 의존을 제거한다.
+
     Raises:
         StateLockTimeout: deadline 안에 락을 못 잡은 경우.
     """
     deadline = time.monotonic() + timeout
-    f = open(lock_path, "a+")
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
+    f = os.fdopen(fd, "a+")
     while True:
         try:
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -113,7 +117,11 @@ def _quarantine_corrupt(path: Path) -> None:
 
 
 def _atomic_write_state(path: Path, data: dict) -> None:
-    """tmp 파일 → 0600 권한 부여 → os.replace로 atomic rename."""
+    """tmp 파일 → 0600 권한 강제 → os.replace로 atomic rename.
+
+    stale tmp 파일이 이미 존재해도 ``os.fchmod`` 로 0600 보장.
+    fdopen 실패 시 raw fd close + tmp 삭제로 자원 누수 차단.
+    """
     tmp = path.with_suffix(".json.tmp")
     fd = os.open(
         tmp,
@@ -121,7 +129,20 @@ def _atomic_write_state(path: Path, data: dict) -> None:
         0o600,
     )
     try:
-        with os.fdopen(fd, "w") as f:
+        os.fchmod(fd, 0o600)  # stale tmp가 더 관대한 권한이어도 강제 적용
+    except OSError:
+        pass
+    try:
+        f = os.fdopen(fd, "w")
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        tmp.unlink(missing_ok=True)
+        raise
+    try:
+        with f:
             json.dump(data, f, indent=2)
     except Exception:
         tmp.unlink(missing_ok=True)
@@ -186,6 +207,12 @@ def delete_state(sid_hash: str) -> None:
     """state 파일 + lock 파일을 per-session lock 획득 후 정리.
 
     SessionEnd hook과 poller GC가 호출한다. orphan ``.lock`` 누수 방지.
+
+    Race window 명시: 락 보유 중에 lock_path를 unlink한다. POSIX에서는
+    이미 열린 fd는 anonymous inode로 유지되어 락이 계속 유효. 다른
+    프로세스가 unlink 후 close 사이에 같은 이름의 새 파일을 만들면 다른
+    inode를 잡지만, state json은 이미 삭제됐으므로 그 프로세스의
+    ``update_state(allow_create=False)`` 는 조기 return → 무해.
     """
     path = STATE_DIR / f"{sid_hash}.json"
     lock_path = STATE_DIR / f"{sid_hash}.lock"
@@ -198,11 +225,11 @@ def delete_state(sid_hash: str) -> None:
         return
     try:
         path.unlink(missing_ok=True)
+        # 락 보유 중 lock 파일 unlink (anonymous inode로 유지)
+        lock_path.unlink(missing_ok=True)
     finally:
         fcntl.flock(lock_f, fcntl.LOCK_UN)
         lock_f.close()
-        # lock fd close 후 unlink (close가 inode 해제 → 다른 프로세스가 잡고 있어도 안전)
-        lock_path.unlink(missing_ok=True)
 
 
 def load_state(sid_hash: str) -> Optional[dict]:

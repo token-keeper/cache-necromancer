@@ -66,7 +66,17 @@ def acquire_daemon_lock(lock_path: Path) -> Optional[IO]:
         os.chmod(parent, 0o700)
     except OSError:
         pass
-    f = open(lock_path, "a+")
+
+    def _open_lockfile() -> IO:
+        """os.open 으로 mode 명시 → umask 의존 제거. 0600 권한 즉시 강제."""
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+        except OSError:
+            pass
+        return os.fdopen(fd, "a+")
+
+    f = _open_lockfile()
     try:
         fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
@@ -74,7 +84,7 @@ def acquire_daemon_lock(lock_path: Path) -> Optional[IO]:
         if is_daemon_alive(lock_path):
             return None
         # stale → 재시도
-        f = open(lock_path, "a+")
+        f = _open_lockfile()
         try:
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -87,8 +97,4 @@ def acquire_daemon_lock(lock_path: Path) -> Optional[IO]:
     pid = os.getpid()
     f.write(json.dumps({"pid": pid, "started": proc_start_time(pid)}))
     f.flush()
-    try:
-        os.chmod(lock_path, 0o600)
-    except OSError:
-        pass
     return f
