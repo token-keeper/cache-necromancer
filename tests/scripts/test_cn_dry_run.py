@@ -96,6 +96,38 @@ def test_dry_run_marks_disabled_sessions(dry_module, capsys):
     assert "will fire" not in out.lower()
 
 
+def test_dry_run_does_not_crash_when_session_id_missing(dry_module, capsys):
+    """MINOR 회귀 가드: 손상된 state(session_id 누락)에서도 dry-run 전체가 실패하지 않음."""
+    now = datetime.now(timezone.utc)
+    # session_id 키 자체가 없는 비정상 state
+    state = {
+        "sid_hash": "broken1",
+        "transcript_path": "/t",
+        "cwd": "/t",
+        "last_stop_at": None,
+        "last_user_input_at": None,
+        "current_turn_started_at": None,
+        "last_fire_at": None,
+        "refresh_count": 0,
+        "next_refresh_at": (now + timedelta(minutes=5)).isoformat(),
+        "imminent_notified": False,
+        "consecutive_fire_failures": 0,
+        "last_fire_reason": None,
+        "backoff_until": None,
+        "disabled": False,
+        "disabled_reason": None,
+        "disabled_at": None,
+        "cache_cold_retries": 0,
+        "created_at": now.isoformat(),
+    }
+    with patch("scripts.cn_dry_run.load_all_states", return_value=[state]):
+        assert dry_module.main() == 0
+    out = capsys.readouterr().out
+    # session_id 없어도 출력 진행 + unknown fallback 표시
+    assert "broken1" in out
+    assert "<unknown>" in out or "<sid:" in out
+
+
 def test_dry_run_shows_mode_and_command_line(dry_module, capsys):
     now = datetime.now(timezone.utc)
     state = {

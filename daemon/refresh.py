@@ -66,10 +66,15 @@ class FireResult:
 
 
 def build_fire_command(state: dict, config) -> list[str]:
-    """``claude -p`` 호출 argv. 실제 호출과 dry-run 출력이 공유."""
+    """``claude -p`` 호출 argv. 실제 호출과 dry-run 출력이 공유.
+
+    state에 ``session_id`` 가 없으면 ``<unknown>`` 으로 fallback — dry-run 이
+    손상된 state 하나 때문에 전체 실패하지 않게 보호 (실제 fire 호출은 unknown
+    이 들어가도 claude CLI 가 NETWORK_ERROR/AUTH_ERROR 분기로 잡음).
+    """
     return [
         "claude", "-p", config.refresh.prompt,
-        "--resume", state["session_id"],
+        "--resume", state.get("session_id") or "<unknown>",
         "--fork-session",
         "--no-session-persistence",
         "--output-format", "json",
