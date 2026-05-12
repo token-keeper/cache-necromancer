@@ -260,6 +260,48 @@ def test_log_fire_called_for_every_result():
 
 # ---------- update_state OSError 흡수 ----------
 
+def test_handle_unknown_reason_logs_warn_only():
+    """MINOR 회귀 가드: 어떤 분기에도 잡히지 않는 reason은 log_warn 한 줄만.
+
+    실수로 FireReason이 추가되어 handle_fire_result에 분기 추가가 누락된 경우,
+    silent fail 안 하도록 log 발생을 강제.
+    """
+    from daemon import handler
+    from daemon.refresh import FireResult
+
+    # success=False + reason이 어떤 set에도 안 속하는 가짜 enum 객체
+    class _UnknownReason:
+        value = "unknown_for_test"
+
+        def __repr__(self):
+            return "FakeReason"
+
+    fake = _UnknownReason()
+    s = _make_state()
+    result = FireResult.__new__(FireResult)
+    object.__setattr__(result, "success", False)
+    object.__setattr__(result, "reason", fake)
+    object.__setattr__(result, "cache_read", 0)
+    object.__setattr__(result, "cache_create", 0)
+    object.__setattr__(result, "input_tokens", 0)
+    object.__setattr__(result, "output_tokens", 0)
+    object.__setattr__(result, "model", None)
+    object.__setattr__(result, "raw_stdout", "")
+
+    with patch("daemon.handler.update_state") as mock_update, \
+         patch("daemon.handler.disable_session") as mock_disable, \
+         patch("daemon.handler.notifier.notify") as mock_notify, \
+         patch("daemon.handler.log_fire"), \
+         patch("daemon.handler.log_warn") as mock_warn:
+        handler.handle_fire_result(s, result, Config())
+
+    mock_update.assert_not_called()
+    mock_disable.assert_not_called()
+    mock_notify.assert_not_called()
+    mock_warn.assert_called_once()
+    assert "unhandled reason" in mock_warn.call_args.args[0]
+
+
 def test_handle_success_update_state_oserror_swallowed():
     from daemon import handler
     from daemon.refresh import FireReason, FireResult

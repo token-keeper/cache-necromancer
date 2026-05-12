@@ -54,8 +54,11 @@ def test_execute_mode_notify_emits_alarm_and_marks():
     assert new_state["imminent_notified"] is True
 
 
-def test_execute_mode_notify_update_state_oserror_swallowed():
-    """notify 모드에서 imminent_notified 마킹 시 OSError 흡수 (daemon 보호)."""
+def test_execute_mode_notify_update_state_oserror_swallowed_and_logged():
+    """notify 모드 imminent_notified 마킹 시 OSError 흡수 + log_warn 한 줄.
+
+    MINOR 회귀 가드: 다른 callsite와 동일하게 log_warn 패턴 유지.
+    """
     from daemon import scheduler
 
     s = _make_state(imminent_notified=False)
@@ -65,9 +68,12 @@ def test_execute_mode_notify_update_state_oserror_swallowed():
          patch(
              "daemon.scheduler.update_state",
              side_effect=OSError("disk full"),
-         ):
-        # 예외 전파 없이 정상 리턴
+         ), \
+         patch("daemon.scheduler.log_warn") as mock_warn:
         scheduler.execute_mode(s, config)
+
+    mock_warn.assert_called_once()
+    assert "notify mark update_state failed" in mock_warn.call_args.args[0]
 
 
 def test_execute_mode_notify_skips_when_already_notified():
@@ -157,6 +163,31 @@ def test_execute_mode_hybrid_state_deleted_during_wait_skips_fire():
         scheduler.execute_mode(s, config)
 
     mock_fire.assert_not_called()
+
+
+def test_execute_mode_hybrid_disabled_during_wait_skips_fire():
+    """MAJOR 회귀 가드: hybrid wait 중 세션이 disabled로 변하면 fire 금지."""
+    from daemon import scheduler
+
+    s = _make_state(sid_hash="abc")
+    config = Config(mode="hybrid")
+    fresh = _make_state(
+        sid_hash="abc", disabled=True, disabled_reason="auth_error"
+    )
+
+    with patch("daemon.scheduler.notifier.notify"), \
+         patch("daemon.scheduler.sleep_with_cancel", return_value=False), \
+         patch("daemon.scheduler.load_state", return_value=fresh), \
+         patch("daemon.scheduler.refresh.fire") as mock_fire, \
+         patch("daemon.scheduler.handler.handle_fire_result") as mock_handle, \
+         patch("daemon.scheduler.log_info") as mock_log:
+        scheduler.execute_mode(s, config)
+
+    mock_fire.assert_not_called()
+    mock_handle.assert_not_called()
+    assert any(
+        "cancel-disabled" in c.args[0] for c in mock_log.call_args_list
+    )
 
 
 # ---------- sleep_with_cancel ----------
