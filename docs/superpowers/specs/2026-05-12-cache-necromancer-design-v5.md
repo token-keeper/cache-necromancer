@@ -799,7 +799,40 @@ def sleep_with_cancel(seconds: float, sid_hash: str,
 
 ## Hook 흐름
 
-### Stop hook (`on_stop.py`) — v5.1
+### Stop hook (`on_stop.py`) — v5.1 (CRITICAL 수정: default_state factory)
+
+**문제 (codex v5.1 리뷰 CRITICAL)**: 빈 `x={}`에서 mutator 시작 시 신설 필드들이 누락되어 `is_refresh_candidate` 등이 crash 위험.
+
+**해법**: `default_state()` factory를 호출해 모든 필수 필드를 채운 base를 만들고, stop_mutator가 그 위에 override.
+
+```python
+from datetime import datetime, timezone
+
+def default_state(session_id: str, sid_hash: str, transcript_path: str,
+                  cwd: str, now: datetime) -> dict:
+    """모든 필드를 안전한 기본값으로 채운 신규 state."""
+    return {
+        "session_id": session_id,
+        "sid_hash": sid_hash,
+        "transcript_path": transcript_path,
+        "cwd": cwd,
+        "last_stop_at": None,
+        "last_user_input_at": None,
+        "current_turn_started_at": None,
+        "last_fire_at": None,
+        "refresh_count": 0,
+        "next_refresh_at": None,
+        "imminent_notified": False,
+        "consecutive_fire_failures": 0,
+        "last_fire_reason": None,
+        "backoff_until": None,
+        "disabled": False,
+        "disabled_reason": None,
+        "disabled_at": None,
+        "cache_cold_retries": 0,
+        "created_at": now.isoformat(),
+    }
+```
 
 ```
 stdin: { session_id, transcript_path, cwd, hook_event_name: "Stop", ... }
@@ -808,10 +841,15 @@ stdin: { session_id, transcript_path, cwd, hook_event_name: "Stop", ... }
 2. transcript usage 추출 (bounded tail, ≤100ms):
      usage = extract_last_turn_usage(stdin["transcript_path"])
 3. update_state(sid_hash, stop_mutator, allow_create=True)
-     # Stop hook이 유일한 세션 생성 권한 보유 (필수 필드 모두 채움).
+     # Stop hook이 유일한 세션 생성 권한 보유 (default_state factory 사용).
 
    def stop_mutator(x):
-       prev_user_input = x.get("last_user_input_at")
+       now = datetime.now(timezone.utc)
+       # 빈 dict면 default_state로 채운 후 override (CRITICAL 수정)
+       if not x:
+           x = default_state(stdin["session_id"], sid_hash,
+                             stdin["transcript_path"], stdin["cwd"], now)
+
        prev_turn_start = x.get("current_turn_started_at")
        prev_last_fire = x.get("last_fire_at")
 
@@ -838,8 +876,8 @@ stdin: { session_id, transcript_path, cwd, hook_event_name: "Stop", ... }
                minutes=config.refresh_interval_minutes)).isoformat(),
            "imminent_notified": False,
            "current_turn_started_at": None,    # turn 종료 → 다음 input 대기
+           "cache_cold_retries": 0,             # 사용자 활동 = 새 사이클, retry 카운터 리셋
            # last_fire_at는 건드리지 않음 (watchdog/after_fire 판정용)
-           "created_at": x.get("created_at", now.isoformat()),
        }
 
 4. log [stop] sid=... next=... after_fire=...
@@ -847,10 +885,12 @@ stdin: { session_id, transcript_path, cwd, hook_event_name: "Stop", ... }
 6. exit 0
 ```
 
-**v5.1 변경 (MAJOR #7, #8)**:
+**v5.1 변경 (MAJOR #7, #8, CRITICAL fix)**:
+- `default_state()` factory 신설 — 빈 dict 시 모든 필수 필드 채움 (codex CRITICAL 수정).
 - `current_turn_started_at`은 UserPromptSubmit에서 설정되고 Stop에서 None으로 클리어. **이 turn 동안만 유효**.
 - after_fire 판정: `last_fire_at < current_turn_started_at` (현재 turn 시작 전에 fire가 있었는가).
 - Stop hook이 유일한 세션 생성 권한. session_id / sid_hash / transcript_path / cwd / created_at 모두 채움.
+- `cache_cold_retries`는 Stop 시 0 리셋 (사용자 활동이 있으면 새 사이클로 간주).
 
 ### UserPromptSubmit hook (`on_user_prompt.py`) — v5.1
 
