@@ -10,7 +10,7 @@ from typing import Optional
 from lib.config import Config
 from lib.state import parse_iso, update_state, load_all_states
 
-from daemon import notifier
+from daemon import notifier, scheduler
 from daemon.clock import DriftDetector
 from lib.logger import log_info, log_warn
 
@@ -141,40 +141,14 @@ def _notify_imminent(s: dict, now: datetime, config: Config) -> None:
     _mark_imminent_notified(s["sid_hash"], where="imminent")
 
 
-def _notify_candidate_reached(s: dict, config: Config, *, fallback_from: Optional[str] = None) -> None:
-    """후보 도달 시 알림 + imminent_notified=True 마킹. mode/fallback 공통."""
-    sid_short = s.get("session_id", "")[:8] or s.get("sid_hash", "")[:8]
-    if fallback_from:
-        msg = (
-            f"💀 {sid_short} 캐시 갱신 시점 도달 — {fallback_from} 모드는 Phase 2에서 "
-            f"활성화 (현재 notify로 알림만)"
-        )
-    else:
-        msg = f"💀 {sid_short} 캐시 갱신 시점 도달 (notify only)"
-    notifier.notify(
-        msg,
-        terminal_bell=config.notify.terminal_bell,
-        system_notification=config.notify.system_notification,
-    )
-    log_info(
-        f"[would-fire] sid={s.get('sid_hash')} "
-        f"mode={config.mode}{' (fallback)' if fallback_from else ''}"
-    )
-    _mark_imminent_notified(s["sid_hash"], where="candidate")
-
-
 def handle_session(s: dict, now: datetime, config: Config) -> None:
-    """단일 세션 처리. notify 모드만 (Phase 1b 범위).
+    """단일 세션 처리.
 
     - 후보 아니면: ``next_refresh_at - imminent_threshold_minutes`` 이내고
       아직 알림 안 했으면 imminent 알림 발사.
-    - 후보면: mode에 따라 분기.
-        - ``notify`` : 알림 + 마킹
-        - ``auto`` / ``hybrid`` : Phase 2 미구현이지만 **반드시 알림 발사**
-          (silent failure 방지) + 마킹. 사용자가 캐시 만료를 인지할 수 있게.
+    - 후보면: ``scheduler.execute_mode`` 로 위임 (notify / auto / hybrid).
     """
     if not is_refresh_candidate(s, now, config):
-        # 임박 알림 확인
         next_at = _safe_parse_iso(s, "next_refresh_at")
         if next_at is None or s.get("imminent_notified"):
             return
@@ -185,16 +159,7 @@ def handle_session(s: dict, now: datetime, config: Config) -> None:
             _notify_imminent(s, now, config)
         return
 
-    # 후보 도달 — mode 분기
-    if s.get("imminent_notified"):
-        return  # 이미 알림 보냄
-
-    if config.mode == "notify":
-        _notify_candidate_reached(s, config)
-    else:
-        # auto / hybrid 는 Phase 2에서 추가 — Phase 1b는 알림으로 fallback
-        # (사용자가 설정해둔 mode와 무관하게 알림은 반드시 받게 한다)
-        _notify_candidate_reached(s, config, fallback_from=config.mode)
+    scheduler.execute_mode(s, config)
 
 
 def run_poll_loop(config: Config) -> None:

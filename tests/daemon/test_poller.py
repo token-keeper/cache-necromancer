@@ -135,8 +135,8 @@ def test_min_next_fire_in_picks_smallest_future():
     assert 25 <= result <= 35
 
 
-def test_handle_session_notify_mode_emits_alarm():
-    """notify 모드: 후보 도달 시 알림 + imminent_notified=True."""
+def test_handle_session_candidate_delegates_to_execute_mode():
+    """후보 도달 시 scheduler.execute_mode 로 위임 (mode 분기는 scheduler 담당)."""
     from daemon import poller
 
     now = datetime.now(timezone.utc)
@@ -148,34 +148,9 @@ def test_handle_session_notify_mode_emits_alarm():
     )
     config = Config(mode="notify")
 
-    with patch("daemon.poller.notifier.notify") as mock_notify, \
-         patch("daemon.poller.update_state") as mock_update:
+    with patch("daemon.poller.scheduler.execute_mode") as mock_exec:
         poller.handle_session(s, now, config)
-        mock_notify.assert_called_once()
-        mock_update.assert_called_once()
-        # imminent_notified=True 로 업데이트
-        mutator = mock_update.call_args.args[1]
-        result = mutator(s)
-        assert result["imminent_notified"] is True
-
-
-def test_handle_session_notify_mode_skips_when_already_notified():
-    from daemon import poller
-
-    now = datetime.now(timezone.utc)
-    s = _make_state(
-        sid_hash="abc",
-        next_refresh_at=(now - timedelta(minutes=1)).isoformat(),
-        last_user_input_at=(now - timedelta(minutes=10)).isoformat(),
-        imminent_notified=True,  # 이미 알림 보냄
-    )
-    config = Config(mode="notify")
-
-    with patch("daemon.poller.notifier.notify") as mock_notify, \
-         patch("daemon.poller.update_state") as mock_update:
-        poller.handle_session(s, now, config)
-        mock_notify.assert_not_called()
-        mock_update.assert_not_called()
+        mock_exec.assert_called_once_with(s, config)
 
 
 def test_handle_session_not_candidate_imminent_threshold():
@@ -210,8 +185,8 @@ def test_all_stale_for():
     assert all_stale_for([], minutes=60, now=now) is False  # 빈 리스트는 stale 아님
 
 
-def test_handle_session_hybrid_mode_fallback_still_notifies():
-    """MAJOR 2 회귀 가드: mode=hybrid (Phase 2 미구현)도 알림은 반드시 발사."""
+def test_handle_session_hybrid_mode_delegates_to_execute_mode():
+    """hybrid 모드도 scheduler.execute_mode 로 위임 (Phase 2b부터 실제 동작)."""
     from daemon import poller
 
     now = datetime.now(timezone.utc)
@@ -221,20 +196,14 @@ def test_handle_session_hybrid_mode_fallback_still_notifies():
         last_user_input_at=(now - timedelta(minutes=10)).isoformat(),
         imminent_notified=False,
     )
-    config = Config(mode="hybrid")  # 기본값
+    config = Config(mode="hybrid")
 
-    with patch("daemon.poller.notifier.notify") as mock_notify, \
-         patch("daemon.poller.update_state") as mock_update:
+    with patch("daemon.poller.scheduler.execute_mode") as mock_exec:
         poller.handle_session(s, now, config)
-        mock_notify.assert_called_once()
-        # imminent_notified=True 로 업데이트
-        mock_update.assert_called_once()
-        mutator = mock_update.call_args.args[1]
-        result = mutator(s)
-        assert result["imminent_notified"] is True
+        mock_exec.assert_called_once_with(s, config)
 
 
-def test_handle_session_auto_mode_fallback_still_notifies():
+def test_handle_session_auto_mode_delegates_to_execute_mode():
     from daemon import poller
 
     now = datetime.now(timezone.utc)
@@ -246,10 +215,27 @@ def test_handle_session_auto_mode_fallback_still_notifies():
     )
     config = Config(mode="auto")
 
-    with patch("daemon.poller.notifier.notify") as mock_notify, \
-         patch("daemon.poller.update_state"):
+    with patch("daemon.poller.scheduler.execute_mode") as mock_exec:
         poller.handle_session(s, now, config)
-        mock_notify.assert_called_once()
+        mock_exec.assert_called_once_with(s, config)
+
+
+def test_handle_session_not_candidate_does_not_call_execute_mode():
+    """후보 아니면 execute_mode 호출 안 됨 (imminent 분기로만 흐름)."""
+    from daemon import poller
+
+    now = datetime.now(timezone.utc)
+    s = _make_state(
+        sid_hash="abc",
+        next_refresh_at=(now + timedelta(minutes=30)).isoformat(),
+        last_user_input_at=(now - timedelta(minutes=10)).isoformat(),
+        imminent_notified=True,
+    )
+    config = Config(mode="auto")
+
+    with patch("daemon.poller.scheduler.execute_mode") as mock_exec:
+        poller.handle_session(s, now, config)
+        mock_exec.assert_not_called()
 
 
 def test_is_refresh_candidate_malformed_next_refresh_at_skips():
@@ -306,28 +292,6 @@ def test_is_refresh_candidate_no_current_turn_passes():
         current_turn_started_at=None,
     )
     assert is_refresh_candidate(s, now, Config()) is True
-
-
-def test_handle_session_candidate_update_state_oserror_swallowed():
-    """MAJOR 회귀 가드: update_state OSError가 poll loop 죽이지 않음 (후보 도달 분기)."""
-    from daemon import poller
-
-    now = datetime.now(timezone.utc)
-    s = _make_state(
-        sid_hash="abc",
-        next_refresh_at=(now - timedelta(minutes=1)).isoformat(),
-        last_user_input_at=(now - timedelta(minutes=10)).isoformat(),
-        imminent_notified=False,
-    )
-    config = Config(mode="notify")
-
-    with patch("daemon.poller.notifier.notify"), \
-         patch("daemon.poller.update_state", side_effect=OSError("disk full")), \
-         patch("daemon.poller.log_warn") as mock_warn:
-        # 예외 전파 없이 정상 리턴
-        poller.handle_session(s, now, config)
-        mock_warn.assert_called_once()
-        assert "update_state failed" in mock_warn.call_args.args[0]
 
 
 def test_handle_session_imminent_update_state_oserror_swallowed():
