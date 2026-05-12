@@ -1,6 +1,8 @@
 """폴링 루프 + 후보 판정 (notify 모드 only — Phase 1b 범위).
 
-fire 호출 / auto / hybrid 모드는 Phase 2에서 추가된다.
+fire 호출 / auto / hybrid 모드는 Phase 2에서 추가된다. Phase 1b 동안
+사용자가 ``mode=hybrid`` 또는 ``auto`` 로 설정해도 notify 동작으로
+fallback해 알림은 반드시 발사된다 (silent failure 차단).
 """
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -15,6 +17,24 @@ from lib.logger import log_info, log_warn
 import time as _time
 
 
+def _safe_parse_iso(s: dict, field: str) -> Optional[datetime]:
+    """state의 timestamp 필드를 안전하게 파싱.
+
+    malformed 값을 만나면 None을 반환하고 한 줄 경고를 남긴다 (해당 세션
+    하나의 corrupt가 poll loop 전체를 죽이는 사고 방지).
+    """
+    raw = s.get(field)
+    if raw is None:
+        return None
+    try:
+        return parse_iso(raw)
+    except (ValueError, TypeError):
+        log_warn(
+            f"[poller] malformed {field}: sid={s.get('sid_hash')} value={raw!r}"
+        )
+        return None
+
+
 def is_refresh_candidate(s: dict, now: datetime, config: Config) -> bool:
     """fire 후보 판정 (전부 AND).
 
@@ -25,25 +45,28 @@ def is_refresh_candidate(s: dict, now: datetime, config: Config) -> bool:
     - ``backoff_until`` 가 ``now`` 도달 (또는 None)
     - ``current_turn_started_at`` 가 None (사용자 turn 진행 중 아님)
     - 사용자 input 후 ``interactive_input_quiet_seconds`` 경과
+
+    malformed timestamp는 ``_safe_parse_iso`` 가 log + None 처리 → 보수적
+    분기(후보 아님)로 흐른다. poll loop 전체가 죽지 않는다.
     """
     if s.get("disabled"):
         return False
 
-    next_at = parse_iso(s.get("next_refresh_at"))
+    next_at = _safe_parse_iso(s, "next_refresh_at")
     if next_at is None or now < next_at:
         return False
 
     if s.get("refresh_count", 0) >= config.max_refresh_count:
         return False
 
-    backoff_until = parse_iso(s.get("backoff_until"))
+    backoff_until = _safe_parse_iso(s, "backoff_until")
     if backoff_until is not None and now < backoff_until:
         return False
 
     if s.get("current_turn_started_at") is not None:
         return False
 
-    last_input = parse_iso(s.get("last_user_input_at"))
+    last_input = _safe_parse_iso(s, "last_user_input_at")
     if last_input is not None:
         quiet = config.advanced.interactive_input_quiet_seconds
         if (now - last_input).total_seconds() < quiet:
@@ -59,7 +82,7 @@ def min_next_fire_in(
     cap = float(config.advanced.daemon_poll_max_seconds)
     best: Optional[float] = None
     for s in sessions:
-        next_at = parse_iso(s.get("next_refresh_at"))
+        next_at = _safe_parse_iso(s, "next_refresh_at")
         if next_at is None:
             continue
         delta = (next_at - now).total_seconds()
@@ -83,7 +106,10 @@ def all_stale_for(
         now = datetime.now(timezone.utc)
     cutoff = now - timedelta(minutes=minutes)
     for s in sessions:
-        recent = parse_iso(s.get("last_stop_at")) or parse_iso(s.get("last_user_input_at"))
+        recent = (
+            _safe_parse_iso(s, "last_stop_at")
+            or _safe_parse_iso(s, "last_user_input_at")
+        )
         if recent is None:
             return False  # 신규 세션도 stale 아님
         if recent > cutoff:
@@ -107,16 +133,45 @@ def _notify_imminent(s: dict, now: datetime, config: Config) -> None:
     )
 
 
+def _notify_candidate_reached(s: dict, config: Config, *, fallback_from: Optional[str] = None) -> None:
+    """후보 도달 시 알림 + imminent_notified=True 마킹. mode/fallback 공통."""
+    sid_short = s.get("session_id", "")[:8] or s.get("sid_hash", "")[:8]
+    if fallback_from:
+        msg = (
+            f"💀 {sid_short} 캐시 갱신 시점 도달 — {fallback_from} 모드는 Phase 2에서 "
+            f"활성화 (현재 notify로 알림만)"
+        )
+    else:
+        msg = f"💀 {sid_short} 캐시 갱신 시점 도달 (notify only)"
+    notifier.notify(
+        msg,
+        terminal_bell=config.notify.terminal_bell,
+        system_notification=config.notify.system_notification,
+    )
+    log_info(
+        f"[would-fire] sid={s.get('sid_hash')} "
+        f"mode={config.mode}{' (fallback)' if fallback_from else ''}"
+    )
+    update_state(
+        s["sid_hash"],
+        lambda x: {**x, "imminent_notified": True},
+        allow_create=False,
+    )
+
+
 def handle_session(s: dict, now: datetime, config: Config) -> None:
     """단일 세션 처리. notify 모드만 (Phase 1b 범위).
 
     - 후보 아니면: ``next_refresh_at - imminent_threshold_minutes`` 이내고
       아직 알림 안 했으면 imminent 알림 발사.
-    - 후보면: mode에 따라 분기 (현재는 notify만).
+    - 후보면: mode에 따라 분기.
+        - ``notify`` : 알림 + 마킹
+        - ``auto`` / ``hybrid`` : Phase 2 미구현이지만 **반드시 알림 발사**
+          (silent failure 방지) + 마킹. 사용자가 캐시 만료를 인지할 수 있게.
     """
     if not is_refresh_candidate(s, now, config):
         # 임박 알림 확인
-        next_at = parse_iso(s.get("next_refresh_at"))
+        next_at = _safe_parse_iso(s, "next_refresh_at")
         if next_at is None or s.get("imminent_notified"):
             return
         imminent_at = next_at - timedelta(
@@ -127,32 +182,15 @@ def handle_session(s: dict, now: datetime, config: Config) -> None:
         return
 
     # 후보 도달 — mode 분기
+    if s.get("imminent_notified"):
+        return  # 이미 알림 보냄
+
     if config.mode == "notify":
-        if s.get("imminent_notified"):
-            return  # 이미 알림 보냄
-        sid_short = s.get("session_id", "")[:8] or s.get("sid_hash", "")[:8]
-        notifier.notify(
-            f"💀 {sid_short} 캐시 갱신 시점 도달 (notify only)",
-            terminal_bell=config.notify.terminal_bell,
-            system_notification=config.notify.system_notification,
-        )
-        log_info(f"[would-fire] sid={s.get('sid_hash')} mode=notify")
-        update_state(
-            s["sid_hash"],
-            lambda x: {**x, "imminent_notified": True},
-            allow_create=False,
-        )
+        _notify_candidate_reached(s, config)
     else:
-        # auto / hybrid 는 Phase 2에서 추가
-        log_warn(
-            f"[mode-not-implemented] sid={s.get('sid_hash')} mode={config.mode} "
-            f"(Phase 2 미구현, notify로 fallback)"
-        )
-        update_state(
-            s["sid_hash"],
-            lambda x: {**x, "imminent_notified": True},
-            allow_create=False,
-        )
+        # auto / hybrid 는 Phase 2에서 추가 — Phase 1b는 알림으로 fallback
+        # (사용자가 설정해둔 mode와 무관하게 알림은 반드시 받게 한다)
+        _notify_candidate_reached(s, config, fallback_from=config.mode)
 
 
 def run_poll_loop(config: Config) -> None:
@@ -204,22 +242,29 @@ def run_poll_loop(config: Config) -> None:
 
 
 def _postpone_all(sessions: list[dict], *, minutes: int) -> None:
-    """모든 세션의 next_refresh_at을 +minutes 미래로 미룸 (sleep/wake 보정)."""
+    """모든 세션의 next_refresh_at을 +minutes 미래로 미룸 (sleep/wake 보정).
+
+    malformed timestamp는 ``_safe_parse_iso`` 가 log + None 처리.
+    """
     now = datetime.now(timezone.utc)
     delta = timedelta(minutes=minutes)
+
+    def _build_mutator(d: timedelta):
+        def _mut(x: dict) -> dict:
+            if x.get("next_refresh_at") is None:
+                return x
+            try:
+                base = parse_iso(x.get("next_refresh_at")) or now
+            except (ValueError, TypeError):
+                # malformed timestamp는 그대로 두고 패스
+                return x
+            return {**x, "next_refresh_at": (base + d).isoformat()}
+
+        return _mut
+
+    mutator = _build_mutator(delta)
     for s in sessions:
         sid = s.get("sid_hash")
         if not sid:
             continue
-        update_state(
-            sid,
-            lambda x, d=delta: {
-                **x,
-                "next_refresh_at": (
-                    (parse_iso(x.get("next_refresh_at")) or now) + d
-                ).isoformat()
-                if x.get("next_refresh_at") is not None
-                else None,
-            },
-            allow_create=False,
-        )
+        update_state(sid, mutator, allow_create=False)

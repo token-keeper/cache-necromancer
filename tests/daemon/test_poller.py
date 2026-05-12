@@ -208,3 +208,101 @@ def test_all_stale_for():
     assert all_stale_for([s_stale], minutes=60, now=now) is True
     assert all_stale_for([s_fresh, s_stale], minutes=60, now=now) is False
     assert all_stale_for([], minutes=60, now=now) is False  # 빈 리스트는 stale 아님
+
+
+def test_handle_session_hybrid_mode_fallback_still_notifies():
+    """MAJOR 2 회귀 가드: mode=hybrid (Phase 2 미구현)도 알림은 반드시 발사."""
+    from daemon import poller
+
+    now = datetime.now(timezone.utc)
+    s = _make_state(
+        sid_hash="abc",
+        next_refresh_at=(now - timedelta(minutes=1)).isoformat(),
+        last_user_input_at=(now - timedelta(minutes=10)).isoformat(),
+        imminent_notified=False,
+    )
+    config = Config(mode="hybrid")  # 기본값
+
+    with patch("daemon.poller.notifier.notify") as mock_notify, \
+         patch("daemon.poller.update_state") as mock_update:
+        poller.handle_session(s, now, config)
+        mock_notify.assert_called_once()
+        # imminent_notified=True 로 업데이트
+        mock_update.assert_called_once()
+        mutator = mock_update.call_args.args[1]
+        result = mutator(s)
+        assert result["imminent_notified"] is True
+
+
+def test_handle_session_auto_mode_fallback_still_notifies():
+    from daemon import poller
+
+    now = datetime.now(timezone.utc)
+    s = _make_state(
+        sid_hash="abc",
+        next_refresh_at=(now - timedelta(minutes=1)).isoformat(),
+        last_user_input_at=(now - timedelta(minutes=10)).isoformat(),
+        imminent_notified=False,
+    )
+    config = Config(mode="auto")
+
+    with patch("daemon.poller.notifier.notify") as mock_notify, \
+         patch("daemon.poller.update_state"):
+        poller.handle_session(s, now, config)
+        mock_notify.assert_called_once()
+
+
+def test_is_refresh_candidate_malformed_next_refresh_at_skips():
+    """MAJOR 3 회귀 가드: corrupt timestamp가 있어도 예외 전파 안 됨."""
+    from daemon.poller import is_refresh_candidate
+
+    now = datetime.now(timezone.utc)
+    s = _make_state(next_refresh_at="not-a-timestamp")
+    # ValueError 없이 False 반환
+    assert is_refresh_candidate(s, now, Config()) is False
+
+
+def test_min_next_fire_in_skips_malformed():
+    from daemon.poller import min_next_fire_in
+
+    now = datetime.now(timezone.utc)
+    s1 = _make_state(next_refresh_at="bogus")
+    s2 = _make_state(next_refresh_at=(now + timedelta(seconds=30)).isoformat())
+    config = Config()
+    # malformed는 skip하고 정상 세션 기반으로 계산
+    result = min_next_fire_in([s1, s2], now, config)
+    assert 25 <= result <= 35
+
+
+def test_all_stale_for_malformed_timestamp():
+    from daemon.poller import all_stale_for
+
+    now = datetime.now(timezone.utc)
+    s = _make_state(last_stop_at="bogus", last_user_input_at=None)
+    # malformed → None 취급 → stale 아님 (신규 세션 보호)
+    assert all_stale_for([s], minutes=60, now=now) is False
+
+
+def test_is_refresh_candidate_no_last_user_input_passes_quiet_window():
+    """absent last_user_input_at은 interactive quiet window 우회 OK (절대 차단 아님)."""
+    from daemon.poller import is_refresh_candidate
+
+    now = datetime.now(timezone.utc)
+    s = _make_state(
+        next_refresh_at=(now - timedelta(minutes=1)).isoformat(),
+        last_user_input_at=None,
+    )
+    assert is_refresh_candidate(s, now, Config()) is True
+
+
+def test_is_refresh_candidate_no_current_turn_passes():
+    """absent current_turn_started_at은 차단 안 됨 (None=idle 의미)."""
+    from daemon.poller import is_refresh_candidate
+
+    now = datetime.now(timezone.utc)
+    s = _make_state(
+        next_refresh_at=(now - timedelta(minutes=1)).isoformat(),
+        last_user_input_at=(now - timedelta(minutes=10)).isoformat(),
+        current_turn_started_at=None,
+    )
+    assert is_refresh_candidate(s, now, Config()) is True
