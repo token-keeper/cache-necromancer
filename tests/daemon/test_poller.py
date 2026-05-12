@@ -306,3 +306,82 @@ def test_is_refresh_candidate_no_current_turn_passes():
         current_turn_started_at=None,
     )
     assert is_refresh_candidate(s, now, Config()) is True
+
+
+def test_handle_session_candidate_update_state_oserror_swallowed():
+    """MAJOR 회귀 가드: update_state OSError가 poll loop 죽이지 않음 (후보 도달 분기)."""
+    from daemon import poller
+
+    now = datetime.now(timezone.utc)
+    s = _make_state(
+        sid_hash="abc",
+        next_refresh_at=(now - timedelta(minutes=1)).isoformat(),
+        last_user_input_at=(now - timedelta(minutes=10)).isoformat(),
+        imminent_notified=False,
+    )
+    config = Config(mode="notify")
+
+    with patch("daemon.poller.notifier.notify"), \
+         patch("daemon.poller.update_state", side_effect=OSError("disk full")), \
+         patch("daemon.poller.log_warn") as mock_warn:
+        # 예외 전파 없이 정상 리턴
+        poller.handle_session(s, now, config)
+        mock_warn.assert_called_once()
+        assert "update_state failed" in mock_warn.call_args.args[0]
+
+
+def test_handle_session_imminent_update_state_oserror_swallowed():
+    """MAJOR 회귀 가드: update_state OSError가 poll loop 죽이지 않음 (imminent 분기)."""
+    from daemon import poller
+
+    now = datetime.now(timezone.utc)
+    s = _make_state(
+        sid_hash="abc",
+        next_refresh_at=(now + timedelta(minutes=3)).isoformat(),
+        last_user_input_at=(now - timedelta(minutes=10)).isoformat(),
+        imminent_notified=False,
+    )
+    config = Config(mode="notify")
+
+    with patch("daemon.poller.notifier.notify"), \
+         patch("daemon.poller.update_state", side_effect=OSError("disk full")), \
+         patch("daemon.poller.log_warn") as mock_warn:
+        poller.handle_session(s, now, config)
+        mock_warn.assert_called_once()
+        assert "update_state failed" in mock_warn.call_args.args[0]
+
+
+def test_postpone_all_skips_malformed_timestamp_and_logs():
+    """MINOR 회귀 가드: _postpone_all이 _safe_parse_iso 경유 — corrupt timestamp 시 log_warn."""
+    from daemon import poller
+
+    s = _make_state(sid_hash="abc", next_refresh_at="bogus")
+
+    def fake_update(sid, mutator, allow_create=False):
+        # 실제 동작처럼 mutator를 state에 적용 (반환값은 검증하지 않음)
+        return mutator(s)
+
+    with patch("daemon.poller.update_state", side_effect=fake_update) as mock_update, \
+         patch("daemon.poller.log_warn") as mock_warn:
+        poller._postpone_all([s], minutes=5)
+        mock_update.assert_called_once()
+        # _safe_parse_iso가 malformed 경고를 한 줄 남김
+        assert any(
+            "malformed next_refresh_at" in c.args[0] for c in mock_warn.call_args_list
+        )
+
+
+def test_postpone_all_update_state_oserror_swallowed():
+    """MAJOR 회귀 가드: postpone 중 update_state OSError가 loop를 죽이지 않음."""
+    from daemon import poller
+
+    now = datetime.now(timezone.utc)
+    s1 = _make_state(sid_hash="a", next_refresh_at=(now + timedelta(minutes=10)).isoformat())
+    s2 = _make_state(sid_hash="b", next_refresh_at=(now + timedelta(minutes=20)).isoformat())
+
+    with patch("daemon.poller.update_state", side_effect=OSError("disk full")) as mock_update, \
+         patch("daemon.poller.log_warn") as mock_warn:
+        # 첫 세션에서 OSError 났어도 두 번째 세션도 시도
+        poller._postpone_all([s1, s2], minutes=5)
+        assert mock_update.call_count == 2
+        assert mock_warn.call_count == 2

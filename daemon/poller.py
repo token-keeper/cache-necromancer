@@ -117,6 +117,18 @@ def all_stale_for(
     return True
 
 
+def _mark_imminent_notified(sid_hash: str, *, where: str) -> None:
+    """imminent_notified=True 마킹. update_state OSError는 daemon 중단 방지 위해 흡수."""
+    try:
+        update_state(
+            sid_hash,
+            lambda x: {**x, "imminent_notified": True},
+            allow_create=False,
+        )
+    except OSError as e:
+        log_warn(f"[poller] update_state failed ({where}) sid={sid_hash} err={e}")
+
+
 def _notify_imminent(s: dict, now: datetime, config: Config) -> None:
     """imminent 알림 발사 + imminent_notified=True 마킹."""
     sid_short = s.get("session_id", "")[:8] or s.get("sid_hash", "")[:8]
@@ -126,11 +138,7 @@ def _notify_imminent(s: dict, now: datetime, config: Config) -> None:
         system_notification=config.notify.system_notification,
     )
     log_info(f"[imminent] sid={s.get('sid_hash')}")
-    update_state(
-        s["sid_hash"],
-        lambda x: {**x, "imminent_notified": True},
-        allow_create=False,
-    )
+    _mark_imminent_notified(s["sid_hash"], where="imminent")
 
 
 def _notify_candidate_reached(s: dict, config: Config, *, fallback_from: Optional[str] = None) -> None:
@@ -152,11 +160,7 @@ def _notify_candidate_reached(s: dict, config: Config, *, fallback_from: Optiona
         f"[would-fire] sid={s.get('sid_hash')} "
         f"mode={config.mode}{' (fallback)' if fallback_from else ''}"
     )
-    update_state(
-        s["sid_hash"],
-        lambda x: {**x, "imminent_notified": True},
-        allow_create=False,
-    )
+    _mark_imminent_notified(s["sid_hash"], where="candidate")
 
 
 def handle_session(s: dict, now: datetime, config: Config) -> None:
@@ -244,19 +248,15 @@ def run_poll_loop(config: Config) -> None:
 def _postpone_all(sessions: list[dict], *, minutes: int) -> None:
     """모든 세션의 next_refresh_at을 +minutes 미래로 미룸 (sleep/wake 보정).
 
-    malformed timestamp는 ``_safe_parse_iso`` 가 log + None 처리.
+    malformed timestamp는 ``_safe_parse_iso`` 가 log + None 처리. update_state
+    OSError는 흡수해 한 세션 실패가 전체 loop를 죽이지 않게 한다.
     """
-    now = datetime.now(timezone.utc)
     delta = timedelta(minutes=minutes)
 
     def _build_mutator(d: timedelta):
         def _mut(x: dict) -> dict:
-            if x.get("next_refresh_at") is None:
-                return x
-            try:
-                base = parse_iso(x.get("next_refresh_at")) or now
-            except (ValueError, TypeError):
-                # malformed timestamp는 그대로 두고 패스
+            base = _safe_parse_iso(x, "next_refresh_at")
+            if base is None:
                 return x
             return {**x, "next_refresh_at": (base + d).isoformat()}
 
@@ -267,4 +267,7 @@ def _postpone_all(sessions: list[dict], *, minutes: int) -> None:
         sid = s.get("sid_hash")
         if not sid:
             continue
-        update_state(sid, mutator, allow_create=False)
+        try:
+            update_state(sid, mutator, allow_create=False)
+        except OSError as e:
+            log_warn(f"[poller] postpone failed sid={sid} err={e}")
