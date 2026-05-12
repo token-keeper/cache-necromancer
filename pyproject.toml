@@ -1,0 +1,21 @@
+[project]
+name = "cache-necromancer"
+version = "0.1.0"
+description = "Auto-refresh Claude Code prompt cache TTL via headless CLI"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "Brody Byun"}]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "freezegun>=1.2",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+addopts = "-ra"
+
+[tool.setuptools.packages.find]
+include = ["lib*", "daemon*", "scripts*"]

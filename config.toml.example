@@ -1,0 +1,38 @@
+# cache-necromancer 설정 예시.
+# 이 파일을 ~/.cache-necromancer/config.toml 로 복사 후 수정해서 사용.
+
+[general]
+# notify  = 알림만 (자동 fire 안 함)
+# auto    = 자동 fire
+# hybrid  = 알림 후 N초 대기, 사용자 입력 없으면 자동 fire
+mode = "hybrid"
+
+# 캐시 TTL 1시간 직전 갱신. Anthropic 캐시 정책 변경 시 조정.
+refresh_interval_minutes = 55
+
+# 자동 갱신 횟수 한도. 사용자가 안 돌아오면 fire 비용만 누적되므로 안전장치.
+max_refresh_count = 10
+
+[refresh]
+prompt = "."
+hybrid_wait_seconds = 60
+fire_timeout_seconds = 120
+
+[notify]
+terminal_bell = true
+system_notification = true
+imminent_threshold_minutes = 5
+
+[advanced]
+daemon_poll_max_seconds = 60
+session_ttl_hours = 24
+daemon_idle_shutdown_minutes = 60
+clock_drift_threshold_seconds = 30
+clock_drift_postpone_minutes = 5
+fire_stop_watchdog_seconds = 120
+consecutive_fire_failures_disable = 5
+cache_cold_max_retries = 2
+backoff_base_seconds = 30.0
+backoff_cap_seconds = 1800.0
+interactive_input_quiet_seconds = 30
+state_lock_deadline_seconds = 4.0
