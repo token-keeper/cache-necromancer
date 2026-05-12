@@ -46,3 +46,26 @@ def test_deterministic_hash():
 
 def test_different_inputs_different_hash():
     assert sanitize("foo bar") != sanitize("foo baz")
+
+
+def test_trailing_newline_hashed():
+    """regex `$` 가 trailing newline을 통과시키는 Python 특성 차단.
+
+    `\\A...\\Z` 앵커 + fullmatch로 정규식 통과를 막아야 한다.
+    """
+    result = sanitize("abc123\n")
+    assert result != "abc123\n"  # 그대로 통과되면 안 됨
+    assert "\n" not in result
+    assert len(result) == 16
+
+
+def test_unicode_hashed():
+    result = sanitize("한글_세션")
+    assert len(result) == 16
+    assert all(c in "0123456789abcdef" for c in result)
+
+
+def test_null_byte_hashed():
+    result = sanitize("abc\x00def")
+    assert "\x00" not in result
+    assert len(result) == 16

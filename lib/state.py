@@ -1,9 +1,16 @@
-"""세션별 state 파일 관리 (atomic write + per-session flock + factory)."""
+"""세션별 state 파일 관리 (atomic write + per-session flock + factory).
+
+보안 / 안전 정책:
+- state dir은 0700, state JSON은 0600 권한 (session_id / transcript_path / cwd 보호).
+- corrupt JSON은 ``.corrupt.{timestamp}`` 로 백업 후 새 데이터로 진행.
+- orphan ``.lock`` 파일은 ``delete_state`` 가 정리.
+- ``allow_create=False`` + 파일 부재면 lock 파일도 안 만든다 (silent return).
+"""
 import fcntl
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, Callable, Optional
 
@@ -86,6 +93,42 @@ def acquire_state_lock_with_timeout(
             time.sleep(0.01)
 
 
+def _ensure_state_dir() -> None:
+    """STATE_DIR을 0700 권한으로 보장 (이미 있으면 권한 강제 적용)."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(STATE_DIR, 0o700)
+    except OSError:
+        pass  # 권한 변경 실패해도 진행 (best effort)
+
+
+def _quarantine_corrupt(path: Path) -> None:
+    """손상된 state 파일을 ``.corrupt.{timestamp}`` 로 옮긴다."""
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+    backup = path.with_name(f"{path.stem}.corrupt.{ts}")
+    try:
+        path.rename(backup)
+    except OSError:
+        pass  # 백업 실패해도 caller가 새 데이터로 진행 가능하도록
+
+
+def _atomic_write_state(path: Path, data: dict) -> None:
+    """tmp 파일 → 0600 권한 부여 → os.replace로 atomic rename."""
+    tmp = path.with_suffix(".json.tmp")
+    fd = os.open(
+        tmp,
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+        0o600,
+    )
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+    os.replace(tmp, path)
+
+
 def update_state(
     sid_hash: str,
     mutator: Callable[[dict], Optional[dict]],
@@ -101,58 +144,76 @@ def update_state(
             False (daemon-origin 호출용)는 파일이 없으면 silent return —
             SessionEnd 삭제 직후 stale write로 재생성되는 race를 차단한다.
 
-    Lock timeout 시 silent return. caller가 log를 결정한다.
+    동작:
+    - Lock timeout 시 silent return.
+    - corrupt JSON 만나면 ``.corrupt.{ts}`` 로 백업 후 빈 dict로 시작.
+    - ``allow_create=False`` + 파일 부재면 lock 파일도 안 만든다 (조기 return).
     """
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
     path = STATE_DIR / f"{sid_hash}.json"
+    # CRITICAL fix: allow_create=False 경로에서 lock 파일을 만들지 않는다.
+    if not allow_create and not path.exists():
+        return
+    _ensure_state_dir()
     lock_path = STATE_DIR / f"{sid_hash}.lock"
     try:
         lock_f = acquire_state_lock_with_timeout(lock_path)
     except StateLockTimeout:
         return
     try:
+        # 락 획득 후 다시 한 번 존재 확인 (race 가능)
         if not path.exists():
             if not allow_create:
                 return
             data: dict = {}
         else:
-            data = json.loads(path.read_text())
+            try:
+                data = json.loads(path.read_text())
+            except json.JSONDecodeError:
+                _quarantine_corrupt(path)
+                if not allow_create:
+                    return
+                data = {}
         result = mutator(data)
         if result is None:
             return
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(result, indent=2))
-        os.replace(tmp, path)
+        _atomic_write_state(path, result)
     finally:
         fcntl.flock(lock_f, fcntl.LOCK_UN)
         lock_f.close()
 
 
 def delete_state(sid_hash: str) -> None:
-    """state 파일을 per-session lock 획득 후 삭제.
+    """state 파일 + lock 파일을 per-session lock 획득 후 정리.
 
-    SessionEnd hook과 poller GC가 호출한다.
+    SessionEnd hook과 poller GC가 호출한다. orphan ``.lock`` 누수 방지.
     """
     path = STATE_DIR / f"{sid_hash}.json"
     lock_path = STATE_DIR / f"{sid_hash}.lock"
+    if not lock_path.exists() and not path.exists():
+        return  # 정리할 게 없음
+    _ensure_state_dir()
     try:
         lock_f = acquire_state_lock_with_timeout(lock_path)
     except StateLockTimeout:
         return
     try:
-        if path.exists():
-            path.unlink()
+        path.unlink(missing_ok=True)
     finally:
         fcntl.flock(lock_f, fcntl.LOCK_UN)
         lock_f.close()
+        # lock fd close 후 unlink (close가 inode 해제 → 다른 프로세스가 잡고 있어도 안전)
+        lock_path.unlink(missing_ok=True)
 
 
 def load_state(sid_hash: str) -> Optional[dict]:
-    """state 파일을 읽는다. 없으면 None."""
+    """state 파일을 읽는다. 없거나 corrupt면 None."""
     path = STATE_DIR / f"{sid_hash}.json"
     if not path.exists():
         return None
-    return json.loads(path.read_text())
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
 
 
 def load_all_states() -> list[dict]:
@@ -163,6 +224,6 @@ def load_all_states() -> list[dict]:
     for p in STATE_DIR.glob("*.json"):
         try:
             out.append(json.loads(p.read_text()))
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, OSError):
             continue
     return out

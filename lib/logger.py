@@ -7,6 +7,9 @@
 민감정보(프롬프트 내용, 응답 본문, cwd, 절대경로) 절대 기록 안 함.
 sid_hash와 토큰 수만 기록.
 
+파일 권한 0600, 디렉토리 0700 (다른 로컬 사용자가 읽지 못하도록).
+``OSError`` 는 silent 처리 (logger 실패가 caller crash를 일으키지 않도록).
+
 7일 후 자동 삭제는 Phase 4로 미룸 (v1은 사용자가 README 안내대로 수동 삭제 OK).
 """
 import os
@@ -34,10 +37,31 @@ def _now_iso() -> str:
 
 
 def _append(filename_prefix: str, line: str) -> None:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    path = LOG_DIR / f"{filename_prefix}.{_today_suffix()}"
-    with open(path, "a") as f:
-        f.write(line + "\n")
+    """일자별 파일에 line을 append. 파일 권한 0600, 디렉토리 0700.
+
+    logger는 부수 기능이므로 OSError가 caller crash를 일으키면 안 된다.
+    실패 시 silent (PRD 불변 조건: hook 실패가 Claude Code에 영향 없음).
+    """
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(LOG_DIR, 0o700)
+        except OSError:
+            pass
+        path = LOG_DIR / f"{filename_prefix}.{_today_suffix()}"
+        # 파일이 없으면 0600으로 생성, 있으면 그대로 append
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            with os.fdopen(fd, "a") as f:
+                f.write(line + "\n")
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise
+    except OSError:
+        pass  # silent fail (PRD 불변)
 
 
 def log_info(msg: str) -> None:
