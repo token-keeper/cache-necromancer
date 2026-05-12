@@ -19,6 +19,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from lib.config import load_config  # noqa: E402
 from lib.lockfile import is_daemon_alive  # noqa: E402
+from lib.mode_help import mode_label  # noqa: E402
 from lib.session_id import sanitize  # noqa: E402
 from lib.state import load_all_states, parse_iso  # noqa: E402
 
@@ -172,7 +173,10 @@ def main() -> int:
     else:
         breakdown = ", ".join(f"{k}={v}" for k, v in sorted(stats["by_reason"].items()))
         print(f"최근 24h fire 통계: {stats['total']}회 ({breakdown})")
-    print(f"설정: mode={config.mode}, max_refresh_count={config.max_refresh_count}")
+    print()
+    print(f"현재 모드: {mode_label(config.mode, config)}")
+    print(f"  max_refresh_count: {config.max_refresh_count}")
+    print("  설정 변경 / 모드 비교: /cn:config")
     return 0
 
 

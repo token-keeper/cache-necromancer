@@ -18,6 +18,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from daemon.refresh import build_fire_command  # noqa: E402
 from lib.config import load_config  # noqa: E402
+from lib.mode_help import mode_label  # noqa: E402
 from lib.state import load_all_states, parse_iso  # noqa: E402
 
 
@@ -57,16 +58,6 @@ def _format_delta(target: datetime, now: datetime) -> str:
     return f"{sign}{h}h {m}m"
 
 
-def _mode_label(mode: str, config) -> str:
-    if mode == "notify":
-        return "notify (알림만, 실제 fire 안 함)"
-    if mode == "auto":
-        return "auto (시점 도달 시 자동 fire)"
-    if mode == "hybrid":
-        return f"hybrid ({config.refresh.hybrid_wait_seconds}s 대기 후 fire)"
-    return mode
-
-
 def _format_active(s: dict, now: datetime, config) -> list[str]:
     sid = s.get("sid_hash", "?")
     lines = [f"  [{sid}]"]
@@ -81,7 +72,7 @@ def _format_active(s: dict, now: datetime, config) -> list[str]:
         )
 
     lines.append(
-        f"      mode:         {_mode_label(config.mode, config)}"
+        f"      mode:         {mode_label(config.mode, config)}"
     )
     argv = build_fire_command(s, config)
     lines.append(f"      command:      {_redact_command(argv, sid)}")

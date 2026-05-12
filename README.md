@@ -66,7 +66,27 @@ system_notification = true
 imminent_threshold_minutes = 5
 ```
 
+## 빠른 시작
+
+설치 직후 다음 두 명령으로 충분:
+
+```
+/cn:config    # 현재 모드 + 변경 방법 확인
+/cn:status    # 추적 세션 + 데몬 상태
+```
+
+기본 모드는 `hybrid` (사전 알림 → 60초 후 fire). 처음엔 `notify` (알림만) 로 안전하게 시작 권장:
+
+```bash
+mkdir -p ~/.cache-necromancer
+echo '[general]
+mode = "notify"' > ~/.cache-necromancer/config.toml
+```
+
 ## 슬래시 명령
+
+### `/cn:config`
+현재 설정 + 3가지 모드 비교 + 변경 방법. 첫 사용자 권장 시작점.
 
 ### `/cn:status`
 현재 추적 중인 세션, 데몬 상태, 다음 갱신 시점, 24h fire 통계 표시.
