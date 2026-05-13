@@ -2,6 +2,7 @@
 
 기본값은 dataclass field에 명시. 누락된 키는 기본값 유지.
 """
+import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -50,18 +51,28 @@ class Config:
     advanced: AdvancedConfig = field(default_factory=AdvancedConfig)
 
 
+def _env_mode_override() -> str | None:
+    """Claude Code userConfig 가 주입하는 환경변수.
+
+    빈 문자열은 무시 (= override 없음). 잘못된 값은 호출자가 검증.
+    """
+    v = os.environ.get("CLAUDE_PLUGIN_OPTION_MODE")
+    return v if v else None
+
+
 def load_config(path: Path) -> Config:
     """TOML 파일에서 Config 로드. 없으면 기본값.
 
     Raises:
         ValueError: ``mode`` 가 유효하지 않은 경우.
     """
-    if not path.exists():
-        return Config()
-    with open(path, "rb") as f:
-        data = tomllib.load(f)
+    if path.exists():
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    else:
+        data = {}
     general = data.get("general", {})
-    mode = general.get("mode", "hybrid")
+    mode = _env_mode_override() or general.get("mode", "hybrid")
     if mode not in VALID_MODES:
         raise ValueError(
             f"invalid mode: {mode}. Must be one of {VALID_MODES}"
