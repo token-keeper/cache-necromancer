@@ -305,6 +305,20 @@ def test_status_disabled_at_microseconds_truncated(status_module, capsys):
     assert "2026-05-13T09:14:35" in out
 
 
+def test_status_backoff_until_microseconds_truncated(status_module, capsys):
+    """backoff_until 마이크로초가 warning 출력에서 절단됨 (disabled_at 과 일관)."""
+    state = _base_state(
+        consecutive_fire_failures=2,
+        backoff_until="2026-05-13T15:16:41.715567+00:00",
+    )
+    with patch("scripts.cn_status.is_daemon_alive", return_value=False), \
+         patch("scripts.cn_status.load_all_states", return_value=[state]):
+        assert status_module.main() == 0
+    out = capsys.readouterr().out
+    assert ".715567" not in out
+    assert "backoff until 2026-05-13T15:16:41+00:00" in out
+
+
 def test_trunc_microseconds_fallbacks(status_module):
     """_trunc_microseconds 의 fallback 경로 — None / "" / 비-ISO 입력."""
     fn = status_module._trunc_microseconds

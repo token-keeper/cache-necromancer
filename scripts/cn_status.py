@@ -121,7 +121,7 @@ def _format_active_summary(
     if s.get("consecutive_fire_failures", 0) > 0:
         warnings.append(f"⚠️ {s['consecutive_fire_failures']} consec fails")
     if s.get("backoff_until"):
-        warnings.append(f"backoff until {s['backoff_until']}")
+        warnings.append(f"backoff until {_trunc_microseconds(s['backoff_until'])}")
     if warnings:
         lines.append(f"      {' · '.join(warnings)}")
     return lines

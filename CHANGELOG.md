@@ -16,7 +16,7 @@
 - **`/cn:status` 출력 디자인 개편** — 섹션 분리 (■ 데몬 / ■ 세션 / ■ 다음 fire 시뮬레이션 / ■ 최근 24h fires).
 - **세션 한 줄 요약** — `[sid] (this)  next 25m 12s · refresh 3/10 · idle` 형태로 압축 (next / refresh count + max / turn 상태).
 - **다음 fire 시뮬레이션** — active 세션에 한해 실제 호출될 `command` + `cwd` + `last_fire` 표시 (기존 `/cn:dry-run` 정보 흡수). disabled 세션은 제외.
-- **disabled `disabled_at` 마이크로초 절단** — `2026-05-13T09:14:35.819981+00:00` → `2026-05-13T09:14:35+00:00`.
+- **`disabled_at` / `backoff_until` 마이크로초 절단** — `2026-05-13T09:14:35.819981+00:00` → `2026-05-13T09:14:35+00:00` (warning 줄도 동일 처리).
 
 ### Added
 
@@ -25,7 +25,7 @@
 ### Notes
 
 - SemVer 0.x 룰: `/cn:dry-run` 명령 제거 = breaking change → minor bump (`0.1.1` → `0.2.0`).
-- pytest 베이스라인: 209 → **213 passed, 1 skipped** (dry-run 7개 제거 + status 신규 11개 추가).
+- pytest 베이스라인: 209 → **214 passed, 1 skipped** (dry-run 7개 제거 + status 신규 12개 추가).
 
 ## [0.1.1] — 2026-05-13
 
