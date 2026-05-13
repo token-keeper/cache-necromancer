@@ -10,7 +10,7 @@ v0.1.0 alpha 도그푸딩 첫 라운드에서 발견된 onboarding 마찰 4건 �
 
 - **`userConfig` (mode)** — `/plugin install` 시점에 모드(notify/auto/hybrid) 선택 프롬프트.
 - **config.toml 자동 생성** — 첫 데몬 spawn 시 `~/.cache-necromancer/config.toml` 이 없으면 기본 템플릿 생성. 이미 있으면 절대 덮어쓰지 않음 (사용자 편집 보존).
-- **`CLAUDE_PLUGIN_OPTION_MODE` 환경변수 override** — Claude Code 공식 userConfig 메커니즘. 환경변수 > config.toml > 코드 기본값 순.
+- **`CLAUDE_PLUGIN_OPTION_MODE` 환경변수** — `/plugin install` 시 선택한 모드를 첫 `config.toml` 템플릿 생성에 1회 반영. 이후 `config.toml` 이 권위.
 
 ### Fixed
 

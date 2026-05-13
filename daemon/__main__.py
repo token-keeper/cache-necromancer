@@ -29,8 +29,12 @@ def main() -> int:
         pass
 
     config_path = root / "config.toml"
-    ensure_config_file(config_path)
-    config = load_config(config_path)
+    try:
+        ensure_config_file(config_path)
+        config = load_config(config_path)
+    except (ValueError, OSError) as e:
+        log_warn(f"[daemon] config load failed: {type(e).__name__}: {e}")
+        return 1
 
     lock_path = root / "daemon.lock"
     lock_f = acquire_daemon_lock(lock_path)

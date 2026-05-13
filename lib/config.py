@@ -72,7 +72,7 @@ def load_config(path: Path) -> Config:
     else:
         data = {}
     general = data.get("general", {})
-    mode = _env_mode_override() or general.get("mode", "hybrid")
+    mode = general.get("mode", "hybrid")
     if mode not in VALID_MODES:
         raise ValueError(
             f"invalid mode: {mode}. Must be one of {VALID_MODES}"

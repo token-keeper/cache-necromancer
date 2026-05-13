@@ -1,6 +1,4 @@
 import stat
-import pytest
-from pathlib import Path
 from lib.config import ensure_config_file
 
 
