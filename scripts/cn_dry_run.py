@@ -18,23 +18,20 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from daemon.refresh import build_fire_command  # noqa: E402
 from lib.config import load_config  # noqa: E402
+from lib.mask import mask_sid  # noqa: E402
 from lib.mode_help import mode_label  # noqa: E402
 from lib.state import load_all_states, parse_iso  # noqa: E402
 
 
 def _redact_command(cmd: list[str], sid_hash: str) -> str:
-    """`--resume <full-id>` 의 full id를 sid_hash로 마스킹해 출력 안전 보장.
-
-    실제 호출은 원본 argv로 가지만, dry-run 텍스트가 transcript 등으로 새 나가도
-    원본 session_id 가 그대로 노출되지 않도록 한다.
-    """
+    """`--resume <full-id>` 의 full id를 마스킹해 출력 안전 보장."""
     redacted = list(cmd)
     try:
         idx = redacted.index("--resume")
     except ValueError:
         return shlex.join(redacted)
     if idx + 1 < len(redacted):
-        redacted[idx + 1] = f"<sid:{sid_hash}>"
+        redacted[idx + 1] = f"<sid:{mask_sid(sid_hash)}>"
     return shlex.join(redacted)
 
 
@@ -60,7 +57,8 @@ def _format_delta(target: datetime, now: datetime) -> str:
 
 def _format_active(s: dict, now: datetime, config) -> list[str]:
     sid = s.get("sid_hash", "?")
-    lines = [f"  [{sid}]"]
+    masked = mask_sid(sid)
+    lines = [f"  [{masked}]"]
 
     next_at = parse_iso(s.get("next_refresh_at"))
     if next_at is None:
@@ -94,8 +92,9 @@ def _format_active(s: dict, now: datetime, config) -> list[str]:
 
 def _format_disabled(s: dict) -> list[str]:
     sid = s.get("sid_hash", "?")
+    masked = mask_sid(sid)
     return [
-        f"  [{sid}]  🛑 DISABLED",
+        f"  [{masked}]  🛑 DISABLED",
         f"      reason:      {s.get('disabled_reason', '?')}",
         f"      disabled_at: {s.get('disabled_at', '?')}",
     ]
