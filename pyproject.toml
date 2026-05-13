@@ -1,6 +1,6 @@
 [project]
 name = "cache-necromancer"
-version = "0.1.0"
+version = "0.1.1"
 description = "Auto-refresh Claude Code prompt cache TTL via headless CLI"
 requires-python = ">=3.11"
 license = {text = "MIT"}

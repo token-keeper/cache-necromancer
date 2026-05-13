@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from lib.config import Config
+from lib.plugin_state import is_plugin_active
 from lib.state import parse_iso, update_state, load_all_states
 
 from daemon import notifier, scheduler, watchdog
@@ -174,6 +175,10 @@ def run_poll_loop(config: Config) -> None:
 
     log_info("[daemon] poll loop start")
     while True:
+        if not is_plugin_active():
+            log_info("[daemon] plugin disabled; shutting down")
+            return
+
         sessions = load_all_states()
         if not sessions:
             log_info("[daemon] no sessions; shutting down")

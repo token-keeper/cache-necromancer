@@ -96,6 +96,39 @@ def test_dry_run_marks_disabled_sessions(dry_module, capsys):
     assert "will fire" not in out.lower()
 
 
+def test_dry_run_masks_disabled_uuid_session(dry_module, capsys):
+    """disabled=True 이고 sid_hash 가 UUID 형식인 경우 마스킹 + DISABLED 표시."""
+    now = datetime.now(timezone.utc)
+    sid = "1a6f51ab-49db-4284-84e5-0fc1e951782d"
+    state = {
+        "session_id": sid,
+        "sid_hash": sid,
+        "transcript_path": "/t",
+        "cwd": "/t",
+        "last_stop_at": None,
+        "last_user_input_at": None,
+        "current_turn_started_at": None,
+        "last_fire_at": None,
+        "refresh_count": 0,
+        "next_refresh_at": None,
+        "imminent_notified": False,
+        "consecutive_fire_failures": 0,
+        "last_fire_reason": "auth_error",
+        "backoff_until": None,
+        "disabled": True,
+        "disabled_reason": "auth_error",
+        "disabled_at": now.isoformat(),
+        "cache_cold_retries": 0,
+        "created_at": now.isoformat(),
+    }
+    with patch("scripts.cn_dry_run.load_all_states", return_value=[state]):
+        assert dry_module.main() == 0
+    out = capsys.readouterr().out
+    assert sid[8:] not in out
+    assert "1a6f51ab" in out
+    assert "DISABLED" in out
+
+
 def test_dry_run_does_not_crash_when_session_id_missing(dry_module, capsys):
     """MINOR 회귀 가드: 손상된 state(session_id 누락)에서도 dry-run 전체가 실패하지 않음."""
     now = datetime.now(timezone.utc)
@@ -157,3 +190,35 @@ def test_dry_run_shows_mode_and_command_line(dry_module, capsys):
     out = capsys.readouterr().out
     assert "mode:" in out
     assert "/Users/test/projects/x" in out  # cwd 표시
+
+
+def test_dry_run_masks_uuid_session_id(dry_module, capsys):
+    """UUID 형식 session_id는 출력에 원본 그대로 노출되면 안 된다."""
+    now = datetime.now(timezone.utc)
+    sid = "1a6f51ab-49db-4284-84e5-0fc1e951782d"
+    state = {
+        "session_id": sid,
+        "sid_hash": sid,
+        "transcript_path": "/tmp/x.jsonl",
+        "cwd": "/tmp",
+        "last_stop_at": now.isoformat(),
+        "last_user_input_at": None,
+        "current_turn_started_at": None,
+        "last_fire_at": None,
+        "refresh_count": 0,
+        "next_refresh_at": (now + timedelta(minutes=2)).isoformat(),
+        "imminent_notified": False,
+        "consecutive_fire_failures": 0,
+        "last_fire_reason": None,
+        "backoff_until": None,
+        "disabled": False,
+        "disabled_reason": None,
+        "disabled_at": None,
+        "cache_cold_retries": 0,
+        "created_at": now.isoformat(),
+    }
+    with patch("scripts.cn_dry_run.load_all_states", return_value=[state]):
+        assert dry_module.main() == 0
+    out = capsys.readouterr().out
+    assert sid[8:] not in out
+    assert "1a6f51ab" in out

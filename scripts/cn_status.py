@@ -19,6 +19,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from lib.config import load_config  # noqa: E402
 from lib.lockfile import is_daemon_alive  # noqa: E402
+from lib.mask import mask_sid  # noqa: E402
 from lib.mode_help import mode_label  # noqa: E402
 from lib.session_id import sanitize  # noqa: E402
 from lib.state import load_all_states, parse_iso  # noqa: E402
@@ -59,12 +60,14 @@ def _format_delta(target: datetime, now: datetime) -> str:
 
 def _format_session(s: dict, now: datetime, current_sid: str | None) -> list[str]:
     sid_hash = s.get("sid_hash", "?")
-    marker = " (this)" if current_sid and sid_hash == current_sid else ""
+    is_current = bool(current_sid) and sid_hash == current_sid
+    masked = mask_sid(sid_hash)
+    marker = " (this)" if is_current else ""
     disabled = s.get("disabled", False)
 
     lines: list[str] = []
     if disabled:
-        lines.append(f"  {sid_hash}{marker}  🛑 DISABLED")
+        lines.append(f"  {masked}{marker}  🛑 DISABLED")
         lines.append(f"      reason:        {s.get('disabled_reason', '?')}")
         lines.append(f"      disabled_at:   {s.get('disabled_at', '?')}")
         return lines
@@ -73,7 +76,7 @@ def _format_session(s: dict, now: datetime, current_sid: str | None) -> list[str
     last_fire = s.get("last_fire_at")
     last_reason = s.get("last_fire_reason")
 
-    lines.append(f"  {sid_hash}{marker}")
+    lines.append(f"  {masked}{marker}")
     lines.append(f"      last_stop_at:  {s.get('last_stop_at', '—')}")
     if s.get("current_turn_started_at"):
         lines.append(

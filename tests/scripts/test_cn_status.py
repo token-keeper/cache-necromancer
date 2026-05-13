@@ -129,6 +129,40 @@ def test_status_shows_disabled_session(status_module, capsys):
     assert "auth_error" in out
 
 
+def test_status_masks_disabled_uuid_session(status_module, capsys):
+    """disabled=True 이고 sid_hash 가 UUID 형식인 경우 마스킹 + DISABLED 표시."""
+    now = datetime.now(timezone.utc)
+    sid = "1a6f51ab-49db-4284-84e5-0fc1e951782d"
+    state = {
+        "session_id": sid,
+        "sid_hash": sid,
+        "transcript_path": "/t",
+        "cwd": "/t",
+        "last_stop_at": None,
+        "last_user_input_at": None,
+        "current_turn_started_at": None,
+        "last_fire_at": None,
+        "refresh_count": 0,
+        "next_refresh_at": None,
+        "imminent_notified": False,
+        "consecutive_fire_failures": 0,
+        "last_fire_reason": "auth_error",
+        "backoff_until": None,
+        "disabled": True,
+        "disabled_reason": "auth_error",
+        "disabled_at": now.isoformat(),
+        "cache_cold_retries": 0,
+        "created_at": now.isoformat(),
+    }
+    with patch("scripts.cn_status.is_daemon_alive", return_value=False), \
+         patch("scripts.cn_status.load_all_states", return_value=[state]):
+        assert status_module.main() == 0
+    out = capsys.readouterr().out
+    assert sid[8:] not in out
+    assert "1a6f51ab" in out
+    assert "DISABLED" in out
+
+
 def test_status_shows_daemon_alive(status_module, capsys, monkeypatch):
     with patch("scripts.cn_status.is_daemon_alive", return_value=True), \
          patch("scripts.cn_status.load_all_states", return_value=[]), \
@@ -137,3 +171,38 @@ def test_status_shows_daemon_alive(status_module, capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "데몬: 살아있음" in out
     assert "12345" in out
+
+
+def test_status_masks_uuid_session_id_but_keeps_this_marker(status_module, capsys, monkeypatch):
+    """UUID 세션의 원본 노출 없이 (this) 마커는 정상 표시."""
+    now = datetime.now(timezone.utc)
+    sid = "1a6f51ab-49db-4284-84e5-0fc1e951782d"
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", sid)
+    state = {
+        "session_id": sid,
+        "sid_hash": sid,
+        "transcript_path": "/tmp/x.jsonl",
+        "cwd": "/tmp",
+        "last_stop_at": now.isoformat(),
+        "last_user_input_at": None,
+        "current_turn_started_at": None,
+        "last_fire_at": None,
+        "refresh_count": 0,
+        "next_refresh_at": (now + timedelta(minutes=2)).isoformat(),
+        "imminent_notified": False,
+        "consecutive_fire_failures": 0,
+        "last_fire_reason": None,
+        "backoff_until": None,
+        "disabled": False,
+        "disabled_reason": None,
+        "disabled_at": None,
+        "cache_cold_retries": 0,
+        "created_at": now.isoformat(),
+    }
+    with patch("scripts.cn_status.is_daemon_alive", return_value=False), \
+         patch("scripts.cn_status.load_all_states", return_value=[state]):
+        assert status_module.main() == 0
+    out = capsys.readouterr().out
+    assert sid[8:] not in out
+    assert "1a6f51ab" in out
+    assert "(this)" in out

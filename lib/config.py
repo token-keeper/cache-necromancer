@@ -2,6 +2,7 @@
 
 기본값은 dataclass field에 명시. 누락된 키는 기본값 유지.
 """
+import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -50,16 +51,26 @@ class Config:
     advanced: AdvancedConfig = field(default_factory=AdvancedConfig)
 
 
+def _env_mode_override() -> str | None:
+    """Claude Code userConfig 가 주입하는 환경변수.
+
+    빈 문자열은 무시 (= override 없음). 잘못된 값은 호출자가 검증.
+    """
+    v = os.environ.get("CLAUDE_PLUGIN_OPTION_MODE")
+    return v if v else None
+
+
 def load_config(path: Path) -> Config:
     """TOML 파일에서 Config 로드. 없으면 기본값.
 
     Raises:
         ValueError: ``mode`` 가 유효하지 않은 경우.
     """
-    if not path.exists():
-        return Config()
-    with open(path, "rb") as f:
-        data = tomllib.load(f)
+    if path.exists():
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    else:
+        data = {}
     general = data.get("general", {})
     mode = general.get("mode", "hybrid")
     if mode not in VALID_MODES:
@@ -74,3 +85,43 @@ def load_config(path: Path) -> Config:
         notify=NotifyConfig(**data.get("notify", {})),
         advanced=AdvancedConfig(**data.get("advanced", {})),
     )
+
+
+_DEFAULT_TEMPLATE = """# cache-necromancer 설정 — `/cn:config` 로 모드 비교 가능
+# 이 파일은 첫 데몬 spawn 시 자동 생성됨. 수정 후 데몬 재시작 필요.
+
+[general]
+mode = "{mode}"                       # notify | auto | hybrid
+refresh_interval_minutes = 55
+max_refresh_count = 10
+
+[refresh]
+prompt = "."
+hybrid_wait_seconds = 60
+fire_timeout_seconds = 120
+
+[notify]
+terminal_bell = true
+system_notification = true
+imminent_threshold_minutes = 5
+
+# [advanced] — 고급 옵션은 docs/superpowers/specs/...-design-v5.md 참조
+"""
+
+
+def ensure_config_file(path: Path) -> None:
+    """파일이 없으면 기본 템플릿 작성. 있으면 그대로 둔다 (사용자 편집 보존).
+
+    템플릿의 [general].mode 는 환경변수 ``CLAUDE_PLUGIN_OPTION_MODE`` 가
+    valid mode 일 때만 그 값으로, 아니면 ``hybrid`` 로 채운다.
+    """
+    if path.exists():
+        return
+    env_mode = _env_mode_override()
+    mode = env_mode if env_mode in VALID_MODES else "hybrid"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_DEFAULT_TEMPLATE.format(mode=mode), encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
