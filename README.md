@@ -90,26 +90,33 @@ mode = "notify"' > ~/.cache-necromancer/config.toml
 현재 설정 + 3가지 모드 비교 + 변경 방법. 첫 사용자 권장 시작점.
 
 ### `/cn:status`
-현재 추적 중인 세션, 데몬 상태, 다음 갱신 시점, 24h fire 통계 표시.
+데몬 / 세션 / 다음 fire 시뮬레이션 / 24h fire 통계를 한 화면에 표시 (v0.2.0 — `/cn:dry-run` 흡수).
 
 ```
 cache-necromancer 상태
-─────────────────────
-데몬: 살아있음 (PID 12345, started Mon May 12 12:00:00 2026)
-추적 세션: 2개 (active 2, disabled 0)
+────────────────────────────────
+■ 데몬
+  살아있음 (PID 12345, started 2026-05-13T10:00:00+00:00)
 
-  abc12345 (this)
-      last_stop_at:  2026-05-12T14:30:00+00:00
-      current_turn:  idle
-      next_refresh:  2026-05-12T15:25:00+00:00 (in 25m 12s)
-      refresh_count: 3
+■ 세션 (active 2, disabled 0)
+  [abc12345] (this)  next 25m 12s · refresh 3/10 · idle
+  [def67890]         next 42m 03s · refresh 1/10 · in turn
 
-최근 24h fire 통계: 8회 (ok=7, cache_cold=1)
-설정: mode=hybrid, max_refresh_count=10
+■ 다음 fire 시뮬레이션 (active 세션)
+  [abc12345]
+      command:   claude -p . --resume '<sid:abc12345>' --fork-session --no-session-persistence --output-format json
+      cwd:       /Users/me/projects/my-app
+      last_fire: 2026-05-13T09:25:00+00:00 (ok)
+  [def67890]
+      command:   claude -p . --resume '<sid:def67890>' --fork-session --no-session-persistence --output-format json
+      cwd:       /Users/me/projects/other
+
+■ 최근 24h fires
+  총 8회 (cache_cold=1, ok=7)
+
+모드: 💀 hybrid — 60s 사전 알림 후 입력 없으면 fire (취소 가능) · max_refresh: 10
+설정 변경 / 모드 비교: /cn:config
 ```
-
-### `/cn:dry-run`
-실제 fire 안 하고 다음 시점만 시뮬레이션. command line, mode, cwd 까지 확인 가능.
 
 ## 추천 사용 패턴
 
@@ -142,7 +149,30 @@ cache-necromancer 상태
 ### 데몬이 안 뜬다
 ```bash
 # 다음 Stop hook 에서 spawn 되는 lazy 패턴. 한 번 무엇이든 응답해보면 살아남.
-/cn:status   # "데몬: 종료됨 (다음 Stop hook이 spawn)" 표시
+/cn:status   # ■ 데몬 섹션에 "종료됨 — 다음 Stop hook 이 spawn" 표시
+```
+
+### 다른 프로젝트 세션이 자동 추적된다
+
+설치 후 자기 작업 외 프로젝트 (`vdit-ios-sdk`, `other-app` 등) 의 세션이 `/cn:status` 에 자동 등장하는 건 의도된 동작이다. cache-necromancer 는 Stop hook 이 발화한 **모든** Claude Code 세션을 추적 대상으로 잡는다.
+
+**비용 인지**: 추적 세션 수가 N 개면, `mode=auto/hybrid` 에서 세션당 `max_refresh_count` 만큼 fire 가 발생할 수 있다. 비용은 세션 수에 비례.
+
+**정리 방법**:
+```bash
+# 1. 데몬 강제 종료 (다음 Stop hook 까지 재spawn 안 됨)
+pkill -f "python.*cache.necromancer.*daemon"
+
+# 2. 추적 중인 모든 세션 상태 삭제
+rm -rf ~/.cache-necromancer/state/
+
+# 3. (선택) 특정 세션만 정리 — sid_hash 는 /cn:status 출력의 [...] 안 prefix
+rm ~/.cache-necromancer/state/<sid_hash>.json
+```
+
+또는 플러그인 자체 비활성화:
+```
+/plugin disable cache-necromancer
 ```
 
 ### 자동 fire 가 동작 안 함

@@ -1,5 +1,5 @@
 ---
-description: cache-necromancer 추적 상태 확인 (데몬 / 세션 / disabled / 최근 fire 통계)
+description: cache-necromancer 추적 상태 + 다음 fire 시뮬레이션 + 24h fire 통계
 allowed-tools: Bash
 ---
 
