@@ -23,6 +23,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from daemon.transcript import extract_last_turn_usage  # noqa: E402
 from lib.config import load_config  # noqa: E402
 from lib.logger import log_info, log_user_turn, log_warn  # noqa: E402
+from lib.plugin_state import is_plugin_active  # noqa: E402
 from lib.session_id import sanitize  # noqa: E402
 from lib.state import default_state, parse_iso, update_state  # noqa: E402
 
@@ -132,6 +133,8 @@ def _maybe_log_user_turn(
 
 
 def main() -> int:
+    if not is_plugin_active():
+        return 0
     try:
         stdin = _load_stdin_json()
         session_id = stdin.get("session_id", "")

@@ -16,6 +16,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from lib.logger import log_warn  # noqa: E402
+from lib.plugin_state import is_plugin_active  # noqa: E402
 from lib.session_id import sanitize  # noqa: E402
 from lib.state import update_state  # noqa: E402
 
@@ -31,6 +32,8 @@ def _load_stdin_json() -> dict:
 
 
 def main() -> int:
+    if not is_plugin_active():
+        return 0
     try:
         stdin = _load_stdin_json()
         session_id = stdin.get("session_id", "")
