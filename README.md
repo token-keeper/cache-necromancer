@@ -30,14 +30,15 @@ claude -p "." --resume <session_id> --fork-session --no-session-persistence --ou
 ## 설치
 
 ```bash
-# Claude Code 마켓플레이스에서 한 줄 (출시 후)
+# 마켓플레이스 (출시 후)
 /plugin install cache-necromancer
 
-# 또는 수동 (현재)
-git clone https://github.com/token-keeper/cache-necromancer.git ~/.claude/plugins/cache-necromancer
+# 로컬 marketplace (현재)
+/plugin marketplace add /path/to/cache-necromancer
+/plugin install cache-necromancer@cache-necromancer-marketplace
 ```
 
-설치 후 Claude Code 재시작하면 첫 Stop hook 에서 데몬이 자동 spawn된다.
+설치 중 `mode` 프롬프트가 나오면 처음엔 **`notify`** 권장 (실제 fire 없이 알림만으로 동작 확인). 설치 후 `/reload-plugins` 한 번 + 짧은 응답 한 번 받으면 데몬이 spawn 되고 `~/.cache-necromancer/config.toml` 이 자동 생성됨.
 
 ## 작동 모드
 
