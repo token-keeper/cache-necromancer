@@ -10,7 +10,7 @@
       "name": "cache-necromancer",
       "source": "./",
       "description": "Auto-refresh Claude Code 1-hour prompt cache TTL via headless CLI — keep cache hot while you're away.",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "category": "productivity",
       "tags": ["cache", "cost", "ttl", "headless", "automation"],
       "license": "MIT",
