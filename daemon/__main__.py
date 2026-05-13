@@ -6,7 +6,7 @@ import os
 import sys
 from pathlib import Path
 
-from lib.config import load_config
+from lib.config import ensure_config_file, load_config
 from lib.lockfile import acquire_daemon_lock
 from lib.logger import log_info, log_warn
 
@@ -29,6 +29,7 @@ def main() -> int:
         pass
 
     config_path = root / "config.toml"
+    ensure_config_file(config_path)
     config = load_config(config_path)
 
     lock_path = root / "daemon.lock"
