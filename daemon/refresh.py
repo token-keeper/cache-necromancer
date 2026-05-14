@@ -14,6 +14,7 @@ from enum import Enum
 from typing import Optional
 
 from daemon import notifier
+from daemon.transcript import extract_last_assistant_model
 from lib.logger import log_warn
 from lib.state import update_state
 
@@ -71,14 +72,23 @@ def build_fire_command(state: dict, config) -> list[str]:
     state에 ``session_id`` 가 없으면 ``<unknown>`` 으로 fallback — dry-run 이
     손상된 state 하나 때문에 전체 실패하지 않게 보호 (실제 fire 호출은 unknown
     이 들어가도 claude CLI 가 NETWORK_ERROR/AUTH_ERROR 분기로 잡음).
+
+    transcript 에서 사용자 chat 의 마지막 assistant model 을 추출해 가능하면
+    ``--model`` 로 명시한다. Anthropic prompt cache 는 model 별로 분리되므로
+    fire 가 사용자 chat 과 다른 model 로 호출되면 갱신해도 의미가 없다.
+    추출 실패 시 ``--model`` 생략 (CLI default fallback — 도구 죽지 않게).
     """
-    return [
+    cmd = [
         "claude", "-p", config.refresh.prompt,
         "--resume", state.get("session_id") or "<unknown>",
         "--fork-session",
         "--no-session-persistence",
         "--output-format", "json",
     ]
+    model = extract_last_assistant_model(state.get("transcript_path"))
+    if model:
+        cmd.extend(["--model", model])
+    return cmd
 
 
 def fire(state: dict, config) -> FireResult:

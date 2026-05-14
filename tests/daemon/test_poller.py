@@ -174,6 +174,38 @@ def test_handle_session_not_candidate_imminent_threshold():
         mock_notify.assert_called_once()
 
 
+def test_all_sessions_disabled_empty_list_returns_false():
+    """v0.2.2: 빈 세션 리스트는 disabled-only 가 아님 (run_poll_loop 가 따로 처리)."""
+    from daemon.poller import all_sessions_disabled
+
+    assert all_sessions_disabled([]) is False
+
+
+def test_all_sessions_disabled_all_disabled_returns_true():
+    """모든 세션 disabled → shutdown trigger."""
+    from daemon.poller import all_sessions_disabled
+
+    sessions = [_make_state(disabled=True), _make_state(disabled=True)]
+    assert all_sessions_disabled(sessions) is True
+
+
+def test_all_sessions_disabled_one_active_returns_false():
+    """MAJOR 가드: active 가 하나라도 있으면 데몬 유지 — v0.2.2 핵심 동작."""
+    from daemon.poller import all_sessions_disabled
+
+    sessions = [_make_state(disabled=True), _make_state(disabled=False)]
+    assert all_sessions_disabled(sessions) is False
+
+
+def test_all_sessions_disabled_missing_key_treated_as_active():
+    """fail-safe: disabled 키 누락 → active 로 간주 (의도치 않은 종료 차단)."""
+    from daemon.poller import all_sessions_disabled
+
+    s = _make_state()
+    s.pop("disabled", None)
+    assert all_sessions_disabled([s]) is False
+
+
 def test_all_stale_for():
     from daemon.poller import all_stale_for
 

@@ -442,12 +442,59 @@ def test_fire_invokes_claude_with_expected_args():
     assert "--output-format" in cmd
     assert "json" in cmd
     assert kwargs["cwd"] == "/Users/brody/projects/vdit"
-    assert kwargs["timeout"] == 120
+    # v0.2.2: fire_timeout_seconds default 120 → 240 — opus + 큰 transcript 의
+    # cache_creation (10만+ tokens) 보강 마진.
+    assert kwargs["timeout"] == 240
     assert kwargs["capture_output"] is True
     assert kwargs["text"] is True
     # stdin=DEVNULL 회귀 가드: 부모 stdin 상속 차단 — manual fire 시 "no stdin
     # data received" 워닝 제거 + 데몬 호출에서는 영향 없음.
     assert kwargs["stdin"] == subprocess.DEVNULL
+
+
+# ---------- build_fire_command --model 명시 (v0.2.2) ----------
+
+def test_build_fire_command_no_model_when_transcript_missing(tmp_path):
+    """transcript_path 가 None/누락이면 --model 없음 — CLI default fallback."""
+    from daemon import refresh
+
+    s = _make_state(transcript_path=str(tmp_path / "nope.jsonl"))
+    cmd = refresh.build_fire_command(s, Config())
+    assert "--model" not in cmd
+
+
+def test_build_fire_command_appends_model_when_transcript_has_one(tmp_path):
+    """transcript 마지막 assistant turn 의 model 을 --model 로 명시."""
+    import json
+    from daemon import refresh
+
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(
+        json.dumps({
+            "type": "assistant",
+            "message": {"model": "claude-opus-4-7", "content": "hi"},
+        }) + "\n",
+        encoding="utf-8",
+    )
+    s = _make_state(transcript_path=str(transcript))
+    cmd = refresh.build_fire_command(s, Config())
+    assert "--model" in cmd
+    assert cmd[cmd.index("--model") + 1] == "claude-opus-4-7"
+
+
+def test_build_fire_command_no_model_when_assistant_lacks_model(tmp_path):
+    """assistant turn 있지만 model 필드 없음 → --model 생략 (이전 turn fallback 안 함)."""
+    import json
+    from daemon import refresh
+
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(
+        json.dumps({"type": "assistant", "message": {"content": "no model field"}}) + "\n",
+        encoding="utf-8",
+    )
+    s = _make_state(transcript_path=str(transcript))
+    cmd = refresh.build_fire_command(s, Config())
+    assert "--model" not in cmd
 
 
 def test_fire_stderr_truncated_to_500_chars():

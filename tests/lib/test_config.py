@@ -12,7 +12,8 @@ def test_load_defaults_when_file_missing(tmp_path):
     assert c.max_refresh_count == 10
     assert c.refresh.prompt == "."
     assert c.refresh.hybrid_wait_seconds == 60
-    assert c.refresh.fire_timeout_seconds == 120
+    # v0.2.2: 120 → 240 (opus + 큰 transcript cache_creation 마진).
+    assert c.refresh.fire_timeout_seconds == 240
     assert c.notify.terminal_bell is True
     assert c.notify.system_notification is True
     assert c.notify.imminent_threshold_minutes == 5

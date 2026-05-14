@@ -94,6 +94,18 @@ def min_next_fire_in(
     return best if best is not None else cap
 
 
+def all_sessions_disabled(sessions: list[dict]) -> bool:
+    """모든 세션이 ``disabled`` 인지. 빈 리스트는 False (run_poll_loop 가 따로 처리).
+
+    v0.2.2 새 shutdown 조건 — active 세션이 하나라도 있으면 데몬 유지.
+    cache TTL ~1시간 안에 fire 일정이 잡혀있을 수 있으므로 사용자가 잠시
+    자리 비웠다고 데몬을 죽이면 다음 fire 시점을 놓친다.
+    """
+    if not sessions:
+        return False
+    return all(bool(s.get("disabled")) for s in sessions)
+
+
 def all_stale_for(
     sessions: list[dict],
     *,
@@ -202,12 +214,12 @@ def run_poll_loop(config: Config) -> None:
         for s in sessions:
             handle_session(s, now, config)
 
-        if all_stale_for(
-            sessions,
-            minutes=config.advanced.daemon_idle_shutdown_minutes,
-            now=now,
-        ):
-            log_info("[daemon] all sessions idle; shutting down")
+        # active(disabled=False) 세션이 하나라도 있으면 데몬 유지 — cache TTL
+        # 1시간 안에 fire 일정이 잡혀있을 수 있다. 모두 disabled 면 더 이상
+        # 갱신할 게 없으므로 종료. (``daemon_idle_shutdown_minutes`` 는 deprecated
+        # — v0.2.2 에서 의미적으로 잘못된 사용자-idle 기준 shutdown 을 제거.)
+        if all_sessions_disabled(sessions):
+            log_info("[daemon] all sessions disabled; shutting down")
             return
 
         sleep_seconds = max(

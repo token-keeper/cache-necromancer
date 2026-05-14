@@ -82,3 +82,52 @@ def extract_last_turn_usage(transcript_path: Optional[Path]) -> Optional[dict]:
             return usage
         return None
     return None
+
+
+def extract_last_assistant_model(transcript_path: Optional[Path]) -> Optional[str]:
+    """가장 최근 assistant turn 의 ``model`` 이름 반환.
+
+    fire 호출 시 ``--model`` 로 명시해 사용자 chat 과 같은 prompt cache 에
+    write/hit 하기 위함. Anthropic prompt cache 는 model 별로 분리되므로
+    fire 가 사용자 chat 과 다른 model 로 호출되면 cache miss 가 일어난다.
+
+    실패 (파일 없음 / 읽기 권한 / 파싱 실패 / assistant 없음 / model 없음) 시
+    None — 호출자가 ``--model`` 명시 없이 CLI default 로 fallback.
+    """
+    if transcript_path is None:
+        return None
+    path = transcript_path if isinstance(transcript_path, Path) else Path(transcript_path)
+    if not path.exists():
+        return None
+
+    try:
+        tail = _read_tail(path, TAIL_BYTES)
+    except (OSError, PermissionError):
+        return None
+
+    lines = tail.splitlines()[-MAX_REVERSE_LINES:]
+    for line in reversed(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            entry = json.loads(stripped)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(entry, dict):
+            continue
+        entry_type = entry.get("type") or entry.get("role")
+        if entry_type != "assistant":
+            continue
+        # 첫 assistant entry 에서 결정 — 더 이전 entry 로 fallback 금지
+        # (모델 바뀐 turn 직후의 fire 가 이전 모델로 가는 결함 차단).
+        message = entry.get("message")
+        model = None
+        if isinstance(message, dict):
+            model = message.get("model")
+        if model is None:
+            model = entry.get("model")
+        if isinstance(model, str) and model:
+            return model
+        return None
+    return None

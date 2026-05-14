@@ -15,7 +15,7 @@ VALID_MODES: tuple[str, ...] = ("notify", "auto", "hybrid")
 class RefreshConfig:
     prompt: str = "."
     hybrid_wait_seconds: int = 60
-    fire_timeout_seconds: int = 120
+    fire_timeout_seconds: int = 240
 
 
 @dataclass(frozen=True)
@@ -98,7 +98,7 @@ max_refresh_count = 10
 [refresh]
 prompt = "."
 hybrid_wait_seconds = 60
-fire_timeout_seconds = 120
+fire_timeout_seconds = 240
 
 [notify]
 terminal_bell = true

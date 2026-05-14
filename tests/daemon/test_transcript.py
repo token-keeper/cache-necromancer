@@ -164,6 +164,107 @@ def test_extract_handles_permission_error(tmp_path):
         assert extract_last_turn_usage(path) is None
 
 
+def test_extract_last_assistant_model_returns_none_for_missing(tmp_path):
+    from daemon.transcript import extract_last_assistant_model
+
+    missing = tmp_path / "nope.jsonl"
+    assert extract_last_assistant_model(missing) is None
+
+
+def test_extract_last_assistant_model_returns_none_for_none_input():
+    from daemon.transcript import extract_last_assistant_model
+
+    assert extract_last_assistant_model(None) is None
+
+
+def test_extract_last_assistant_model_finds_in_message_field(tmp_path):
+    """일반 케이스: assistant entry.message.model 추출."""
+    from daemon.transcript import extract_last_assistant_model
+
+    path = tmp_path / "t.jsonl"
+    _write_jsonl(path, [
+        {"type": "user", "message": {"content": "hi"}},
+        {"type": "assistant", "message": {"model": "claude-opus-4-7", "content": "hello"}},
+    ])
+    assert extract_last_assistant_model(path) == "claude-opus-4-7"
+
+
+def test_extract_last_assistant_model_picks_most_recent(tmp_path):
+    """여러 assistant 중 가장 마지막 turn 의 model — 모델이 turn 사이 바뀐 경우 보호."""
+    from daemon.transcript import extract_last_assistant_model
+
+    path = tmp_path / "t.jsonl"
+    _write_jsonl(path, [
+        {"type": "assistant", "message": {"model": "claude-sonnet-4-6"}},
+        {"type": "user", "message": {"content": "next"}},
+        {"type": "assistant", "message": {"model": "claude-opus-4-7"}},
+    ])
+    assert extract_last_assistant_model(path) == "claude-opus-4-7"
+
+
+def test_extract_last_assistant_model_falls_back_to_top_level(tmp_path):
+    """일부 transcript 포맷은 entry.model 에 직접 (legacy)."""
+    from daemon.transcript import extract_last_assistant_model
+
+    path = tmp_path / "t.jsonl"
+    _write_jsonl(path, [
+        {"role": "assistant", "model": "claude-opus-4-7"},
+    ])
+    assert extract_last_assistant_model(path) == "claude-opus-4-7"
+
+
+def test_extract_last_assistant_model_returns_none_when_no_assistant(tmp_path):
+    from daemon.transcript import extract_last_assistant_model
+
+    path = tmp_path / "t.jsonl"
+    _write_jsonl(path, [
+        {"type": "user", "message": {"content": "hi"}},
+    ])
+    assert extract_last_assistant_model(path) is None
+
+
+def test_extract_last_assistant_model_returns_none_when_model_missing(tmp_path):
+    """MAJOR 회귀 가드: 최신 assistant 에 model 없으면 None — 이전 turn model 로 fallback 금지.
+
+    모델이 turn 사이 바뀐 경우 이전 model 을 잘못 가져와 fire 가 사용자 chat 과
+    다른 cache 에 쓰는 것을 막기 위한 가드.
+    """
+    from daemon.transcript import extract_last_assistant_model
+
+    path = tmp_path / "t.jsonl"
+    _write_jsonl(path, [
+        {"type": "assistant", "message": {"model": "claude-opus-4-7", "content": "older"}},
+        {"type": "user", "message": {"content": "next"}},
+        {"type": "assistant", "message": {"content": "no model here"}},
+    ])
+    assert extract_last_assistant_model(path) is None
+
+
+def test_extract_last_assistant_model_skips_malformed_lines(tmp_path):
+    from daemon.transcript import extract_last_assistant_model
+
+    path = tmp_path / "t.jsonl"
+    path.write_text(
+        "not-json\n"
+        + json.dumps({"type": "assistant", "message": {"model": "claude-opus-4-7"}})
+        + "\nalso-not-json\n",
+        encoding="utf-8",
+    )
+    assert extract_last_assistant_model(path) == "claude-opus-4-7"
+
+
+def test_extract_last_assistant_model_handles_permission_error(tmp_path):
+    """파일 읽기 OSError → None (fire 안전 보장 — 도구 죽지 않게)."""
+    from daemon.transcript import extract_last_assistant_model
+    from unittest.mock import patch
+
+    path = tmp_path / "t.jsonl"
+    path.write_text('{"type":"assistant","message":{"model":"claude-opus-4-7"}}', encoding="utf-8")
+
+    with patch("daemon.transcript._read_tail", side_effect=PermissionError("denied")):
+        assert extract_last_assistant_model(path) is None
+
+
 def test_extract_under_100ms_for_typical_file(tmp_path):
     """Stop hook 보장 — 64KB 파일도 100ms 이내."""
     import time

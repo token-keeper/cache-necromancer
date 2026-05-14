@@ -2,6 +2,33 @@
 
 이 프로젝트의 모든 주목할 만한 변경사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고, [Semantic Versioning](https://semver.org/lang/ko/) 을 준수합니다.
 
+## [0.2.2] — 2026-05-14
+
+v0.2.1 머지 후 도그푸딩에서 드러난 **도구 동작 자체** 의 핵심 결함 보강. fire 가 OK 로 떨어져도 사용자 chat cache 가 갱신되지 않던 근본 원인 (모델 불일치) 과, 사용자가 자리 비운 사이 데몬이 종료되어 cache TTL 이 만료되던 문제.
+
+### Fixed
+
+- **모델 불일치로 인한 cache miss (B)** — `build_fire_command` 가 `--model` 을 명시하지 않아 fire 가 CLI default 모델 (보통 sonnet) 로 호출되는데, 사용자 chat 은 opus 등 다른 모델일 수 있다. Anthropic prompt cache 는 **모델별로 분리**되므로 fire 가 sonnet cache 를 갱신해도 사용자 chat (opus) 에는 무관 → cache_read=0. transcript 의 마지막 assistant turn 에서 model 을 추출해 `--model <model>` 로 명시. 못 찾으면 생략 (CLI default fallback — 도구 죽지 않음).
+  - 진단: `b808132d` 세션에 `--model claude-opus-4-7` 명시해 직접 fire → 17.6s 정상 OK 응답 + `modelUsage=['claude-opus-4-7']` 확인. 같은 세션 sonnet fire (cache_read=130069) 와 opus fire (cache_read=19999) 가 별도 cache 임을 직접 확인.
+- **idle shutdown 으로 인한 cache TTL 만료 (A)** — `daemon_idle_shutdown_minutes` (default 60분) 가 **사용자 직접 활동** (last_stop_at / last_user_input_at) 기준이라, 사용자가 1시간 자리 비우면 데몬이 종료. 다음 hook 트리거까지 fire 가 안 일어나고 그 사이 cache TTL 1시간이 만료 → 돌아왔을 때 cache_read=0. shutdown 조건을 **"모든 세션이 disabled"** 로 변경. active 세션이 하나라도 있으면 데몬 유지 → fire 일정 보장.
+  - `daemon_idle_shutdown_minutes` 설정은 deprecated (코드/config 호환 위해 남김. 실제 사용 안 됨).
+
+### Changed
+
+- **`fire_timeout_seconds` default 120 → 240** — opus + 큰 transcript 의 cache_creation (10만+ tokens) 호출 시간 보강. config 기존 사용자는 본인 값 유지 (자동 변경 없음). v0.3.0 트랙에서 self-resume 충돌 별도 조사 예정.
+- **`daemon/poller.py`**: `all_sessions_disabled(sessions)` helper 신규. 기존 `all_stale_for` 는 deprecated 상태로 유지 (외부 호출 없음 + BC 위해 함수 자체는 남김).
+
+### Added
+
+- **`daemon/transcript.py`** 에 `extract_last_assistant_model(transcript_path)` — 64KB tail 안에서 가장 최근 assistant turn 의 `message.model` 추출. 못 찾으면 None. **이전 turn fallback 금지** (모델 바뀐 turn 직후 fire 가 이전 모델로 가는 결함 차단).
+
+### Notes
+
+- **v0.2.2 비용 인지**: `--model` 명시로 사용자 chat 모델 (opus 등) 사용 시 fire 1회 비용이 sonnet 대비 5~10배 비쌀 수 있다. 본 도구의 모든 자동 fire 모드 (auto/hybrid) 는 비용 발생 — 알파 단계 사용자 본인 모니터링 필요. 비용 우려 시 `mode=notify` 로 전환.
+- **남은 의문**: `4f3cc9b5` 활성 세션에 self-resume fire 시 180s timeout (다른 sid 17.6s). 같은 sid 의 활성 사용자 세션 ↔ fire 의 lock 충돌 가설. 별도 트랙으로 v0.3.0 또는 v0.2.3 에서 조사.
+- pytest: 251 → **267 passed, 1 skipped** (transcript +9, refresh +3, poller +4).
+- 운영 권장: 머지 후 데몬 재시작 (`pkill -f "python.*-m daemon" && rm -f ~/.cache-necromancer/daemon.lock`). 다음 hook 에서 fix 코드로 spawn.
+
 ## [0.2.1] — 2026-05-14
 
 핵심 fire 기능 복구 — `claude -p --output-format json` 의 실제 응답 형식 (메시지 list) 처리.
