@@ -151,12 +151,150 @@ def test_fire_bad_output_on_invalid_json():
     assert "not-json" in result.raw_stdout
 
 
-@pytest.mark.parametrize("payload", ["[1, 2, 3]", "42", '"hello"', "null"])
-def test_fire_bad_output_when_top_level_not_object(payload):
-    """MAJOR 회귀 가드: JSON top-level이 dict가 아니면 BAD_OUTPUT (AttributeError 차단)."""
+@pytest.mark.parametrize("payload", ["42", '"hello"', "null"])
+def test_fire_bad_output_when_top_level_not_object_or_list(payload):
+    """MAJOR 회귀 가드: JSON top-level이 dict/list가 아니면 BAD_OUTPUT.
+
+    list는 별도 result-element 추출 분기로 처리 — 그 케이스는 아래 list 전용
+    테스트가 커버. 여기는 dict/list 둘 다 아닌 숫자/문자열/null만 검증.
+    """
     from daemon import refresh
 
     s = _make_state()
+    proc = MagicMock(returncode=0, stdout=payload, stderr="")
+    with patch("daemon.refresh.subprocess.run", return_value=proc):
+        result = refresh.fire(s, Config())
+
+    assert result.success is False
+    assert result.reason is refresh.FireReason.BAD_OUTPUT
+
+
+# ---------- list 응답 처리 (claude CLI ≥2.1.x) ----------
+
+def _list_stdout_with_result(cache_read: int = 20009, *, extras=None) -> str:
+    """실제 claude -p --output-format json 응답을 축약한 형태.
+
+    type="system" (init) → "assistant" → "result" (usage). probe 로 캡처한
+    실제 형식 기반. extras 는 result element 앞/뒤로 끼울 dict 들.
+    """
+    result_elem = {
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "duration_ms": 1000,
+        "session_id": "abc",
+        "total_cost_usd": 0.01,
+        "usage": {
+            "cache_read_input_tokens": cache_read,
+            "cache_creation_input_tokens": 0,
+            "input_tokens": 5,
+            "output_tokens": 3,
+        },
+        "modelUsage": {"claude-opus-4-7[1m]": {"inputTokens": 5}},
+    }
+    messages = [
+        {"type": "system", "subtype": "init", "cwd": "/tmp"},
+        {"type": "assistant", "message": {"id": "msg_1"}},
+        result_elem,
+    ]
+    if extras:
+        messages.extend(extras)
+    return json.dumps(messages)
+
+
+def test_fire_ok_with_list_response_picks_result_element():
+    """MAJOR 회귀 가드: claude CLI 2.1.x 의 list 응답에서 result element 추출."""
+    from daemon import refresh
+
+    s = _make_state()
+    proc = MagicMock(returncode=0, stdout=_list_stdout_with_result(20009), stderr="")
+    with patch("daemon.refresh.subprocess.run", return_value=proc):
+        result = refresh.fire(s, Config())
+
+    assert result.success is True
+    assert result.reason is refresh.FireReason.OK
+    assert result.cache_read == 20009
+    assert result.input_tokens == 5
+    assert result.output_tokens == 3
+    assert result.model == "claude-opus-4-7[1m]"
+
+
+def test_fire_cache_cold_with_list_response_and_zero_cache_read():
+    """list 응답인데 result.usage.cache_read=0 → CACHE_COLD."""
+    from daemon import refresh
+
+    s = _make_state()
+    proc = MagicMock(returncode=0, stdout=_list_stdout_with_result(0), stderr="")
+    with patch("daemon.refresh.subprocess.run", return_value=proc):
+        result = refresh.fire(s, Config())
+
+    assert result.success is False
+    assert result.reason is refresh.FireReason.CACHE_COLD
+
+
+def test_fire_bad_output_when_list_empty():
+    """빈 list → result element 없음 → BAD_OUTPUT."""
+    from daemon import refresh
+
+    s = _make_state()
+    proc = MagicMock(returncode=0, stdout="[]", stderr="")
+    with patch("daemon.refresh.subprocess.run", return_value=proc):
+        result = refresh.fire(s, Config())
+
+    assert result.success is False
+    assert result.reason is refresh.FireReason.BAD_OUTPUT
+
+
+def test_fire_bad_output_when_list_has_no_result_element():
+    """list 에 type='result' 없으면 BAD_OUTPUT — 비정상 응답."""
+    from daemon import refresh
+
+    s = _make_state()
+    payload = json.dumps([
+        {"type": "system", "subtype": "init"},
+        {"type": "assistant", "message": {}},
+    ])
+    proc = MagicMock(returncode=0, stdout=payload, stderr="")
+    with patch("daemon.refresh.subprocess.run", return_value=proc):
+        result = refresh.fire(s, Config())
+
+    assert result.success is False
+    assert result.reason is refresh.FireReason.BAD_OUTPUT
+
+
+def test_fire_picks_last_result_when_multiple():
+    """안전 가드: list 안에 type='result' 가 여러 개면 마지막(final)을 사용."""
+    from daemon import refresh
+
+    s = _make_state()
+    messages = [
+        {"type": "system"},
+        {
+            "type": "result",
+            "usage": {"cache_read_input_tokens": 111, "input_tokens": 1, "output_tokens": 1},
+        },
+        {"type": "assistant"},
+        {
+            "type": "result",
+            "usage": {"cache_read_input_tokens": 999, "input_tokens": 2, "output_tokens": 4},
+            "modelUsage": {"final-model": {}},
+        },
+    ]
+    proc = MagicMock(returncode=0, stdout=json.dumps(messages), stderr="")
+    with patch("daemon.refresh.subprocess.run", return_value=proc):
+        result = refresh.fire(s, Config())
+
+    assert result.success is True
+    assert result.cache_read == 999
+    assert result.model == "final-model"
+
+
+def test_fire_bad_output_when_list_contains_non_dict_items():
+    """list 안에 dict 아닌 element 가 섞여있어도 무시하고 result 찾기 시도."""
+    from daemon import refresh
+
+    s = _make_state()
+    payload = "[1, 2, 3]"
     proc = MagicMock(returncode=0, stdout=payload, stderr="")
     with patch("daemon.refresh.subprocess.run", return_value=proc):
         result = refresh.fire(s, Config())
@@ -307,6 +445,9 @@ def test_fire_invokes_claude_with_expected_args():
     assert kwargs["timeout"] == 120
     assert kwargs["capture_output"] is True
     assert kwargs["text"] is True
+    # stdin=DEVNULL 회귀 가드: 부모 stdin 상속 차단 — manual fire 시 "no stdin
+    # data received" 워닝 제거 + 데몬 호출에서는 영향 없음.
+    assert kwargs["stdin"] == subprocess.DEVNULL
 
 
 def test_fire_stderr_truncated_to_500_chars():

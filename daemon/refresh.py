@@ -94,6 +94,7 @@ def fire(state: dict, config) -> FireResult:
             text=True,
             timeout=config.refresh.fire_timeout_seconds,
             cwd=state.get("cwd"),
+            stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired:
         return FireResult(success=False, reason=FireReason.TIMEOUT)
@@ -125,8 +126,22 @@ def fire(state: dict, config) -> FireResult:
             raw_stdout=(proc.stdout or "")[:_RAW_STDOUT_LIMIT],
         )
 
-    # JSON top-level이 object가 아니면 (list/숫자/문자열 등) 스키마 깨짐 → BAD_OUTPUT
-    if not isinstance(data, dict):
+    # claude CLI ≥2.1.x: --output-format json 응답이 메시지 list (마지막에
+    # type="result"). 구버전 호환을 위해 top-level dict는 그대로 처리.
+    if isinstance(data, list):
+        result_elem = None
+        for item in reversed(data):
+            if isinstance(item, dict) and item.get("type") == "result":
+                result_elem = item
+                break
+        if result_elem is None:
+            return FireResult(
+                success=False,
+                reason=FireReason.BAD_OUTPUT,
+                raw_stdout=(proc.stdout or "")[:_RAW_STDOUT_LIMIT],
+            )
+        data = result_elem
+    elif not isinstance(data, dict):
         return FireResult(
             success=False,
             reason=FireReason.BAD_OUTPUT,
