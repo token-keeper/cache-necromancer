@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""/cn:status 백엔드 — 추적 상태 표시.
+"""/cn:status 백엔드 — 추적 상태 + 다음 fire 시뮬레이션 통합 출력 (v0.2.0).
 
-- 데몬 alive 여부 (PID + 시작 시각)
-- 추적 세션 목록 (active / disabled 구분)
-- 현재 세션 (CLAUDE_CODE_SESSION_ID 기준) 에 (this) 표시
-- 최근 24h fire log 통계 (Phase 2 이후 실제 데이터 채워짐)
+박스 표 형식:
+  ┌─ 데몬 ─┐                  alive/down + PID/started
+  ┌─ 세션 ─┐                  sid · 상태 · next · refresh · warning (표)
+  ┌─ 다음 fire 시뮬레이션 ─┐  active 세션의 command + cwd + last_fire
+  ┌─ 최근 24h fires ─┐        fire.log 통계
+
+current_sid 와 sid_hash 가 일치하는 세션은 sid 뒤에 `*` 마커.
 """
 import json
 import os
@@ -17,6 +20,7 @@ _PROJECT_ROOT = _HERE.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from lib.box_renderer import box_section, box_table, display_width, wrap_outer  # noqa: E402
 from lib.config import load_config  # noqa: E402
 from lib.lockfile import is_daemon_alive  # noqa: E402
 from lib.mask import mask_sid  # noqa: E402
@@ -33,7 +37,7 @@ def _resolve_root() -> Path:
 
 
 def _current_sid_hash() -> str | None:
-    """Bash tool 서브프로세스에 노출되는 CLAUDE_CODE_SESSION_ID 활용."""
+    """Bash tool 서브프로세스 / hook subprocess 에 노출되는 CLAUDE_CODE_SESSION_ID."""
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
     if not sid:
         return None
@@ -45,10 +49,8 @@ def _current_sid_hash() -> str | None:
 
 def _format_delta(target: datetime, now: datetime) -> str:
     delta = (target - now).total_seconds()
-    sign = ""
-    if delta < 0:
-        delta = -delta
-        sign = "-"
+    sign = "-" if delta < 0 else ""
+    delta = abs(delta)
     if delta < 60:
         return f"{sign}{int(delta)}s"
     m, s = divmod(int(delta), 60)
@@ -58,51 +60,125 @@ def _format_delta(target: datetime, now: datetime) -> str:
     return f"{sign}{h}h {m}m"
 
 
-def _format_session(s: dict, now: datetime, current_sid: str | None) -> list[str]:
-    sid_hash = s.get("sid_hash", "?")
-    is_current = bool(current_sid) and sid_hash == current_sid
-    masked = mask_sid(sid_hash)
-    marker = " (this)" if is_current else ""
-    disabled = s.get("disabled", False)
+def _trunc_microseconds(ts: str | None) -> str:
+    """ISO timestamp 의 마이크로초 절단. 파싱 실패 시 원본 반환."""
+    if not ts:
+        return "?"
+    try:
+        return datetime.fromisoformat(ts).replace(microsecond=0).isoformat()
+    except (ValueError, TypeError):
+        return ts
 
-    lines: list[str] = []
-    if disabled:
-        lines.append(f"  {masked}{marker}  🛑 DISABLED")
-        lines.append(f"      reason:        {s.get('disabled_reason', '?')}")
-        lines.append(f"      disabled_at:   {s.get('disabled_at', '?')}")
-        return lines
+
+def _short_time(ts: str | None) -> str:
+    """ISO timestamp 에서 HH:MM:SS 만 추출. 박스 표 컬럼 너비 절약용."""
+    if not ts:
+        return "?"
+    try:
+        return datetime.fromisoformat(ts).strftime("%H:%M:%S")
+    except (ValueError, TypeError):
+        return ts
+
+
+def _build_daemon_box(lock_path: Path, min_width: int = 0) -> list[str]:
+    if is_daemon_alive(lock_path):
+        try:
+            meta = json.loads(lock_path.read_text())
+            line = f"✅ 살아있음 · PID {meta.get('pid')} · 시작 {meta.get('started')}"
+        except (json.JSONDecodeError, OSError):
+            line = "✅ 살아있음 (메타 파싱 실패)"
+    else:
+        line = "❌ 종료됨 — 다음 Stop hook 이 spawn"
+    return box_section("데몬", [line], min_width=min_width)
+
+
+def _active_row(s: dict, now: datetime, current_sid: str | None, config) -> list[str]:
+    sid_hash = s.get("sid_hash", "?")
+    masked = mask_sid(sid_hash)
+    marker = "*" if current_sid and sid_hash == current_sid else ""
 
     next_at = parse_iso(s.get("next_refresh_at"))
-    last_fire = s.get("last_fire_at")
-    last_reason = s.get("last_fire_reason")
+    next_str = _format_delta(next_at, now) if next_at is not None else "—"
 
-    lines.append(f"  {masked}{marker}")
-    lines.append(f"      last_stop_at:  {s.get('last_stop_at', '—')}")
-    if s.get("current_turn_started_at"):
-        lines.append(
-            f"      current_turn:  진행 중 (started {s['current_turn_started_at']})"
-        )
-    else:
-        lines.append("      current_turn:  idle")
-    if next_at is not None:
-        lines.append(
-            f"      next_refresh:  {next_at.isoformat()} ({_format_delta(next_at, now)})"
-        )
-    else:
-        lines.append("      next_refresh:  —")
-    lines.append(
-        f"      refresh_count: {s.get('refresh_count', 0)}"
-    )
-    if last_fire:
-        lines.append(
-            f"      last_fire:     {last_fire} ({last_reason or 'ok'})"
-        )
-    failures = s.get("consecutive_fire_failures", 0)
-    if failures > 0:
-        lines.append(f"      consec_fails:  {failures}")
+    refresh_count = s.get("refresh_count", 0)
+    refresh_str = f"{refresh_count}/{config.max_refresh_count}"
+    turn = "in turn" if s.get("current_turn_started_at") else "idle"
+
+    warnings = []
+    if s.get("consecutive_fire_failures", 0) > 0:
+        warnings.append(f"⚠️ {s['consecutive_fire_failures']} fails")
     if s.get("backoff_until"):
-        lines.append(f"      backoff_until: {s['backoff_until']}")
-    return lines
+        warnings.append(f"backoff {_short_time(s['backoff_until'])}")
+    warning_str = " · ".join(warnings) if warnings else "—"
+
+    return [masked + marker, turn, next_str, refresh_str, _truncate(warning_str, 40)]
+
+
+def _disabled_row(s: dict) -> list[str]:
+    sid_hash = s.get("sid_hash", "?")
+    masked = mask_sid(sid_hash)
+    # consecutive_failures_* prefix 는 공통이라 단축
+    reason = s.get("disabled_reason", "?").replace("consecutive_failures_", "")
+    at = _short_time(s.get("disabled_at"))
+    return [masked, "🛑 DISABLED", "—", "—", _truncate(f"{reason} ({at})", 40)]
+
+
+def _build_sessions_box(
+    active: list[dict],
+    disabled: list[dict],
+    now: datetime,
+    current_sid: str | None,
+    config,
+    min_width: int = 0,
+) -> list[str]:
+    title = f"세션 (active {len(active)}, disabled {len(disabled)})"
+    if not active and not disabled:
+        return box_section(title, ["추적 중인 세션 없음"], min_width=min_width)
+
+    headers = ["sid", "상태", "next", "refresh", "warning"]
+    rows = [_active_row(s, now, current_sid, config) for s in active]
+    rows += [_disabled_row(s) for s in disabled]
+    return box_table(title, headers, rows, min_width=min_width, row_separator=True)
+
+
+def _truncate(s: str, max_width: int) -> str:
+    """display_width 기준 truncate — 한글/이모지가 두 셀 차지하는 케이스 정확 처리."""
+    if display_width(s) <= max_width:
+        return s
+    out = ""
+    for c in s:
+        if display_width(out + c) > max_width - 3:
+            break
+        out += c
+    return out + "..."
+
+
+def _build_next_fires_box(active: list[dict], config, min_width: int = 0) -> list[str]:
+    title = "active 세션 디테일"
+    if not active:
+        return box_section(title, ["active 세션 없음"], min_width=min_width)
+
+    lines = []
+    for i, s in enumerate(active):
+        if i > 0:
+            lines.append("")
+        sid_hash = s.get("sid_hash", "?")
+        masked = mask_sid(sid_hash)
+        lines.append(masked)
+
+        cwd = s.get("cwd")
+        if cwd:
+            lines.append(f"  cwd:          {_truncate(cwd, 70)}")
+
+        last_prompt = s.get("last_user_prompt_excerpt")
+        if last_prompt:
+            lines.append(f"  last prompt:  {last_prompt}")
+
+        last_fire = s.get("last_fire_at")
+        if last_fire:
+            reason = s.get("last_fire_reason") or "ok"
+            lines.append(f"  last fire:    {last_fire} ({reason})")
+    return box_section(title, lines, min_width=min_width)
 
 
 def _fire_stats_24h(root: Path, now: datetime) -> dict:
@@ -138,48 +214,49 @@ def _fire_stats_24h(root: Path, now: datetime) -> dict:
     return stats
 
 
+def _build_fire_stats_box(root: Path, now: datetime, min_width: int = 0) -> list[str]:
+    stats = _fire_stats_24h(root, now)
+    if stats["total"] == 0:
+        line = "없음"
+    else:
+        breakdown = " · ".join(f"{k}={v}" for k, v in sorted(stats["by_reason"].items()))
+        line = f"총 {stats['total']}회 · {breakdown}"
+    return box_section("최근 24h fires", [line], min_width=min_width)
+
+
 def main() -> int:
     root = _resolve_root()
     config_path = root / "config.toml"
     config = load_config(config_path)
 
-    print("cache-necromancer 상태")
-    print("─" * 30)
-
-    lock_path = root / "daemon.lock"
-    if is_daemon_alive(lock_path):
-        try:
-            meta = json.loads(lock_path.read_text())
-            print(f"데몬: 살아있음 (PID {meta.get('pid')}, started {meta.get('started')})")
-        except (json.JSONDecodeError, OSError):
-            print("데몬: 살아있음 (메타 파싱 실패)")
-    else:
-        print("데몬: 종료됨 (다음 Stop hook이 spawn)")
-
     sessions = load_all_states()
     active = [s for s in sessions if not s.get("disabled")]
     disabled = [s for s in sessions if s.get("disabled")]
-    print(f"추적 세션: {len(sessions)}개 (active {len(active)}, disabled {len(disabled)})")
-
     now = datetime.now(timezone.utc)
     current_sid = _current_sid_hash()
 
-    for s in sessions:
-        print()
-        for line in _format_session(s, now, current_sid):
-            print(line)
+    notice_lines = [
+        f"모드: {mode_label(config.mode, config)} · max_refresh: {config.max_refresh_count}",
+        "설정 변경 / 모드 비교: /cn:config",
+    ]
 
-    print()
-    stats = _fire_stats_24h(root, now)
-    if stats["total"] == 0:
-        print("최근 24h fire 통계: 없음")
-    else:
-        breakdown = ", ".join(f"{k}={v}" for k, v in sorted(stats["by_reason"].items()))
-        print(f"최근 24h fire 통계: {stats['total']}회 ({breakdown})")
-    print()
-    print(f"현재 모드: {mode_label(config.mode, config)}")
-    print(f"  max_refresh_count: {config.max_refresh_count}")
-    print("  설정 변경 / 모드 비교: /cn:config")
+    # outer 박스를 max_width 로 고정. inner_max = max_width - 4 (outer "│ ... │" padding).
+    # CN_MAX_WIDTH 환경변수 우선, 기본 100.
+    max_width = int(os.environ.get("CN_MAX_WIDTH", "100"))
+    inner_max = max(40, max_width - 4)
+    inner_boxes = [
+        _build_daemon_box(root / "daemon.lock", min_width=inner_max),
+        _build_sessions_box(active, disabled, now, current_sid, config, min_width=inner_max),
+        _build_next_fires_box(active, config, min_width=inner_max),
+        _build_fire_stats_box(root, now, min_width=inner_max),
+    ]
+    # 헤더 바로 아래에 안내 줄 → 빈 줄 → inner 박스들
+    body: list[str] = list(notice_lines)
+    for box in inner_boxes:
+        body.append("")
+        body.extend(box)
+
+    print("\n".join(wrap_outer("🔮 cache-necromancer 상태", body, min_width=max_width - 2)))
     return 0
 
 
