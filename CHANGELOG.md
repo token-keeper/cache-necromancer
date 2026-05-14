@@ -2,30 +2,40 @@
 
 이 프로젝트의 모든 주목할 만한 변경사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고, [Semantic Versioning](https://semver.org/lang/ko/) 을 준수합니다.
 
-## [0.2.0] — 2026-05-13
+## [0.2.0] — 2026-05-14
 
-`/cn:dry-run` 명령을 제거하고 `/cn:status` 하나로 통합 (slash command 단순화).
-
-### Removed
-
-- **`/cn:dry-run` 명령** — `/cn:status` 가 흡수. 다음 fire 의 `command:` / `cwd:` 정보는 새 "다음 fire 시뮬레이션" 섹션에서 확인.
-  - 관련 자산 삭제: `commands/cn:dry-run.md`, `scripts/cn_dry_run.py`, `tests/scripts/test_cn_dry_run.py`.
-
-### Changed
-
-- **`/cn:status` 출력 디자인 개편** — 섹션 분리 (■ 데몬 / ■ 세션 / ■ 다음 fire 시뮬레이션 / ■ 최근 24h fires).
-- **세션 한 줄 요약** — `[sid] (this)  next 25m 12s · refresh 3/10 · idle` 형태로 압축 (next / refresh count + max / turn 상태).
-- **다음 fire 시뮬레이션** — active 세션에 한해 실제 호출될 `command` + `cwd` + `last_fire` 표시 (기존 `/cn:dry-run` 정보 흡수). disabled 세션은 제외.
-- **`disabled_at` / `backoff_until` 마이크로초 절단** — `2026-05-13T09:14:35.819981+00:00` → `2026-05-13T09:14:35+00:00` (warning 줄도 동일 처리).
+`/cn:dry-run` 통합 + `/cn:status` 박스 표 디자인 + **hook 기반 turn 0회 메커니즘**.
 
 ### Added
 
+- **Turn 0회 `/cn:status`** — `UserPromptExpansion` hook (`scripts/on_status_command.py`) 이 slash command 자체를 차단하고 `cn_status.py` 결과를 `decision: "block"` 의 `reason` 으로 반환. LLM 호출 0회 = API 비용 0. 캐시 절약 도구의 정체성과 일관.
+- **박스 표 디자인** — Unicode 박스 그리기 (`┌─│└┘├┼┤`) 로 outer 박스 + nested inner 박스 4종 (데몬 / 세션 / active 세션 디테일 / 최근 24h fires). 헤더 + 모드/설정 안내도 outer 박스 내부.
+- **`lib/box_renderer.py`** — 한글 East Asian Width + emoji variation selector (FE0F) 보정한 박스 그리기 모듈. `box_section`, `box_table` (옵션 `row_separator`), `wrap_outer` 제공. 외부 의존성 없음.
+- **`last prompt:` 표시** — `UserPromptSubmit` hook 에서 사용자 자연어 prompt 첫 줄 80자 발췌를 state.last_user_prompt_excerpt 로 저장. slash command (`/` 시작) 는 제외. `CN_TRACK_LAST_PROMPT=0` 으로 opt-out.
+- **세션 행 사이 가로줄 구분선** — 표 가독성 향상 (`├──┼──┤` 자동 삽입).
+- **고정 폭 outer 박스** — `CN_MAX_WIDTH` 환경변수로 조정 (기본 100).
 - **README 트러블슈팅**: 다른 프로젝트 세션 자동 추적 동작 설명 + 정리 방법 + 비용 인지.
+
+### Changed
+
+- **`/cn:status` 출력 전체 박스 표 디자인으로 교체** — 세션은 표 (sid · 상태 · next · refresh · warning), 데몬/디테일/24h fires 는 단순 박스.
+- **`disabled_at` / `backoff_until` 시간 부분만 표시** — 컬럼 너비 절약. `HH:MM:SS` 형식 (`_short_time` helper).
+- **disabled reason `consecutive_failures_` prefix 단축** — `consecutive_failures_bad_output` → `bad_output`.
+- **cwd 길이 70자 truncate** — 박스 폭 cap 안에 들어가게.
+- **`(this)` 마커 → `*`** — sid 컬럼 뒤에 짧은 마커.
+- **active 세션 디테일 박스 구성 변경** — command 줄 제거 (불필요한 정보), 대신 `last prompt:` 추가. cwd + last fire 유지.
+
+### Removed
+
+- **`/cn:dry-run` 명령** — `/cn:status` 가 흡수.
+  - 관련 자산 삭제: `commands/cn:dry-run.md`, `scripts/cn_dry_run.py`, `tests/scripts/test_cn_dry_run.py`.
+- **`scripts/cn_status.py` 의 `_redact_command`** — command 표시 자체를 안 하므로 불필요.
 
 ### Notes
 
-- SemVer 0.x 룰: `/cn:dry-run` 명령 제거 = breaking change → minor bump (`0.1.1` → `0.2.0`).
-- pytest 베이스라인: 209 → **214 passed, 1 skipped** (dry-run 7개 제거 + status 신규 12개 추가).
+- **Hook 기반 turn 0회 메커니즘 한계**: Claude Code 가 hook reason 표시 시 자동 추가하는 `"⏺ UserPromptExpansion operation blocked by hook:"` prefix + `"Original prompt: ..."` suffix + 각 줄 2-space indent 는 공식 API 로 제거 불가 (docs.anthropic.com 확인). 시각적 노이즈로 수용.
+- SemVer 0.x 룰: `/cn:dry-run` 제거 + slash command 처리 패러다임 전환 = breaking change → minor bump (`0.1.1` → `0.2.0`).
+- pytest 베이스라인: 209 → **245 passed, 1 skipped** (cn_status 23 + box_renderer 신규 15 + on_status_command 신규 8 + on_user_prompt 7).
 
 ## [0.1.1] — 2026-05-13
 

@@ -31,6 +31,30 @@ def _load_stdin_json() -> dict:
         return {}
 
 
+def _make_prompt_excerpt(prompt: str, max_chars: int = 80) -> str | None:
+    """사용자 자연어 prompt 의 첫 줄 + ``max_chars`` truncate.
+
+    slash command (`/` 시작), 빈 텍스트는 skip. cn:status 박스에 표시될 마지막
+    user prompt 발췌용. 환경변수 ``CN_TRACK_LAST_PROMPT=0`` 시 비활성.
+
+    반환값이 ``None`` 이면 호출 측에서 state 의 기존 excerpt 를 그대로 보존 —
+    slash command 호출이 직전 자연어 prompt 를 덮어쓰지 않게 하기 위한 의도적 동작.
+    """
+    if os.environ.get("CN_TRACK_LAST_PROMPT") == "0":
+        return None
+    if not prompt:
+        return None
+    stripped = prompt.strip()
+    if not stripped or stripped.startswith("/"):
+        return None
+    first_line = stripped.splitlines()[0].strip()
+    if not first_line:
+        return None
+    if len(first_line) > max_chars:
+        first_line = first_line[: max_chars - 3] + "..."
+    return first_line
+
+
 def main() -> int:
     if not is_plugin_active():
         return 0
@@ -42,16 +66,19 @@ def main() -> int:
 
         sid_hash = sanitize(session_id)
         now_iso = datetime.now(timezone.utc).isoformat()
+        excerpt = _make_prompt_excerpt(stdin.get("prompt", ""))
 
-        update_state(
-            sid_hash,
-            lambda x: {
+        def _update(x: dict) -> dict:
+            updated = {
                 **x,
                 "last_user_input_at": now_iso,
                 "current_turn_started_at": now_iso,
-            },
-            allow_create=False,
-        )
+            }
+            if excerpt:
+                updated["last_user_prompt_excerpt"] = excerpt
+            return updated
+
+        update_state(sid_hash, _update, allow_create=False)
     except Exception as e:  # noqa: BLE001
         try:
             log_warn(f"[user_prompt] unexpected error: {type(e).__name__}: {e}")

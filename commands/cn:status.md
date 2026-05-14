@@ -1,5 +1,5 @@
 ---
-description: cache-necromancer 추적 상태 + 다음 fire 시뮬레이션 + 24h fire 통계
+description: cache-necromancer 추적 상태 (turn 0회 — hook 으로 직접 표시)
 allowed-tools: Bash
 ---
 
