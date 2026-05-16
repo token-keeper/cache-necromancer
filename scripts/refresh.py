@@ -30,7 +30,7 @@ from lib.marker import Marker  # noqa: E402
 from lib.notify import notify  # noqa: E402
 from lib.session_id import sanitize  # noqa: E402
 
-PING_MESSAGE = "[cn:keepalive] reply 'ok' only. No tools, no analysis."
+PING_MESSAGE = "[cn:keepalive] reply 'ok' only. No tools, no analysis. Use minimal output tokens."
 
 
 def _resolve_root() -> Path:
