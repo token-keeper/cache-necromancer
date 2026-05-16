@@ -2,6 +2,21 @@
 
 이 프로젝트의 모든 주목할 만한 변경사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고, [Semantic Versioning](https://semver.org/lang/ko/) 을 준수합니다.
 
+## [0.3.9] — 2026-05-16
+
+**Wake `PING_MESSAGE` 에 minimal output 지시 추가** — 모델이 wake-up turn 에서 'ok' 외 추가 토큰 발생 가능성 차단 강화.
+
+### Changed
+
+- **`scripts/refresh.py:33`** `PING_MESSAGE`:
+  - Before: `[cn:keepalive] reply 'ok' only. No tools, no analysis.`
+  - After: `[cn:keepalive] reply 'ok' only. No tools, no analysis. Use minimal output tokens.`
+
+### Notes
+
+- pytest 영향 X — test 는 `PING_MESSAGE` 상수 import 후 매칭이라 자동 sync.
+- 코드 변경: 1줄. wake 비용 안정성 ↑.
+
 ## [0.3.8] — 2026-05-16
 
 **docs sync** — v0.3.5~v0.3.7 사이클에서 누락됐던 README + TECH_SPEC §8 mockup 갱신. 코드 변경 0줄, docs only.
