@@ -69,7 +69,7 @@ class TestCurrentSession:
 
         out = _run_status()
         assert "세션 (현재)" in out
-        assert "wake/notify count:  2 / 10" in out
+        assert "repeat count:    2 / 10" in out
         assert "다음 발동 예상" in out
         # v0.3.5: 시작 / 마지막 wake/notify / cache 추정 제거됨
         assert "시작:" not in out

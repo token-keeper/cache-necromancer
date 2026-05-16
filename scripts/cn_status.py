@@ -97,12 +97,12 @@ def _list_markers() -> list[Marker]:
     return out
 
 
-def _build_header_line(config: Config) -> str:
-    return (
-        f"mode: {mode_label(config.mode, config)} · "
-        f"refresh_interval: {config.refresh_interval_minutes}m · "
-        f"max_refresh: {config.max_refresh_count}"
-    )
+def _build_header_lines(config: Config) -> list[str]:
+    """v0.3.7: 2줄로 분리 (mode + 설명 / refresh_interval + max_refresh)."""
+    return [
+        f"mode: {mode_label(config.mode, config)}",
+        f"refresh_interval: {config.refresh_interval_minutes}m · max_refresh: {config.max_refresh_count}",
+    ]
 
 
 def _ns_to_dt(ns: int, now: datetime) -> datetime:
@@ -115,8 +115,8 @@ def _build_session_box(marker: Marker, config: Config, now: datetime) -> list[st
     masked = mask_sid(marker.sid_hash)
 
     lines = [
-        f"sid:                {masked}",
-        f"wake/notify count:  {marker.wake_count} / {config.max_refresh_count}",
+        f"sid:             {masked}",
+        f"repeat count:    {marker.wake_count} / {config.max_refresh_count}",
     ]
     # 다음 발동 예상: latest_fire + refresh_interval
     if marker.latest_fire > 0:
@@ -124,7 +124,7 @@ def _build_session_box(marker: Marker, config: Config, now: datetime) -> list[st
             minutes=config.refresh_interval_minutes
         )
         lines.append(
-            f"다음 발동 예상:     {next_dt.strftime('%Y-%m-%d %H:%M:%S')} "
+            f"다음 발동 예상:  {next_dt.strftime('%Y-%m-%d %H:%M:%S')} "
             f"({_format_delta(next_dt, now)})"
         )
 
@@ -282,7 +282,7 @@ def main() -> int:
         # marker 없음 — 빈 marker 로 표시
         current = Marker(sid_hash=current_hash, session_started_at=int(time.time()))
 
-    body = [_build_header_line(config), ""]
+    body = [*_build_header_lines(config), ""]
     if current:
         body.extend(_build_session_box(current, config, now))
         body.append("")
