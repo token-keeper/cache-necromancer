@@ -39,20 +39,6 @@ Claude Code 는 컨텍스트 캐시를 1시간 동안 보관한다. 그 안에 �
 
 > **중요**: Claude Code 는 settings hot-reload 안 함 — 설치 후 **새 chat 세션** 부터 hook 적용. `claude -c` 로 resume 가능하나 첫 wake 가 cache rebuild 비용 ($1+) 발생 가능.
 
-### Plugin marketplace 미사용 환경 (fallback)
-
-직접 git clone + venv setup 사용자:
-
-```bash
-git clone https://github.com/token-keeper/cache-necromancer
-cd cache-necromancer
-uv venv && uv sync --extra dev
-.venv/bin/pip install -e .
-
-# settings.json 에 Stop hook 등록
-.venv/bin/cn install
-```
-
 ## 작동 모드
 
 `~/.cache-necromancer/config.toml` 에서 선택 (첫 hook fire 시 자동 생성):

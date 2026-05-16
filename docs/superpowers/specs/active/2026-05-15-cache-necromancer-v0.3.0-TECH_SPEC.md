@@ -243,64 +243,12 @@ for stale in marker_dir.glob("*.json"):
 
 트리거: **현재 세션의 SessionEnd 마다** marker_dir 전체 glob. claude 가 한 번도 정상 종료하지 않으면 stale 누적되지만, 일반 사용 패턴에서 거의 발생 안 함.
 
-## 7. lib/install.py — `cn install` / `cn uninstall`
+## 7. 설치 방법 (deprecated section)
 
-plugin manifest 로 자동 등록되는 환경에서는 불필요. 단 다음 케이스 fallback:
-- 사용자가 plugin marketplace 안 쓰고 git clone 으로 설치
-- 사용자가 settings.local.json 에 직접 hook 추가하고 싶음
-
-### 7.1 `cn install` 동작
-
-```bash
-$ cn install
-# 1. v0.2.x stale daemon 아티팩트 detect (PRD §6.1 마이그레이션):
-#    - ~/.cache-necromancer/lock 파일 존재 → "v0.2.x daemon 정지 필요: pkill -f 'python.*-m daemon'" 안내
-#    - ~/.cache-necromancer/state/ 디렉토리 비어있지 않음 → "v0.2.x state 정리 필요: rm -rf ~/.cache-necromancer/state" 안내
-#    - 자동 삭제 X — 사용자가 직접 명령 실행. detect 후 stdout 으로 출력만
-# 2. ~/.claude/settings.json 또는 settings.local.json detect
-# 3. 기존 Stop hook 항목 검색
-#    - cache-necromancer hook 이 이미 있으면: "이미 설치됨" 출력 후 exit 0
-#    - 다른 사용자 hook 이 있으면: "기존 hook 과 공존 — 충돌 가능. 계속? [y/N]"
-#    - 없으면: 새 hook 추가
-# 4. settings.json 에 다음 추가:
-#    {
-#      "hooks": {
-#        "Stop": [{"hooks": [{
-#          "type": "command",
-#          "command": "python3 /path/to/cache-necromancer/scripts/refresh.py",
-#          "asyncRewake": true,
-#          "timeout": 3600
-#        }]}]
-#      }
-#    }
-# 5. stdout 안내:
-#    - settings hot-reload 안 되므로 새 chat 세션 필요
-#    - claude -c resume 시 첫 wake 가 cache rebuild 비용 가능
-#    - deprecated config 옵션 detect 되면 경고
-```
-
-**timeout: 3600 명시 이유**: POC C 시점 가설은 "`asyncRewake: true` background 는 hook timeout 적용을 받지 않음" 이었으나 (POC C 에서 timeout 60s + sleep 30분 setting 이 정상 wake), 후속 검증에서 Claude Code 의 default 10분 timeout 이 일부 환경에서 적용 가능성 발견 → 안전하게 `timeout: 3600` (1시간) 명시. refresh.py 의 sleep 은 default 50분 = 3000s 이므로 여유 600s. plugin manifest 의 `hooks/hooks.json` + `cn install` 이 작성하는 settings.json 양쪽 모두 동일.
-
-> 향후 Claude Code 가 asyncRewake timeout 정책을 명문화하면 이 값을 더 단순화 가능.
-
-### 7.2 `cn uninstall` 동작
-
-settings.json 에서 cache-necromancer 관련 hook 만 제거. 다른 hook 보존. config.toml 과 marker file 은 그대로 (사용자가 수동으로 `rm -rf ~/.cache-necromancer` 가능).
-
-### 7.3 entry point
-
-기존 `pyproject.toml` 수정 (신규 생성 아님 — v0.2.x 부터 존재):
-```toml
-[project]
-name = "cache-necromancer"
-version = "0.3.0"               # 0.2.0 → 0.3.0 bump
-
-[project.scripts]
-cn = "lib.install:main"         # 신규 추가
-
-[tool.setuptools.packages.find]
-include = ["lib*", "scripts*"]  # 기존 ["lib*", "daemon*", "scripts*"] 에서 daemon* 제거
-```
+> v0.3.3 부터 `cn install` CLI 폐기. plugin marketplace 가 공식 설치 경로:
+> `/plugin install cache-necromancer`. hook 등록은 plugin manifest (`hooks/hooks.json`) 가 자동 처리.
+>
+> 이전 v0.3.0~v0.3.2 의 `lib/install.py` 명세는 git history 에서 확인 가능.
 
 ## 8. cn:status 출력
 
