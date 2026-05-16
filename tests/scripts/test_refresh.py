@@ -2,6 +2,8 @@
 
 sleep + osascript notify 모두 monkey patch — 실제 sleep / 알림 발생 X.
 """
+import io
+import json
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -32,9 +34,19 @@ def silent_notify(monkeypatch):
 
 @pytest.fixture
 def session_env(monkeypatch):
-    """CLAUDE_CODE_SESSION_ID 주입."""
+    """CLAUDE_CODE_SESSION_ID 주입 + stdin 빈 상태 (env fallback 검증용)."""
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "test-session-id-xyz")
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
     return "test-session-id-xyz"
+
+
+@pytest.fixture
+def session_stdin(monkeypatch):
+    """stdin JSON 으로 session_id 주입 (Claude Code hook 의 실제 전달 방식)."""
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    sid = "test-stdin-sid"
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": sid})))
+    return sid
 
 
 def _write_config(cn_root, *, mode="auto", refresh_interval=50, max_refresh=10,
@@ -203,6 +215,39 @@ class TestErrorPaths:
         content = cfg.read_text()
         assert "[general]" in content
         assert "mode" in content
+
+
+class TestSessionIdResolution:
+    def test_stdin_session_id_used_when_env_missing(
+        self, cn_root, session_stdin, fast_sleep, silent_notify, capsys
+    ):
+        """Claude Code hook 의 실제 패턴 — stdin JSON 으로 session_id 전달.
+
+        이 fix 가 없으면 refresh.py 가 fire 안 됨 (env var 없음 → exit 0).
+        """
+        _write_config(cn_root, mode="auto")
+        rc = main()
+        assert rc == 2
+        assert PING_MESSAGE in capsys.readouterr().err
+        # stdin 으로 받은 sid 의 marker 가 갱신됨
+        from lib.session_id import sanitize
+        m = Marker.load(sanitize(session_stdin))
+        assert m.wake_count == 1
+
+    def test_stdin_takes_priority_over_env(
+        self, cn_root, monkeypatch, fast_sleep, silent_notify
+    ):
+        """stdin 과 env 둘 다 있으면 stdin 우선."""
+        stdin_sid = "stdin-priority"
+        env_sid = "env-priority"
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", env_sid)
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": stdin_sid})))
+        _write_config(cn_root, mode="auto")
+        main()
+        from lib.session_id import sanitize
+        # stdin 의 marker 만 갱신됨
+        assert Marker.load(sanitize(stdin_sid)).wake_count == 1
+        assert Marker.load(sanitize(env_sid)).wake_count == 0
 
     def test_marker_save_failure_aborts_silently(
         self, cn_root, session_env, fast_sleep, silent_notify, monkeypatch

@@ -13,6 +13,7 @@ Claude Code 의 Stop hook 에 등록되어 background 에서 실행됨:
 
 PRD 불변: 어떤 실패도 chat 동작 차단 X (best-effort).
 """
+import json
 import os
 import sys
 import time
@@ -35,6 +36,24 @@ PING_MESSAGE = "[cn:keepalive] reply 'ok' only. No tools, no analysis."
 def _resolve_root() -> Path:
     root = os.environ.get("CN_ROOT")
     return Path(root) if root else Path.home() / ".cache-necromancer"
+
+
+def _resolve_session_id() -> str:
+    """stdin JSON ({"session_id": ...}) 우선, env fallback.
+
+    Claude Code hook 은 stdin 으로 JSON payload 전달 (CLAUDE_CODE_SESSION_ID
+    환경변수는 보장 X). on_user_prompt.py / on_session_end.py 와 일관.
+    """
+    try:
+        raw = sys.stdin.read()
+        if raw.strip():
+            data = json.loads(raw)
+            sid = data.get("session_id", "")
+            if sid:
+                return sid
+    except (json.JSONDecodeError, OSError):
+        pass
+    return os.environ.get("CLAUDE_CODE_SESSION_ID", "")
 
 
 def _save_marker(marker: Marker, context: str) -> bool:
@@ -78,7 +97,7 @@ def _do_notify(marker: Marker, sid_hash: str, config: Config) -> int:
 
 
 def main() -> int:
-    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    sid = _resolve_session_id()
     if not sid:
         return 0
     try:
