@@ -2,6 +2,43 @@
 
 이 프로젝트의 모든 주목할 만한 변경사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고, [Semantic Versioning](https://semver.org/lang/ko/) 을 준수합니다.
 
+## [0.3.3] — 2026-05-16
+
+**`cn install` / `cn uninstall` CLI 폐기** — plugin marketplace 가 공식 설치 경로로 안착했고 (`/plugin install cache-necromancer` 한 명령으로 hook 자동 등록), 수동 fallback CLI 의 실 사용 빈도가 거의 0 으로 확인됨. YAGNI 적용하여 ~500줄 정리.
+
+### Removed
+
+- **`lib/install.py`** — `cn install` / `cn uninstall` CLI 본체 삭제 (261줄).
+- **`tests/lib/test_install.py`** — 관련 테스트 25개 삭제 (238줄).
+- **`pyproject.toml`**: `[project.scripts] cn = "lib.install:main"` entry 제거 — `cn` 명령어가 더 이상 설치되지 않음.
+
+### Changed
+
+- **`scripts/cn_status.py`**: 출력 문구의 "(cn install)" → "(수동 등록)", "또는 cn install" 제거. plugin manifest 등록 검사는 그대로.
+- **`tests/scripts/test_cn_status.py`**: 변경된 출력 문구에 맞춰 assertion 갱신.
+- **`README.md`**: "Plugin marketplace 미사용 환경 (fallback)" 섹션 삭제. plugin 설치만 공식 경로.
+- **`TECH_SPEC.md` §7**: `lib/install.py` 명세 삭제.
+
+### Migration
+
+기존 `cn install` 로 settings.json 에 hook 등록한 사용자:
+
+```bash
+# 1. ~/.claude/settings.json 의 hooks.Stop 항목에서
+#    cache-necromancer/scripts/refresh.py 포함된 entry 수동 삭제
+
+# 2. plugin marketplace 로 재설치 (자동 등록)
+/plugin install cache-necromancer
+```
+
+`cn` 명령어 자체는 v0.3.3 이후 사라짐. shell 의 `cn: command not found` 발생 시 본 폐기가 원인.
+
+### Notes
+
+- net 코드 변경: -490 줄 / +N 줄 (대부분 삭제)
+- pytest baseline: 124 → 99 (test_install.py 25개 삭제)
+- v0.4.0 에서 plugin marketplace 가 막힌 환경 (회사 보안 등) 의 fallback 이 진짜 요청되면 재도입 검토.
+
 ## [0.3.2] — 2026-05-16
 
 **로그 파일명 정리** — v0.2.x daemon 폐기 후에도 남아있던 `daemon.log` 파일명을 `cn.log` 로 rename. 함께 dead code (`log_fire` / `log_user_turn` + `fire.log` / `user_turn.log`) 제거 (YAGNI — v0.4.0 metrics 트랙에서 재설계 예정).

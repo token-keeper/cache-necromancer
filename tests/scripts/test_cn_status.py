@@ -131,7 +131,7 @@ class TestSettingsStatus:
             }
         }))
         out = _run_status()
-        assert "settings.json (cn install)" in out
+        assert "settings.json (수동 등록)" in out
 
     def test_hook_not_registered(self, cn_root, isolated_settings):
         # settings.json 없음

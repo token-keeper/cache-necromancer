@@ -180,10 +180,10 @@ def _check_hook_registered() -> tuple[bool, str]:
         if _is_cn_plugin_enabled(data):
             return True, f"✅ plugin manifest ({fname} enabledPlugins)"
         if _has_cn_stop_hook(data):
-            return True, f"✅ {fname} (cn install)"
+            return True, f"✅ {fname} (수동 등록)"
     return (
         False,
-        "❌ 미등록 — /plugin install cache-necromancer 또는 cn install 후 새 chat 세션",
+        "❌ 미등록 — /plugin install cache-necromancer 후 새 chat 세션",
     )
 
 
