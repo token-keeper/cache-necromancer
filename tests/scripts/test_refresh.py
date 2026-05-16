@@ -192,6 +192,18 @@ class TestErrorPaths:
         rc = main()
         assert rc == 0  # 그냥 종료
 
+    def test_config_toml_auto_created_on_first_fire(
+        self, cn_root, session_env, fast_sleep, silent_notify
+    ):
+        """config.toml 없을 때 첫 hook fire 가 자동 생성 (PRD §3.2)."""
+        cfg = cn_root / "config.toml"
+        assert not cfg.exists()
+        main()
+        assert cfg.exists()
+        content = cfg.read_text()
+        assert "[general]" in content
+        assert "mode" in content
+
     def test_marker_save_failure_aborts_silently(
         self, cn_root, session_env, fast_sleep, silent_notify, monkeypatch
     ):

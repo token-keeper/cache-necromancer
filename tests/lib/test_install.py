@@ -174,6 +174,28 @@ class TestUninstall:
         assert "Stop" not in s.get("hooks", {})
 
 
+class TestConfigAutoCreate:
+    def test_install_creates_config_toml_when_missing(self, isolated_env, cn_root, capsys):
+        """cn install 이 config.toml 없으면 기본 템플릿 자동 생성."""
+        cfg = cn_root / "config.toml"
+        assert not cfg.exists()
+        install_main()
+        assert cfg.exists()
+        content = cfg.read_text()
+        assert "[general]" in content
+        out = capsys.readouterr().out
+        assert "config.toml 자동 생성됨" in out
+
+    def test_install_preserves_existing_config_toml(self, isolated_env, cn_root, capsys):
+        """이미 있는 config.toml 은 안 건드림 (사용자 편집 보존)."""
+        cfg = cn_root / "config.toml"
+        cfg.write_text('# my custom\n[general]\nmode = "auto"\n')
+        install_main()
+        assert cfg.read_text() == '# my custom\n[general]\nmode = "auto"\n'
+        out = capsys.readouterr().out
+        assert "자동 생성됨" not in out
+
+
 class TestSettingsCorrupt:
     def test_install_aborts_on_invalid_json(self, isolated_env, capsys):
         (isolated_env / "settings.json").write_text("{invalid")

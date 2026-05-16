@@ -76,6 +76,21 @@ def _detect_deprecated_config(out) -> None:
         )
 
 
+def _ensure_config_file(out) -> None:
+    """config.toml 없으면 기본 템플릿 생성 + 안내 (PRD §3.2)."""
+    from lib.config import ensure_config_file
+
+    cfg = _resolve_cn_root() / "config.toml"
+    existed = cfg.exists()
+    try:
+        ensure_config_file(cfg)
+    except OSError as e:
+        print(f"⚠️  config.toml 생성 실패: {e}", file=out)
+        return
+    if not existed and cfg.exists():
+        print(f"📝 config.toml 자동 생성됨: {cfg}", file=out)
+
+
 def _refresh_command() -> str:
     """settings.json 에 등록할 command."""
     return f'python3 "{_PROJECT_ROOT}/scripts/refresh.py"'
@@ -135,6 +150,7 @@ def install_main(force: bool = False, out=None, err=None) -> int:
     out = out if out is not None else sys.stdout
     err = err if err is not None else sys.stderr
     _detect_stale_daemon(out)
+    _ensure_config_file(out)
     _detect_deprecated_config(err)
 
     sp = _settings_path()

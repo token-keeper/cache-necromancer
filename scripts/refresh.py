@@ -23,7 +23,7 @@ _PROJECT_ROOT = _HERE.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from lib.config import Config, load_config  # noqa: E402
+from lib.config import Config, ensure_config_file, load_config  # noqa: E402
 from lib.logger import log_info, log_warn  # noqa: E402
 from lib.marker import Marker  # noqa: E402
 from lib.notify import notify  # noqa: E402
@@ -86,8 +86,14 @@ def main() -> int:
     except ValueError:
         return 0
 
+    config_path = _resolve_root() / "config.toml"
+    # 첫 hook fire 시 자동 생성 (PRD §3.2 / TECH_SPEC §3.2)
     try:
-        config = load_config(_resolve_root() / "config.toml")
+        ensure_config_file(config_path)
+    except OSError as e:
+        log_warn(f"[refresh] config.toml 자동 생성 실패: {e}")
+    try:
+        config = load_config(config_path)
     except ValueError as e:
         log_warn(f"[refresh] config 로드 실패: {e}")
         return 0
