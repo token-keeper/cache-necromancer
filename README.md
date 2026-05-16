@@ -187,10 +187,12 @@ rm ~/.cache-necromancer/marker/<sid_hash>.json
 ### 로그 위치
 ```
 ~/.cache-necromancer/
-├── daemon.log.YYYY-MM-DD       # refresh.py / on_user_prompt 로그 (sid_hash + token만)
+├── cn.log.YYYY-MM-DD           # refresh.py / on_user_prompt / on_session_end 로그 (sid_hash + token만)
 ├── config.toml                 # 사용자 설정
 └── marker/<sid_hash>.json      # 세션별 marker (latest_fire / wake_count / last_wake_at)
 ```
+
+> **v0.3.2 이전 사용자**: 옛 `daemon.log.*` 파일은 자동 정리되지 않음. 필요 시 수동 삭제: `rm ~/.cache-necromancer/daemon.log.*`
 
 ## 아키텍처 요약 (v0.3.0)
 
