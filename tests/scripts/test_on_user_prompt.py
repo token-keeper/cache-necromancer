@@ -1,149 +1,101 @@
-"""Tests for scripts/on_user_prompt.py"""
+"""Tests for scripts/on_user_prompt.py (TECH_SPEC §5)."""
 import io
 import json
 import sys
-from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
-@pytest.fixture
-def user_prompt_module(cn_root, monkeypatch):
-    import importlib
-    import lib.state
-    importlib.reload(lib.state)
-    monkeypatch.setattr(lib.state, "STATE_DIR", cn_root / "state")
-
-    import lib.logger
-    importlib.reload(lib.logger)
-    monkeypatch.setattr(lib.logger, "LOG_DIR", cn_root)
-
-    import scripts.on_user_prompt as mod
-    importlib.reload(mod)
-    return mod
+from lib.marker import Marker  # noqa: E402
+from lib.session_id import sanitize  # noqa: E402
+from scripts.on_user_prompt import main  # noqa: E402
 
 
-def _stdin_with(payload: dict) -> io.StringIO:
-    return io.StringIO(json.dumps(payload))
+def _set_stdin(monkeypatch, payload: dict | str | None) -> None:
+    if payload is None:
+        monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    elif isinstance(payload, str):
+        monkeypatch.setattr("sys.stdin", io.StringIO(payload))
+    else:
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
 
 
-def test_skips_when_state_missing(user_prompt_module, monkeypatch):
-    """allow_create=False라 state 없으면 silent skip."""
-    payload = {"session_id": "newSession", "prompt": "hi"}
-    monkeypatch.setattr(sys, "stdin", _stdin_with(payload))
-    assert user_prompt_module.main() == 0
-    # state 파일 안 만들어짐
-    from lib.state import load_state
-    assert load_state("newSession") is None
+class TestResetWakeCount:
+    def test_resets_wake_count_to_zero(self, cn_root, monkeypatch):
+        sid = "session-abc"
+        sh = sanitize(sid)
+        # 기존 marker 에 wake_count = 5
+        Marker(sid_hash=sh, wake_count=5, latest_fire=12345, last_wake_at=999).save()
+
+        _set_stdin(monkeypatch, {"session_id": sid})
+        rc = main()
+        assert rc == 0
+
+        loaded = Marker.load(sh)
+        assert loaded.wake_count == 0
+        # 다른 필드 보존
+        assert loaded.latest_fire == 12345
+        assert loaded.last_wake_at == 999
+
+    def test_creates_marker_when_missing(self, cn_root, monkeypatch):
+        sid = "new-session"
+        _set_stdin(monkeypatch, {"session_id": sid})
+        rc = main()
+        assert rc == 0
+        # marker 생성됨 + wake_count = 0
+        loaded = Marker.load(sanitize(sid))
+        assert loaded.wake_count == 0
 
 
-def test_updates_existing_state(user_prompt_module, monkeypatch):
-    from lib.state import default_state, update_state, load_state
+class TestEdgeCases:
+    def test_no_session_id_returns_silently(self, cn_root, monkeypatch):
+        _set_stdin(monkeypatch, {})
+        monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+        assert main() == 0
 
-    sid = "abc"
-    update_state(
-        sid,
-        lambda x: default_state(
-            session_id=sid,
-            sid_hash=sid,
-            transcript_path="/tmp/t.jsonl",
-            cwd="/tmp",
-            now=datetime.now(timezone.utc),
-        ),
-        allow_create=True,
-    )
+    def test_invalid_json_returns_silently(self, cn_root, monkeypatch):
+        monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+        _set_stdin(monkeypatch, "not json {")
+        assert main() == 0
 
-    payload = {"session_id": sid, "prompt": "hello"}
-    monkeypatch.setattr(sys, "stdin", _stdin_with(payload))
-    assert user_prompt_module.main() == 0
+    def test_session_id_from_env_when_stdin_missing(self, cn_root, monkeypatch):
+        sid = "env-session"
+        sh = sanitize(sid)
+        Marker(sid_hash=sh, wake_count=3).save()
 
-    s = load_state(sid)
-    assert s["last_user_input_at"] is not None
-    assert s["current_turn_started_at"] is not None
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", sid)
+        _set_stdin(monkeypatch, "")
+        assert main() == 0
+        assert Marker.load(sh).wake_count == 0
 
+    def test_marker_save_failure_returns_0(self, cn_root, monkeypatch):
+        """save 실패해도 chat 영향 X (exit 0)."""
+        sid = "fail-session"
+        _set_stdin(monkeypatch, {"session_id": sid})
+        from lib.marker import Marker as M
 
-def test_silent_on_invalid_json(user_prompt_module, monkeypatch):
-    monkeypatch.setattr(sys, "stdin", io.StringIO("garbage"))
-    assert user_prompt_module.main() == 0
+        def bad_save(self):
+            raise OSError("simulated")
 
+        monkeypatch.setattr(M, "save", bad_save)
+        assert main() == 0
 
-# --- v0.2.0: last_user_prompt_excerpt 저장 (cn:status 박스 표 표시용) -----
+    def test_stdin_session_id_takes_priority_over_env(self, cn_root, monkeypatch):
+        """stdin 과 env 둘 다 있으면 stdin 우선 (TECH_SPEC §5)."""
+        stdin_sid = "stdin-session"
+        env_sid = "env-session"
+        # 두 marker 미리 wake_count = 5
+        Marker(sid_hash=sanitize(stdin_sid), wake_count=5).save()
+        Marker(sid_hash=sanitize(env_sid), wake_count=5).save()
 
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", env_sid)
+        _set_stdin(monkeypatch, {"session_id": stdin_sid})
+        assert main() == 0
 
-def _seed_state(sid: str):
-    from lib.state import default_state, update_state
-    update_state(
-        sid,
-        lambda x: default_state(
-            session_id=sid,
-            sid_hash=sid,
-            transcript_path="/tmp/t.jsonl",
-            cwd="/tmp",
-            now=datetime.now(timezone.utc),
-        ),
-        allow_create=True,
-    )
-
-
-def test_excerpt_saved_for_natural_language(user_prompt_module, monkeypatch):
-    """자연어 prompt 의 첫 줄이 state.last_user_prompt_excerpt 로 저장."""
-    from lib.state import load_state
-
-    sid = "abc"
-    _seed_state(sid)
-
-    payload = {"session_id": sid, "prompt": "박스 디자인 변경하자\n두번째 줄은 무시"}
-    monkeypatch.setattr(sys, "stdin", _stdin_with(payload))
-    assert user_prompt_module.main() == 0
-
-    s = load_state(sid)
-    assert s["last_user_prompt_excerpt"] == "박스 디자인 변경하자"
-
-
-def test_excerpt_skips_slash_command(user_prompt_module, monkeypatch):
-    """slash command 는 excerpt 저장 안 함."""
-    from lib.state import load_state
-
-    sid = "abc"
-    _seed_state(sid)
-
-    payload = {"session_id": sid, "prompt": "/cn:status"}
-    monkeypatch.setattr(sys, "stdin", _stdin_with(payload))
-    assert user_prompt_module.main() == 0
-
-    s = load_state(sid)
-    assert s.get("last_user_prompt_excerpt") is None
-
-
-def test_excerpt_truncates_long_prompt(user_prompt_module, monkeypatch):
-    """80자 초과 prompt 는 ... 으로 truncate."""
-    from lib.state import load_state
-
-    sid = "abc"
-    _seed_state(sid)
-
-    long_prompt = "x" * 200
-    payload = {"session_id": sid, "prompt": long_prompt}
-    monkeypatch.setattr(sys, "stdin", _stdin_with(payload))
-    assert user_prompt_module.main() == 0
-
-    s = load_state(sid)
-    excerpt = s["last_user_prompt_excerpt"]
-    assert len(excerpt) == 80
-    assert excerpt.endswith("...")
-
-
-def test_excerpt_opt_out_via_env(user_prompt_module, monkeypatch):
-    """CN_TRACK_LAST_PROMPT=0 이면 excerpt 저장 안 함."""
-    from lib.state import load_state
-
-    sid = "abc"
-    _seed_state(sid)
-
-    monkeypatch.setenv("CN_TRACK_LAST_PROMPT", "0")
-    payload = {"session_id": sid, "prompt": "이건 저장 안 됨"}
-    monkeypatch.setattr(sys, "stdin", _stdin_with(payload))
-    assert user_prompt_module.main() == 0
-
-    s = load_state(sid)
-    assert s.get("last_user_prompt_excerpt") is None
+        # stdin 의 marker 만 reset
+        assert Marker.load(sanitize(stdin_sid)).wake_count == 0
+        assert Marker.load(sanitize(env_sid)).wake_count == 5

@@ -1,4 +1,5 @@
 import stat
+
 from lib.config import ensure_config_file
 
 
@@ -9,7 +10,12 @@ def test_creates_default_when_missing(tmp_path):
     content = path.read_text()
     assert "[general]" in content
     assert "mode" in content
-    assert "refresh_interval_minutes" in content
+    assert "refresh_interval_minutes = 50" in content
+    assert "max_refresh_count = 10" in content
+    assert "[notify]" in content
+    assert "[refresh]" in content
+    # v0.3.0: [advanced] 섹션 없음
+    assert "[advanced]" not in content
 
 
 def test_does_not_overwrite_existing(tmp_path):

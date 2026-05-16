@@ -1,33 +1,17 @@
-"""Tests for lib.config"""
+"""Tests for lib.config (v0.3.0 — 옵션 5개 + deprecated detect)."""
 import pytest
 
 from lib.config import Config, load_config
 
 
 def test_load_defaults_when_file_missing(tmp_path):
-    """존재하지 않는 path → 기본값 Config."""
+    """존재하지 않는 path → 기본값 Config (5개 옵션만)."""
     c = load_config(tmp_path / "nonexistent.toml")
     assert c.mode == "hybrid"
-    assert c.refresh_interval_minutes == 55
+    assert c.refresh_interval_minutes == 50  # v0.2.x 55 → 50
     assert c.max_refresh_count == 10
-    assert c.refresh.prompt == "."
     assert c.refresh.hybrid_wait_seconds == 60
-    assert c.refresh.fire_timeout_seconds == 120
-    assert c.notify.terminal_bell is True
     assert c.notify.system_notification is True
-    assert c.notify.imminent_threshold_minutes == 5
-    assert c.advanced.daemon_poll_max_seconds == 60
-    assert c.advanced.session_ttl_hours == 24
-    assert c.advanced.daemon_idle_shutdown_minutes == 60
-    assert c.advanced.clock_drift_threshold_seconds == 30
-    assert c.advanced.clock_drift_postpone_minutes == 5
-    assert c.advanced.fire_stop_watchdog_seconds == 120
-    assert c.advanced.consecutive_fire_failures_disable == 5
-    assert c.advanced.cache_cold_max_retries == 2
-    assert c.advanced.backoff_base_seconds == 30.0
-    assert c.advanced.backoff_cap_seconds == 1800.0
-    assert c.advanced.interactive_input_quiet_seconds == 30
-    assert c.advanced.state_lock_deadline_seconds == 4.0
 
 
 def test_load_partial_overrides_keeps_defaults(tmp_path):
@@ -38,12 +22,11 @@ def test_load_partial_overrides_keeps_defaults(tmp_path):
     c = load_config(p)
     assert c.mode == "auto"
     assert c.max_refresh_count == 20
-    # 안 적은 키는 기본값
-    assert c.refresh_interval_minutes == 55
-    assert c.refresh.prompt == "."
+    assert c.refresh_interval_minutes == 50  # default
+    assert c.refresh.hybrid_wait_seconds == 60  # default
 
 
-def test_load_full_config(tmp_path):
+def test_load_full_v030_config(tmp_path):
     p = tmp_path / "c.toml"
     p.write_text(
         """
@@ -52,33 +35,19 @@ mode = "notify"
 refresh_interval_minutes = 30
 max_refresh_count = 5
 
-[refresh]
-prompt = "ping"
-hybrid_wait_seconds = 90
-fire_timeout_seconds = 60
-
 [notify]
-terminal_bell = false
 system_notification = false
-imminent_threshold_minutes = 10
 
-[advanced]
-daemon_poll_max_seconds = 30
-cache_cold_max_retries = 3
+[refresh]
+hybrid_wait_seconds = 90
 """
     )
     c = load_config(p)
     assert c.mode == "notify"
     assert c.refresh_interval_minutes == 30
     assert c.max_refresh_count == 5
-    assert c.refresh.prompt == "ping"
-    assert c.refresh.hybrid_wait_seconds == 90
-    assert c.refresh.fire_timeout_seconds == 60
-    assert c.notify.terminal_bell is False
     assert c.notify.system_notification is False
-    assert c.notify.imminent_threshold_minutes == 10
-    assert c.advanced.daemon_poll_max_seconds == 30
-    assert c.advanced.cache_cold_max_retries == 3
+    assert c.refresh.hybrid_wait_seconds == 90
 
 
 def test_invalid_mode_raises(tmp_path):
@@ -93,3 +62,63 @@ def test_empty_file_uses_defaults(tmp_path):
     p.write_text("")
     c = load_config(p)
     assert c == Config()
+
+
+def test_syntax_error_falls_back_to_defaults(tmp_path, capsys):
+    """TOML syntax error → 기본값 + stderr 경고."""
+    p = tmp_path / "broken.toml"
+    p.write_text("[general\nmode = bad")  # 닫는 ] 없음
+    c = load_config(p)
+    assert c == Config()
+    err = capsys.readouterr().err
+    assert "syntax error" in err
+
+
+def test_deprecated_options_detected_and_ignored(tmp_path, capsys):
+    """v0.2.x 폐기 옵션 → stderr 경고 + load 성공 (옵션 무시)."""
+    p = tmp_path / "c.toml"
+    p.write_text(
+        """
+[general]
+mode = "auto"
+
+[refresh]
+hybrid_wait_seconds = 70
+prompt = "ping"
+fire_timeout_seconds = 120
+
+[notify]
+system_notification = false
+terminal_bell = true
+imminent_threshold_minutes = 5
+
+[advanced]
+daemon_poll_max_seconds = 30
+"""
+    )
+    c = load_config(p)
+    # 호환 옵션은 정상 로드
+    assert c.mode == "auto"
+    assert c.refresh.hybrid_wait_seconds == 70
+    assert c.notify.system_notification is False
+    # 폐기 옵션 무시 — RefreshConfig/NotifyConfig 가 받지 않음
+    assert not hasattr(c.refresh, "prompt")
+    assert not hasattr(c.notify, "terminal_bell")
+    # stderr 경고
+    err = capsys.readouterr().err
+    assert "deprecated" in err
+    assert "refresh.prompt" in err
+    assert "refresh.fire_timeout_seconds" in err
+    assert "notify.terminal_bell" in err
+    assert "notify.imminent_threshold_minutes" in err
+    assert "[advanced]" in err
+
+
+def test_no_warning_when_no_deprecated_options(tmp_path, capsys):
+    p = tmp_path / "clean.toml"
+    p.write_text(
+        '[general]\nmode = "auto"\n[refresh]\nhybrid_wait_seconds = 30\n'
+    )
+    load_config(p)
+    err = capsys.readouterr().err
+    assert "deprecated" not in err

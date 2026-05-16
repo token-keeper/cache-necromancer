@@ -2,6 +2,75 @@
 
 이 프로젝트의 모든 주목할 만한 변경사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고, [Semantic Versioning](https://semver.org/lang/ko/) 을 준수합니다.
 
+## [0.3.0] — 2026-05-16
+
+**Architecture 전면 전환** — v0.2.x daemon + `claude -p` fire architecture 가 cache namespace 분리 (chat 의 system prompt 와 `-p` 의 system prompt 가 byte 단위로 다름) 때문에 실제로는 cache TTL 갱신 못 하던 fundamental 결함을 발견. Claude Code 의 native **Stop hook + asyncRewake** 로 chat 세션이 자기 자신을 wake 하는 방식으로 전환 (system prompt + tools byte-exact 보존 → cache prefix 100% hit).
+
+검증 결과 (POC):
+- 30분 sleep 후 wake → cr=44.55K (cache 100% hit, $0.044)
+- 1M context 두 번째 wake → cc=586 / cr=153.7K / $0.085 (94% 절감)
+
+### Breaking Changes
+
+- **Daemon 메커니즘 폐기**: `daemon/` 디렉토리 전체 (11 파일), `lib/lockfile.py`, `lib/state.py`, `lib/plugin_state.py` 삭제. `~/.cache-necromancer/lock` + `state/` 디렉토리 사용 안 함.
+- **Config 옵션 폐기** (detect 시 stderr 경고 + 무시):
+  - `notify.terminal_bell`, `notify.imminent_threshold_minutes`
+  - `refresh.prompt`, `refresh.fire_timeout_seconds`
+  - `[advanced]` 전체 (12 필드 — daemon poll, fire watchdog, backoff 등)
+- **`/cn:dry-run` 명령 폐기**: subprocess fire preview 의미 사라짐.
+- **`refresh_interval_minutes` default 변경**: 55 → 50 (1h cache 기준 + 안전 마진). 기존 명시값은 유지.
+- **`/cn:status` 출력 재설계**: 데몬 박스 제거, 세션은 marker 기반.
+
+### Added
+
+- **`scripts/refresh.py`** (신규) — Stop hook 의 asyncRewake 본체. mode 별 sleep + wake/notify 분기.
+- **`lib/marker.py`** (신규) — per-session marker file. atomic write (`tempfile + os.replace + 디렉터리 fsync`). `cleanup_stale(7일)` helper.
+- **`lib/install.py`** (신규) + `cn install` / `cn uninstall` CLI — plugin marketplace 미사용 환경 fallback. settings.json 에 Stop hook 추가/제거. v0.2.x stale daemon detect 후 사용자 안내.
+- **`lib/notify.py`** (신규) — macOS osascript 알림 wrapper.
+- **`lib/config.py`**: `detect_deprecated_keys()`, `parse_config_file()` public API 추가.
+- **Hook config**: `hooks/hooks.json` 의 Stop hook 이 `refresh.py` + `asyncRewake: true` + `timeout: 3600` (default 10분 timeout 회피).
+- **`pyproject.toml`**: `[project.scripts] cn = "lib.install:main"` 추가, version 0.3.0.
+- **테스트**: marker / refresh / install / cn_status / on_user_prompt / on_session_end 신규 (~70 테스트).
+
+### Changed
+
+- **`scripts/on_user_prompt.py`**: state 추적 폐기 → marker.wake_count = 0 reset 만.
+- **`scripts/on_session_end.py`**: 현재 sid marker 삭제 + 7일 stale glob 정리.
+- **`scripts/cn_status.py`**: 마커 기반 출력 + plugin/hook 등록 상태 + deprecated config 경고.
+- **`lib/mode_help.py`**: "fire" → "wake" 표현 통일, "데몬 재시작" → "새 chat 세션".
+- **`.claude-plugin/plugin.json`**: version 0.3.0, description "via Stop hook + asyncRewake".
+
+### Removed
+
+- `daemon/` 11 파일 (`__main__`, `clock`, `handler`, `notifier`, `poller`, `refresh`, `scheduler`, `spawn`, `transcript`, `watchdog`).
+- `lib/lockfile.py`, `lib/state.py`, `lib/plugin_state.py`.
+- `scripts/on_stop.py` (refresh.py 로 대체).
+- `tests/daemon/` 11 + `tests/lib/test_lockfile.py` + `test_state.py` + `tests/scripts/test_on_stop.py`.
+- `commands/cn:dry-run.md` (이미 v0.2.0 에서 삭제).
+
+### Migration
+
+```bash
+# 1. v0.2.x daemon 정지
+pkill -f "python.*-m daemon" || true
+
+# 2. stale 파일 정리
+rm -rf ~/.cache-necromancer/lock ~/.cache-necromancer/state
+
+# 3. 업그레이드
+/plugin update cache-necromancer
+
+# 4. 새 chat 세션 시작 (settings hot-reload 안 됨)
+```
+
+기존 `config.toml` 의 호환 옵션 (mode / refresh_interval_minutes / max_refresh_count / system_notification / hybrid_wait_seconds) 은 그대로 동작. 폐기 옵션은 무시 (stderr 경고).
+
+### Notes
+
+- net 코드 변경: -5478줄 / +1900줄 (daemon 폐기 + 신규 marker/refresh/install/cn_status)
+- pytest: 251 → **124+ 통과** (daemon 관련 폐기 후 base 작아짐)
+- 진단 + POC 비용 ~$5 (1M context 환경)
+
 ## [0.2.1] — 2026-05-14
 
 핵심 fire 기능 복구 — `claude -p --output-format json` 의 실제 응답 형식 (메시지 list) 처리.

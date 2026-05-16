@@ -1,8 +1,8 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "cache-necromancer",
-  "version": "0.2.0",
-  "description": "Auto-refresh Claude Code prompt cache TTL via headless CLI",
+  "version": "0.3.0",
+  "description": "Auto-refresh Claude Code prompt cache TTL via Stop hook + asyncRewake",
   "author": {"name": "Brody Byun"},
   "license": "MIT",
   "keywords": ["cache", "cost", "macos"],
@@ -10,7 +10,7 @@
     "mode": {
       "type": "string",
       "title": "동작 모드",
-      "description": "notify (알림만, fire 없음) / auto (자동 fire) / hybrid (60초 사전 알림 후 fire, 취소 가능). 다른 값 입력 시 hybrid 로 fallback.",
+      "description": "notify (알림만, wake 없음) / auto (자동 wake) / hybrid (60초 사전 알림 후 wake, 취소 가능). 다른 값 입력 시 hybrid 로 fallback.",
       "default": "hybrid"
     }
   }
