@@ -6,3 +6,6 @@ __pycache__/
 .obsidian/
 .omx/
 uv.lock
+
+# Project-local Claude Code config (POC / 개인 hook 등)
+.claude/
