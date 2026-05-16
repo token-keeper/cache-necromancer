@@ -2,6 +2,23 @@
 
 이 프로젝트의 모든 주목할 만한 변경사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고, [Semantic Versioning](https://semver.org/lang/ko/) 을 준수합니다.
 
+## [0.3.7] — 2026-05-16
+
+**`/cn:status` 헤더 줄바꿈 + `wake/notify count` → `repeat count` rename** — v0.3.6 dogfooding 직후 가독성 피드백 반영.
+
+### Changed
+
+- **`scripts/cn_status.py` `_build_header_line` → `_build_header_lines`**: 단일 long line → 2줄 분리.
+  - 줄 1: `mode: <label> — <설명>`
+  - 줄 2: `refresh_interval: 50m · max_refresh: 10`
+- **`scripts/cn_status.py` `_build_session_box`**: 현재 세션의 `wake/notify count` 라벨 → **`repeat count`** (짧고 명확). 다른 라벨도 padding 재정렬.
+
+### Notes
+
+- pytest baseline: 120/120 유지 (label 변경 1건 test assertion update)
+- 코드 변경: +6 / -5 (label/format only)
+- `wake_count` 데이터 필드명은 그대로 (TECH_SPEC §3.1 — mode 무관 통합 카운터)
+
 ## [0.3.6] — 2026-05-16
 
 **`/cn:status` 의 "다른 세션" 박스에서 빈 marker 필터** — v0.3.5 dogfooding 직후 발견. `latest_fire == 0` 인 marker (on_user_prompt hook 만 발화 + Stop hook 발화 전 chat 종료된 케이스) 가 "다음: —, 마지막: —" 인 빈 박스로 노출되던 noise 해소.
