@@ -154,11 +154,16 @@ def _build_other_sessions_box(
     """다른 세션 — outer "다른 세션" 박스 안에 sid 별 inner 박스 (v0.3.5).
 
     최대 OTHER_SESSIONS_MAX_SHOW 개 표시 (latest_fire 내림차순). 더 있으면 "... 외 N개" 표시.
+
+    v0.3.6: latest_fire == 0 인 빈 marker 는 표시 제외 (다음 fire 시간 / 마지막
+    프롬프트 모두 없는 빈 박스 노출 차단). on_user_prompt hook 만 발화 + Stop hook
+    발화 전 chat 종료된 케이스 등.
     """
-    if not others:
+    active = [m for m in others if m.latest_fire > 0]
+    if not active:
         return wrap_outer("다른 세션", ["없음"])
 
-    sorted_others = sorted(others, key=lambda m: m.latest_fire, reverse=True)
+    sorted_others = sorted(active, key=lambda m: m.latest_fire, reverse=True)
     shown = sorted_others[:OTHER_SESSIONS_MAX_SHOW]
 
     # 모든 inner 박스의 너비 통일 — 각 박스의 자연 inner_width 의 최대값으로

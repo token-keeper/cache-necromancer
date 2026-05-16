@@ -16,6 +16,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from lib.marker import Marker  # noqa: E402
+from lib.mask import mask_sid  # noqa: E402
 from lib.session_id import sanitize  # noqa: E402
 from scripts.cn_status import CN_HOOK_MARKER, main  # noqa: E402
 
@@ -139,6 +140,40 @@ class TestOtherSessions:
         out = _run_status()
         # 5개만 표시 + ... 외 3개
         assert "... 외 3개" in out
+
+    def test_other_session_filters_empty_markers(
+        self, cn_root, isolated_settings, monkeypatch
+    ):
+        """v0.3.6: latest_fire == 0 인 빈 marker 는 표시 제외 (noise 방지)."""
+        # 의미 있는 marker 1개
+        Marker(
+            sid_hash=sanitize("active"),
+            latest_fire=int(time.time() * 1_000_000_000),
+            last_prompt="작업 중",
+        ).save()
+        # 빈 marker 3개 (latest_fire = 0, last_prompt = "")
+        for sid in ("empty-a", "empty-b", "empty-c"):
+            Marker(sid_hash=sanitize(sid)).save()
+
+        monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+        out = _run_status()
+
+        # 의미 있는 sid 만 표시
+        assert mask_sid(sanitize("active")) in out
+        # 빈 marker 의 sid 는 노출 X
+        for sid in ("empty-a", "empty-b", "empty-c"):
+            assert mask_sid(sanitize(sid)) not in out
+
+    def test_other_session_all_empty_shows_none(
+        self, cn_root, isolated_settings, monkeypatch
+    ):
+        """모든 다른 세션이 빈 marker 면 '없음' 표시."""
+        for sid in ("empty-1", "empty-2"):
+            Marker(sid_hash=sanitize(sid)).save()
+        monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+        out = _run_status()
+        assert "다른 세션" in out
+        assert "없음" in out
 
     def test_empty_when_no_markers(
         self, cn_root, isolated_settings, monkeypatch
