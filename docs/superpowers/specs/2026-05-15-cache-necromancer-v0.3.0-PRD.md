@@ -148,6 +148,7 @@ CHANGELOG + README 의 Migration 섹션에 단계별 안내.
 | Plugin install UX 의 Claude Code 버전 의존성 | Low | 최소 지원 버전 명시. fallback 으로 `cn install` CLI 제공 |
 | Wake 메시지의 transcript noise (영구 기록) | Mid | 짧은 ping 메시지 ("ok" 응답) + Claude Code UI 가 reminder body hide 함을 확인 |
 | `mode = notify` 사용자가 cache 갱신 효과 0 (cache rebuild 비용 그대로) | Low | README 에 "notify mode 는 알림만, 비용 절감 효과 없음" 명시. cn:status 에 현재 mode 표시 |
+| Claude Code hook payload 형식 변경 (stdin JSON ↔ env CLAUDE_CODE_SESSION_ID) | Low | hook script 가 stdin JSON 우선 + env fallback 둘 다 처리 (commit 521a66e). 한 채널 깨져도 다른 쪽에서 session_id 확보 |
 
 ## 8. 도구 정신 (변경 없음)
 

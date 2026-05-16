@@ -106,16 +106,38 @@ hybrid_wait_seconds = 60              # hybrid 모드 알림 후 사용자 input
 ### 4.1 공통 진입
 
 ```python
-sid_hash = sanitize(os.environ["CLAUDE_CODE_SESSION_ID"])
+# session_id 는 Claude Code hook 의 stdin JSON payload 우선, env fallback.
+# (Claude Code 는 stdin 으로 {"session_id": "..."} 전달. env 변수는 보장 X)
+def _resolve_session_id() -> str:
+    try:
+        raw = sys.stdin.read()
+        if raw.strip():
+            sid = json.loads(raw).get("session_id", "")
+            if sid:
+                return sid
+    except (json.JSONDecodeError, OSError):
+        pass
+    return os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+
+sid = _resolve_session_id()
+if not sid:
+    sys.exit(0)                       # silent — chat 영향 X
+
+sid_hash = sanitize(sid)
+ensure_config_file(config_path)       # 없으면 default 작성 (PRD §3.2)
 marker = Marker.load(sid_hash)        # 없으면 새로 생성
-my_ts = int(time.time())
+my_ts = time.time_ns()                # ns 단위 wall clock (같은 초 fire 2개 race-resistant)
 marker.latest_fire = my_ts
-marker.save()
+if not _save_marker(marker, "fire"):  # save 실패 시 wake 포기 + exit 0
+    sys.exit(0)
 
 if marker.wake_count >= config.max_refresh_count:
     log_skip(reason="max_refresh_count_reached")
     sys.exit(0)
 ```
+
+> v0.3.0 commit 521a66e (P0 fix): env 단독 가정은 hook 환경에서 깨졌음. stdin JSON 이 정식 채널.
+> on_user_prompt.py / on_session_end.py 도 동일 패턴.
 
 ### 4.2 mode = notify
 
@@ -240,13 +262,14 @@ $ cn install
 #    - cache-necromancer hook 이 이미 있으면: "이미 설치됨" 출력 후 exit 0
 #    - 다른 사용자 hook 이 있으면: "기존 hook 과 공존 — 충돌 가능. 계속? [y/N]"
 #    - 없으면: 새 hook 추가
-# 4. settings.json 에 다음 추가 (timeout 필드 의도적 생략 — 아래 주석 참조):
+# 4. settings.json 에 다음 추가:
 #    {
 #      "hooks": {
 #        "Stop": [{"hooks": [{
 #          "type": "command",
 #          "command": "python3 /path/to/cache-necromancer/scripts/refresh.py",
-#          "asyncRewake": true
+#          "asyncRewake": true,
+#          "timeout": 3600
 #        }]}]
 #      }
 #    }
@@ -256,7 +279,9 @@ $ cn install
 #    - deprecated config 옵션 detect 되면 경고
 ```
 
-**timeout 필드 미지정 이유**: hook timeout 의 default 는 60s 인데, refresh.py 는 sleep 50분 = 3000s. POC C 검증 결과 `asyncRewake: true` (+ implied `async: true`) 의 background process 는 **hook timeout 적용을 받지 않음** (POC C 에서 timeout 60s + sleep 30분 setting 이 정상 wake). 단 향후 Claude Code 변경 가능성 있으니 §11.2 수동 검증 항목에 "asyncRewake background 의 timeout 동작" 명시. plugin manifest 의 `hooks/hooks.json` 에서도 동일하게 timeout 필드 생략.
+**timeout: 3600 명시 이유**: POC C 시점 가설은 "`asyncRewake: true` background 는 hook timeout 적용을 받지 않음" 이었으나 (POC C 에서 timeout 60s + sleep 30분 setting 이 정상 wake), 후속 검증에서 Claude Code 의 default 10분 timeout 이 일부 환경에서 적용 가능성 발견 → 안전하게 `timeout: 3600` (1시간) 명시. refresh.py 의 sleep 은 default 50분 = 3000s 이므로 여유 600s. plugin manifest 의 `hooks/hooks.json` + `cn install` 이 작성하는 settings.json 양쪽 모두 동일.
+
+> 향후 Claude Code 가 asyncRewake timeout 정책을 명문화하면 이 값을 더 단순화 가능.
 
 ### 7.2 `cn uninstall` 동작
 

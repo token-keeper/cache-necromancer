@@ -163,6 +163,8 @@ Claude Code 는 settings hot-reload 안 함. 새 chat 세션 시작 필요.
 2. `wake/notify count` 가 `max_refresh_count` 도달 → user input 으로 reset 됨
 3. 사용자가 input 한 직후 50분 안에는 wake 안 함 (정상)
 4. `/cn:status` 의 hook 등록 상태 확인
+5. 마커가 안 생기면 hook 의 stdin payload 가 비어있을 가능성 — refresh.py 는 stdin JSON 의 `session_id` 우선, `CLAUDE_CODE_SESSION_ID` env 변수 fallback (둘 다 비어있으면 silent exit 0)
+6. `config.toml` 이 없으면 첫 hook fire 가 default 로 자동 생성 (수동 작성 불필요)
 
 ### Wake 메시지가 transcript 에 노이즈
 Wake-up turn (`<task-notification>` + ping + 모델 'ok' 응답) 은 영구 transcript 기록. UI 가 reminder body 는 hide 하지만 'ok' 응답은 visible.
