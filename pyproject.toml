@@ -1,6 +1,6 @@
 [project]
 name = "cache-necromancer"
-version = "0.3.7"
+version = "0.3.8"
 description = "Auto-refresh Claude Code prompt cache TTL via Stop hook + asyncRewake"
 requires-python = ">=3.11"
 license = {text = "MIT"}

@@ -2,6 +2,23 @@
 
 이 프로젝트의 모든 주목할 만한 변경사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고, [Semantic Versioning](https://semver.org/lang/ko/) 을 준수합니다.
 
+## [0.3.8] — 2026-05-16
+
+**docs sync** — v0.3.5~v0.3.7 사이클에서 누락됐던 README + TECH_SPEC §8 mockup 갱신. 코드 변경 0줄, docs only.
+
+### Changed
+
+- **`README.md`**:
+  - "빠른 시작" 의 `/cn:status` 설명: "wake/notify count + cache 추정 만료" → "다음 발동 예상"
+  - `/cn:status` mockup 을 v0.3.7 형식으로 통째 갱신 (헤더 2줄 / 시작·마지막 wake·cache 추정 제거 / `repeat count` / 다른 세션 중첩 박스 / dynamic version)
+  - 트러블슈팅 "wake 가 발생하지 않음" 의 `wake/notify count` → `repeat count`
+- **`TECH_SPEC.md` §8**: mockup 을 v0.3.7 형식으로 갱신 + v0.3.6 (빈 marker filter) / v0.3.7 (헤더 줄바꿈 + repeat count) 변경 노트 추가
+
+### Notes
+
+- 본 commit 은 docs only 변경이라 사용자 명시 승인으로 **main branch 직접 commit** (PR 우회). 글로벌 룰 (development.md: "main 직접 작업 절대 금지") 의 1회성 예외 — 본 commit 한정.
+- pytest 영향 없음 (코드 미변경).
+
 ## [0.3.7] — 2026-05-16
 
 **`/cn:status` 헤더 줄바꿈 + `wake/notify count` → `repeat count` rename** — v0.3.6 dogfooding 직후 가독성 피드백 반영.
