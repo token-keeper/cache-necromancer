@@ -48,8 +48,12 @@ def _env_mode_override() -> str | None:
     return v if v else None
 
 
-def _warn_deprecated(data: dict) -> None:
-    """v0.2.x 의 폐기된 옵션 detect 시 stderr 경고 (load 자체는 성공)."""
+def detect_deprecated_keys(data: dict) -> list[str]:
+    """v0.2.x 의 폐기된 옵션 list 반환. load_config + cn_status 양쪽이 공유.
+
+    Returns:
+        ["refresh.prompt", "[advanced] (keys: ...)", ...] 형식.
+    """
     found: list[str] = []
     for key in data.get("refresh", {}):
         if key in _DEPRECATED_REFRESH:
@@ -60,12 +64,35 @@ def _warn_deprecated(data: dict) -> None:
     if "advanced" in data:
         adv_keys = ", ".join(sorted(data["advanced"].keys())) or "(빈 섹션)"
         found.append(f"[advanced] (전체 섹션 — keys: {adv_keys})")
+    return found
+
+
+def _warn_deprecated(data: dict) -> None:
+    """v0.2.x 폐기 옵션 detect 시 stderr 경고 (load 자체는 성공)."""
+    found = detect_deprecated_keys(data)
     if found:
         print(
             "[cn:warn] deprecated v0.2.x config 옵션 감지 (v0.3.0 에서 폐기, 무시): "
             + ", ".join(found),
             file=sys.stderr,
         )
+
+
+def parse_config_file(path: Path) -> tuple[dict, str | None]:
+    """TOML 파일 raw parse. (data, error_msg) 반환. 파일 없으면 ({}, None).
+
+    cn_status 가 deprecated detect 만 위해 load_config 의 side effect 를 피하고
+    싶을 때 사용.
+    """
+    if not path.exists():
+        return {}, None
+    try:
+        with open(path, "rb") as f:
+            return tomllib.load(f), None
+    except tomllib.TOMLDecodeError as e:
+        return {}, str(e)
+    except OSError as e:
+        return {}, str(e)
 
 
 def load_config(path: Path) -> Config:
