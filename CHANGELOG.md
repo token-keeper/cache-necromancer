@@ -2,6 +2,35 @@
 
 이 프로젝트의 모든 주목할 만한 변경사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고, [Semantic Versioning](https://semver.org/lang/ko/) 을 준수합니다.
 
+## [0.3.2] — 2026-05-16
+
+**로그 파일명 정리** — v0.2.x daemon 폐기 후에도 남아있던 `daemon.log` 파일명을 `cn.log` 로 rename. 함께 dead code (`log_fire` / `log_user_turn` + `fire.log` / `user_turn.log`) 제거 (YAGNI — v0.4.0 metrics 트랙에서 재설계 예정).
+
+### Changed
+
+- **`lib/logger.py`**: `_append("daemon.log", ...)` → `_append("cn.log", ...)` (`log_info` / `log_warn` 둘 다). docstring 갱신.
+- **`tests/lib/test_logger.py`**: 활성 테스트 (log_info/log_warn/append/silent/permissions) 의 `daemon.log` → `cn.log` path 갱신.
+
+### Removed
+
+- `lib/logger.py`: `log_fire()` 함수 + `fire.log` 파일 (v0.3.0 fire 개념 폐기 후 dead).
+- `lib/logger.py`: `log_user_turn()` 함수 + `user_turn.log` 파일 (Phase 4 대시보드용으로 도입됐으나 v0.3.0 에서 미사용 dead).
+- `tests/lib/test_logger.py`: log_fire/log_user_turn 관련 테스트 5개 (`test_log_fire_writes_to_fire_log`, `test_log_fire_no_sensitive_data`, `test_log_user_turn_writes_to_user_turn_log`, `test_log_user_turn_after_fire_false`, `test_log_user_turn_no_sensitive_data`).
+
+### Migration
+
+옛 `~/.cache-necromancer/daemon.log.*` 파일은 자동 정리 X. 필요 시 수동 삭제:
+
+```bash
+rm ~/.cache-necromancer/daemon.log.* ~/.cache-necromancer/fire.log.* ~/.cache-necromancer/user_turn.log.*
+```
+
+### Notes
+
+- v0.3.1 은 docs/spec sync + 폴더 reorg PR (PR #13). version bump 없이 docs only.
+- net 코드 변경: -111 줄 / +14 줄 (logger.py + test_logger.py)
+- pytest baseline 영향: -5 테스트 (dead 테스트 삭제)
+
 ## [0.3.0] — 2026-05-16
 
 **Architecture 전면 전환** — v0.2.x daemon + `claude -p` fire architecture 가 cache namespace 분리 (chat 의 system prompt 와 `-p` 의 system prompt 가 byte 단위로 다름) 때문에 실제로는 cache TTL 갱신 못 하던 fundamental 결함을 발견. Claude Code 의 native **Stop hook + asyncRewake** 로 chat 세션이 자기 자신을 wake 하는 방식으로 전환 (system prompt + tools byte-exact 보존 → cache prefix 100% hit).
