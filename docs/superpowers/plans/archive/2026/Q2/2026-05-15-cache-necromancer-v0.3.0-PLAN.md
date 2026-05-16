@@ -27,15 +27,15 @@ v0.2.x daemon-based architecture 를 v0.3.0 asyncRewake hook architecture 로 �
 ### Commit 1 — `docs(v0.3.0): PRD + TECH_SPEC + handoff 문서 추가`
 
 **파일**:
-- `docs/superpowers/specs/2026-05-15-cache-necromancer-v0.3.0-PRD.md`
-- `docs/superpowers/specs/2026-05-15-cache-necromancer-v0.3.0-TECH_SPEC.md`
-- `docs/superpowers/plans/2026-05-15-cache-necromancer-v0.3.0-PLAN.md` (이 파일)
-- `docs/handoff/2026-05-15-v0.2.2-cache-investigation.md`
-- `docs/handoff/2026-05-15-v0.3.0-asyncrewake-fix.md`
+- `docs/superpowers/specs/active/2026-05-15-cache-necromancer-v0.3.0-PRD.md`
+- `docs/superpowers/specs/active/2026-05-15-cache-necromancer-v0.3.0-TECH_SPEC.md`
+- `docs/superpowers/plans/archive/2026/Q2/2026-05-15-cache-necromancer-v0.3.0-PLAN.md` (이 파일)
+- `docs/handoff/archive/2026/Q2/2026-05-15-v0.2.2-cache-investigation.md`
+- `docs/handoff/archive/2026/Q2/2026-05-15-v0.3.0-asyncrewake-fix.md`
 
 **작업**:
 - 새 파일 5개 추가 (이미 작성 완료)
-- `docs/handoff/2026-05-15-v0.2.2-fire-tty-rootcause.md` 는 superseded 라 commit 제외 (별도 결정 — 삭제 또는 보관)
+- `docs/handoff/archive/2026/Q2/2026-05-15-v0.2.2-fire-tty-rootcause.md` 는 superseded 라 commit 제외 (별도 결정 — 삭제 또는 보관)
 
 **검증**:
 - `git add` + `git commit` (테스트 무관)

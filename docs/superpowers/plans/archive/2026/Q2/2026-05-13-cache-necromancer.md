@@ -12,8 +12,8 @@
 **Tech Stack:** Python 3.11+ (tomllib, fcntl), Claude Code CLI v2.x, macOS (osascript), pytest + freezegun.
 
 **Reference Documents:**
-- PRD: `docs/superpowers/specs/2026-05-12-cache-necromancer-PRD.md`
-- TECH_SPEC v5.1: `docs/superpowers/specs/2026-05-12-cache-necromancer-design-v5.md`
+- PRD: `docs/superpowers/specs/archive/2026/Q2/2026-05-12-cache-necromancer-PRD.md`
+- TECH_SPEC v5.1: `docs/superpowers/specs/archive/2026/Q2/2026-05-12-cache-necromancer-design-v5.md`
 
 ---
 
@@ -909,8 +909,8 @@ gh pr create --title "feat(phase-1a): 기반 라이브러리 (state/lockfile/ses
 - config.py TOML 로드 + 기본값
 - logger.py 일자별 회전 + 민감정보 미기록
 
-PRD: docs/superpowers/specs/2026-05-12-cache-necromancer-PRD.md
-SPEC v5.1: docs/superpowers/specs/2026-05-12-cache-necromancer-design-v5.md
+PRD: docs/superpowers/specs/archive/2026/Q2/2026-05-12-cache-necromancer-PRD.md
+SPEC v5.1: docs/superpowers/specs/archive/2026/Q2/2026-05-12-cache-necromancer-design-v5.md
 
 ## Test plan
 - [x] pytest tests/lib/ 모두 통과

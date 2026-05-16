@@ -48,6 +48,11 @@
 - `tests/daemon/` 11 + `tests/lib/test_lockfile.py` + `test_state.py` + `tests/scripts/test_on_stop.py`.
 - `commands/cn:dry-run.md` (이미 v0.2.0 에서 삭제).
 
+### Fixed (post-PR)
+
+- **`config.toml` 자동 생성 누락 fix** (cf9e37c) — v0.2.x 에서는 daemon spawn 시 `ensure_config_file()` 호출했으나 v0.3.0 daemon 폐기로 호출 위치가 사라져 첫 hook fire 시 config 없으면 silent 종료하는 회귀가 있었음. `scripts/refresh.py` 진입부 + `lib/install.py install_main` 양쪽에서 호출하도록 복구. PRD §3.2 약속 충족.
+- **`refresh.py` stdin session_id 처리 fix** (521a66e, P0) — Claude Code hook 은 stdin JSON 으로 `{"session_id": ...}` 전달. v0.3.0 초기 구현은 `os.environ["CLAUDE_CODE_SESSION_ID"]` 만 사용 → 사용자 환경에서 wake 가 영영 발생 안 함. `_resolve_session_id()` 추가: stdin 우선 + env fallback. `on_user_prompt.py` / `on_session_end.py` 와 패턴 일관.
+
 ### Migration
 
 ```bash
