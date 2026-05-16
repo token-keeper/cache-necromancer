@@ -2,6 +2,23 @@
 
 이 프로젝트의 모든 주목할 만한 변경사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고, [Semantic Versioning](https://semver.org/lang/ko/) 을 준수합니다.
 
+## [0.3.6] — 2026-05-16
+
+**`/cn:status` 의 "다른 세션" 박스에서 빈 marker 필터** — v0.3.5 dogfooding 직후 발견. `latest_fire == 0` 인 marker (on_user_prompt hook 만 발화 + Stop hook 발화 전 chat 종료된 케이스) 가 "다음: —, 마지막: —" 인 빈 박스로 노출되던 noise 해소.
+
+### Fixed
+
+- **`scripts/cn_status.py` `_build_other_sessions_box`**: `latest_fire > 0` 인 marker 만 표시하도록 filter 추가. 모든 다른 세션이 빈 marker 면 `없음` 표시.
+
+### Added
+
+- **`tests/scripts/test_cn_status.py`**: 2개 신규 (`test_other_session_filters_empty_markers`, `test_other_session_all_empty_shows_none`).
+
+### Notes
+
+- pytest baseline: 118 → **120** (+2)
+- 코드 변경: +6줄 (filter 한 줄 + docstring)
+
 ## [0.3.5] — 2026-05-16
 
 **`/cn:status` 출력 재설계 + `marker.last_prompt` 필드 추가** — dogfooding 첫날 피드백 반영. 현재 세션 박스는 회고용 정보 (시작/마지막 wake/cache 추정) 제거하여 핵심 3줄로 단순화. 다른 세션 박스는 중첩 박스로 재구성하고 sid 식별을 돕는 last_prompt (첫 줄 40자) 추가.
