@@ -2,6 +2,44 @@
 
 이 프로젝트의 모든 주목할 만한 변경사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고, [Semantic Versioning](https://semver.org/lang/ko/) 을 준수합니다.
 
+## [0.3.5] — 2026-05-16
+
+**`/cn:status` 출력 재설계 + `marker.last_prompt` 필드 추가** — dogfooding 첫날 피드백 반영. 현재 세션 박스는 회고용 정보 (시작/마지막 wake/cache 추정) 제거하여 핵심 3줄로 단순화. 다른 세션 박스는 중첩 박스로 재구성하고 sid 식별을 돕는 last_prompt (첫 줄 40자) 추가.
+
+### Added
+
+- **`Marker.last_prompt: str`** (신규 필드) — on_user_prompt hook 이 stdin payload 의 `prompt` 필드를 첫 줄 + 40자 truncate (`…` 표시) 후 marker 에 저장. `/cn:status` 의 "다른 세션" 박스에서 세션 식별용으로 표시.
+- **`tests/lib/test_marker.py`**: round-trip 에 `last_prompt` 포함 + 백워드 호환 테스트 (`test_load_legacy_marker_without_last_prompt`).
+- **`tests/scripts/test_on_user_prompt.py`** `TestLastPromptCapture` 클래스 (7 신규 테스트): short/long truncate, 40자 경계, multiline 첫 줄 only, empty/missing 시 보존, control char strip.
+- **`tests/scripts/test_cn_status.py`**: 다른 세션 박스 신규 형식 (last_prompt 표시 / 백워드 — / max show 5개 제한) 테스트.
+
+### Changed
+
+- **`scripts/cn_status.py` `_build_session_box`**: 현재 세션에서 `시작` / `마지막 wake/notify` / `cache 추정` 3개 줄 제거. `sid` / `wake/notify count` / `다음 발동 예상` 3줄만 유지.
+- **`scripts/cn_status.py` `_build_other_sessions_box`**: 단일 박스 + per-line 표시 → **중첩 박스 (outer "다른 세션" + inner sid-titled 박스)**. 본문 = `다음 fire 시간` + `마지막 프롬프트`. `latest_fire` 내림차순 정렬, 최대 5개 표시 (초과 시 `... 외 N개`).
+- **`scripts/cn_status.py` `_build_settings_box`**: `cache-necromancer v0.3.0` hard-code → `.claude-plugin/plugin.json` 에서 dynamic 읽음 (`_plugin_version()` helper).
+- **`scripts/on_user_prompt.py`**: stdin payload 의 `prompt` 필드 추출 + `_truncate_prompt()` (첫 줄 + 40자 + `…` + control char strip) → `marker.last_prompt` 저장 추가. wake_count reset 로직은 그대로.
+- **`lib/marker.py` `Marker` dataclass**: `last_prompt: str = ""` 필드 추가. `save()` JSON body 에 포함. `load()` 는 `data.get("last_prompt", "")` 로 백워드 호환.
+- **`TECH_SPEC.md` §3.1 / §5 / §8**: marker schema, on_user_prompt 동작, /cn:status mockup 갱신.
+
+### Migration
+
+옛 marker file (v0.3.4 이전) 은 자동 호환 — `last_prompt` 필드 없으면 빈 string default, /cn:status 에서 `"—"` 로 표시됨. 새 user input 마다 자연스럽게 채워짐.
+
+별도 cleanup 작업 불필요.
+
+### 도구 정신 갱신 (PRD §8)
+
+PRD §8 의 "민감정보 미기록" 원칙에 **last_prompt 예외 명시**. 근거:
+- marker file 권한 0600 (다른 로컬 사용자 read 불가)
+- single-user alpha 단계 가정
+- 외부 marketplace 공개 시 opt-out flag 도입 검토
+
+### Notes
+
+- pytest baseline: 108 → **118** (+10 신규 테스트)
+- net 변경: 코드 +130 / -50 정도. 테스트 +120 / -10.
+
 ## [0.3.4] — 2026-05-16
 
 **`/cn:config` 슬래시 명령 instructions 갱신** — v0.3.0 사이클에서 빠진 정리 항목. v0.2.x 옵션을 묻고 daemon 재시작을 실행하던 outdated instructions 를 v0.3.0+ 호환 옵션으로 재작성.

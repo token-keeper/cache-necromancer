@@ -56,7 +56,7 @@ class TestCurrentSession:
     ):
         sid = "current-session-id"
         sh = sanitize(sid)
-        # marker 미리 만듦
+        # marker 미리 만듦 (v0.3.5: 시작/마지막 wake/cache 추정 제거됨)
         Marker(
             sid_hash=sh,
             latest_fire=int(time.time() * 1_000_000_000),
@@ -70,7 +70,10 @@ class TestCurrentSession:
         assert "세션 (현재)" in out
         assert "wake/notify count:  2 / 10" in out
         assert "다음 발동 예상" in out
-        assert "cache 추정" in out
+        # v0.3.5: 시작 / 마지막 wake/notify / cache 추정 제거됨
+        assert "시작:" not in out
+        assert "마지막 wake/notify" not in out
+        assert "cache 추정" not in out
 
     def test_no_current_session_when_no_env(
         self, cn_root, isolated_settings, monkeypatch
@@ -85,15 +88,57 @@ class TestOtherSessions:
     def test_lists_other_session_markers(
         self, cn_root, isolated_settings, monkeypatch
     ):
-        # marker 2개 생성
-        Marker(sid_hash=sanitize("session-a"), wake_count=3,
-               last_wake_at=int(time.time()) - 300).save()
-        Marker(sid_hash=sanitize("session-b"), wake_count=1).save()
+        # marker 2개 생성 — v0.3.5: 중첩 박스로 표시 (sid 가 inner box 제목)
+        ts_ns = int(time.time() * 1_000_000_000)
+        Marker(
+            sid_hash=sanitize("session-a"),
+            latest_fire=ts_ns,
+            wake_count=3,
+            last_prompt="첫 번째 세션 작업 중",
+        ).save()
+        Marker(
+            sid_hash=sanitize("session-b"),
+            latest_fire=ts_ns,
+            wake_count=1,
+            last_prompt="두 번째 세션",
+        ).save()
         monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
 
         out = _run_status()
-        assert "wake/notify 3/10" in out
-        assert "wake/notify 1/10" in out
+        # outer 박스
+        assert "다른 세션" in out
+        # inner 박스 본문
+        assert "다음:" in out
+        assert "마지막:" in out
+        # last_prompt 표시 (PRD §8 예외 — single-user alpha)
+        assert "첫 번째 세션 작업 중" in out
+        assert "두 번째 세션" in out
+
+    def test_other_session_shows_em_dash_when_no_prompt(
+        self, cn_root, isolated_settings, monkeypatch
+    ):
+        """옛 marker (last_prompt 없음) 는 '—' 로 표시 (백워드 호환)."""
+        Marker(
+            sid_hash=sanitize("legacy-session"),
+            latest_fire=int(time.time() * 1_000_000_000),
+        ).save()
+        monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+        out = _run_status()
+        assert '마지막:  "—"' in out
+
+    def test_other_session_truncated_when_more_than_max(
+        self, cn_root, isolated_settings, monkeypatch
+    ):
+        """OTHER_SESSIONS_MAX_SHOW 초과 시 '... 외 N개' 표시."""
+        for i in range(8):
+            Marker(
+                sid_hash=sanitize(f"sess-{i:02d}"),
+                latest_fire=int(time.time() * 1_000_000_000) + i,
+            ).save()
+        monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+        out = _run_status()
+        # 5개만 표시 + ... 외 3개
+        assert "... 외 3개" in out
 
     def test_empty_when_no_markers(
         self, cn_root, isolated_settings, monkeypatch

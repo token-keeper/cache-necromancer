@@ -35,12 +35,16 @@ class Marker:
       - wake_count: 누적 wake 또는 notify 횟수 (mode 무관)
       - last_wake_at: 직전 wake/notify 시각
       - session_started_at: 세션 시작 시각
+      - last_prompt: 가장 최근 user prompt (40자 truncate, /cn:status 의
+        세션 식별용). PRD §8 도구 정신 예외: marker 0600 권한 +
+        본인 환경 한정 노출 (single-user alpha 가정).
     """
     sid_hash: str
     latest_fire: int = 0
     wake_count: int = 0
     last_wake_at: int = 0
     session_started_at: int = 0
+    last_prompt: str = ""
 
     @classmethod
     def load(cls, sid_hash: str) -> "Marker":
@@ -58,6 +62,7 @@ class Marker:
                 session_started_at=int(
                     data.get("session_started_at", int(time.time()))
                 ),
+                last_prompt=str(data.get("last_prompt", "")),
             )
         except (json.JSONDecodeError, OSError, ValueError, TypeError):
             return cls(sid_hash=sid_hash, session_started_at=int(time.time()))
@@ -77,6 +82,7 @@ class Marker:
             "wake_count": self.wake_count,
             "last_wake_at": self.last_wake_at,
             "session_started_at": self.session_started_at,
+            "last_prompt": self.last_prompt,
         }
         tmp_path: str | None = None
         try:
