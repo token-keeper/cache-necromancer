@@ -1,24 +1,14 @@
 {
-  "description": "Track session timestamps to drive background cache refresh",
+  "description": "v0.3.0 — asyncRewake hook 기반 cache TTL 갱신",
   "hooks": {
     "Stop": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/on_stop.py\"",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-    "UserPromptExpansion": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/on_status_command.py\"",
-            "timeout": 15
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/refresh.py\"",
+            "asyncRewake": true,
+            "timeout": 3600
           }
         ]
       }
@@ -42,6 +32,17 @@
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/on_session_end.py\"",
             "timeout": 5,
             "async": true
+          }
+        ]
+      }
+    ],
+    "UserPromptExpansion": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/on_status_command.py\"",
+            "timeout": 15
           }
         ]
       }
