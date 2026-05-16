@@ -15,7 +15,7 @@ _PROJECT_ROOT = _HERE.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from lib.box_renderer import box_section, wrap_outer  # noqa: E402
+from lib.box_renderer import box_section, display_width, wrap_outer  # noqa: E402
 from lib.config import Config, detect_deprecated_keys, load_config, parse_config_file  # noqa: E402
 from lib.marker import Marker, marker_dir, marker_path  # noqa: E402
 from lib.mask import mask_sid  # noqa: E402
@@ -24,6 +24,24 @@ from lib.session_id import sanitize  # noqa: E402
 
 CN_HOOK_MARKER = str(_PROJECT_ROOT / "scripts/refresh.py")
 SETTINGS_FILES = ("settings.json", "settings.local.json")
+OTHER_SESSIONS_MAX_SHOW = 5
+
+_PLUGIN_VERSION_CACHE: str | None = None
+
+
+def _plugin_version() -> str:
+    """plugin.json 에서 version 동적 읽기. 실패 시 'unknown'."""
+    global _PLUGIN_VERSION_CACHE
+    if _PLUGIN_VERSION_CACHE is not None:
+        return _PLUGIN_VERSION_CACHE
+    try:
+        data = json.loads(
+            (_PROJECT_ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")
+        )
+        _PLUGIN_VERSION_CACHE = str(data.get("version", "unknown"))
+    except (json.JSONDecodeError, OSError):
+        _PLUGIN_VERSION_CACHE = "unknown"
+    return _PLUGIN_VERSION_CACHE
 
 
 def _resolve_root() -> Path:
@@ -93,22 +111,13 @@ def _ns_to_dt(ns: int, now: datetime) -> datetime:
 
 
 def _build_session_box(marker: Marker, config: Config, now: datetime) -> list[str]:
-    """현재 세션 박스 (TECH_SPEC §8 형식)."""
+    """현재 세션 박스 (TECH_SPEC §8 형식) — v0.3.5: sid/count/다음 발동 3개 줄만."""
     masked = mask_sid(marker.sid_hash)
-    started = (
-        datetime.fromtimestamp(marker.session_started_at, tz=timezone.utc).astimezone()
-        if marker.session_started_at
-        else None
-    )
 
-    lines = [f"sid:                {masked}"]
-    if started:
-        lines.append(f"시작:                {started.strftime('%Y-%m-%d %H:%M:%S')}")
-    lines.append(
-        f"wake/notify count:  {marker.wake_count} / {config.max_refresh_count}"
-    )
-    lines.append(f"마지막 wake/notify: {_format_ts(marker.last_wake_at, now)}")
-
+    lines = [
+        f"sid:                {masked}",
+        f"wake/notify count:  {marker.wake_count} / {config.max_refresh_count}",
+    ]
     # 다음 발동 예상: latest_fire + refresh_interval
     if marker.latest_fire > 0:
         next_dt = _ns_to_dt(marker.latest_fire, now) + timedelta(
@@ -118,30 +127,62 @@ def _build_session_box(marker: Marker, config: Config, now: datetime) -> list[st
             f"다음 발동 예상:     {next_dt.strftime('%Y-%m-%d %H:%M:%S')} "
             f"({_format_delta(next_dt, now)})"
         )
-        # cache 추정 만료: 1h cache 기준 fire + 60m
-        cache_exp = _ns_to_dt(marker.latest_fire, now) + timedelta(hours=1)
-        lines.append(
-            f"cache 추정:         {cache_exp.strftime('%Y-%m-%d %H:%M:%S')} "
-            f"({_format_delta(cache_exp, now)})"
-        )
 
     return box_section("세션 (현재)", lines)
 
 
-def _build_other_sessions_box(others: list[Marker], config: Config, now: datetime) -> list[str]:
-    if not others:
-        return box_section("다른 세션", ["없음"])
+def _other_session_lines(marker: Marker, config: Config, now: datetime) -> list[str]:
+    """다른 세션 inner 박스의 본문 — 다음 fire + 마지막 프롬프트."""
     lines = []
-    for m in others:
-        masked = mask_sid(m.sid_hash)
-        last = "—" if m.last_wake_at == 0 else _format_delta(
-            datetime.fromtimestamp(m.last_wake_at, tz=timezone.utc).astimezone(), now
+    if marker.latest_fire > 0:
+        next_dt = _ns_to_dt(marker.latest_fire, now) + timedelta(
+            minutes=config.refresh_interval_minutes
         )
         lines.append(
-            f"{masked}  · wake/notify {m.wake_count}/{config.max_refresh_count} "
-            f"· 마지막 {last}"
+            f"다음:    {next_dt.strftime('%H:%M:%S')} ({_format_delta(next_dt, now)})"
         )
-    return box_section("다른 세션", lines)
+    else:
+        lines.append("다음:    —")
+    prompt = marker.last_prompt if marker.last_prompt else "—"
+    lines.append(f'마지막:  "{prompt}"')
+    return lines
+
+
+def _build_other_sessions_box(
+    others: list[Marker], config: Config, now: datetime
+) -> list[str]:
+    """다른 세션 — outer "다른 세션" 박스 안에 sid 별 inner 박스 (v0.3.5).
+
+    최대 OTHER_SESSIONS_MAX_SHOW 개 표시 (latest_fire 내림차순). 더 있으면 "... 외 N개" 표시.
+    """
+    if not others:
+        return wrap_outer("다른 세션", ["없음"])
+
+    sorted_others = sorted(others, key=lambda m: m.latest_fire, reverse=True)
+    shown = sorted_others[:OTHER_SESSIONS_MAX_SHOW]
+
+    # 모든 inner 박스의 너비 통일 — 각 박스의 자연 inner_width 의 최대값으로
+    titles_and_lines = [(mask_sid(m.sid_hash), _other_session_lines(m, config, now)) for m in shown]
+    natural_widths = []
+    for title, lines in titles_and_lines:
+        body_max = max(display_width(l) for l in lines) if lines else 0
+        title_w = display_width(f"─ {title} ")
+        natural_widths.append(max(body_max + 2, title_w + 2))
+    target_inner = max(natural_widths)
+
+    combined: list[str] = []
+    for i, (title, lines) in enumerate(titles_and_lines):
+        if i > 0:
+            combined.append("")
+        combined.extend(box_section(title, lines, min_width=target_inner))
+
+    if len(sorted_others) > OTHER_SESSIONS_MAX_SHOW:
+        combined.append("")
+        combined.append(
+            f"... 외 {len(sorted_others) - OTHER_SESSIONS_MAX_SHOW}개 (오래된 stale marker)"
+        )
+
+    return wrap_outer("다른 세션", combined)
 
 
 def _read_json_safe(path: Path) -> dict | None:
@@ -198,7 +239,7 @@ def _check_deprecated_config() -> tuple[list[str], str | None]:
 def _build_settings_box(config: Config) -> list[str]:
     registered, hook_status = _check_hook_registered()
     lines = [
-        f"plugin: cache-necromancer v0.3.0 ({'active' if registered else 'inactive'})",
+        f"plugin: cache-necromancer v{_plugin_version()} ({'active' if registered else 'inactive'})",
         f"hook 등록: {hook_status}",
     ]
     deprecated, err = _check_deprecated_config()

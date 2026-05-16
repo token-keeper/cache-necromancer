@@ -152,7 +152,8 @@ CHANGELOG + README 의 Migration 섹션에 단계별 안내.
 
 ## 8. 도구 정신 (변경 없음)
 
-- 민감정보 미기록: log 는 sid_hash + token 수만
+- 민감정보 미기록 (1차 원칙): log 는 sid_hash + token 수만
+  - **v0.3.5 예외**: `marker.last_prompt` (사용자 프롬프트 첫 줄 40자 truncate) — `/cn:status` 의 세션 식별용. marker file 권한 0600 + single-user alpha 가정. 외부 공개 marketplace 출시 시 opt-out flag 도입 검토.
 - 단일 책임: cache TTL 갱신만
 - 알파 단계: 비용 발생 (자동 모드)
 - 이름 유지: alpha 배포 인지도 (rename 비용 큼). README 에 "previously fire-based, now asyncRewake-based" 명시

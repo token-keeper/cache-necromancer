@@ -69,14 +69,18 @@
   "latest_fire": 1715856000,
   "wake_count": 3,
   "last_wake_at": 1715852400,
-  "session_started_at": 1715840000
+  "session_started_at": 1715840000,
+  "last_prompt": "안녕 코딜리티 Q3 풀어보자"
 }
 ```
 
 - `latest_fire` (Unix timestamp): 가장 최근 Stop hook fire 시각. refresh.py 가 매 fire 마다 자기 my_ts 와 비교해 같으면 wake, 다르면 skip
 - `wake_count` (int): 누적 wake **또는 notify 횟수** (mode 무관 — auto/hybrid wake 시 ++ / notify 알림 발송 시 ++). `max_refresh_count` 초과 시 skip. user input 시 0 reset
-- `last_wake_at`: 직전 wake (또는 notify) 시각. cn:status 표시용
-- `session_started_at`: 세션 시작 시각. cn:status 표시용
+- `last_wake_at`: 직전 wake (또는 notify) 시각. (v0.3.5 부터 cn:status 표시 안 함 — 회고는 cn.log 에서)
+- `session_started_at`: 세션 시작 시각. (v0.3.5 부터 cn:status 표시 안 함)
+- `last_prompt` **(v0.3.5 신규)**: 가장 최근 user prompt 의 첫 줄 + 40자 truncate (`…` 표시). on_user_prompt hook 이 저장, /cn:status 의 "다른 세션" 박스 식별용. PRD §8 예외 (single-user alpha 가정 + marker file 0600 권한)
+
+**백워드 호환**: `last_prompt` 키 없는 v0.3.4 이전 marker file 은 빈 string 으로 default.
 
 sid_hash 는 v0.2.x 의 `lib/session_id.py` 의 `sanitize()` 그대로 사용 (CLAUDE_CODE_SESSION_ID 의 SHA256 단축).
 
@@ -204,18 +208,25 @@ print("[cn:keepalive] reply 'ok' only. No tools, no analysis.", file=sys.stderr)
 sys.exit(2)
 ```
 
-## 5. on_user_prompt.py (marker reset)
+## 5. on_user_prompt.py (marker reset + prompt capture)
 
-사용자가 chat 에 input 시 fire 되는 hook. v0.2.x 의 state 추적 로직 폐기. v0.3.0 동작:
+사용자가 chat 에 input 시 fire 되는 hook. v0.2.x 의 state 추적 로직 폐기. v0.3.5 동작:
 
 ```python
-sid_hash = sanitize(os.environ["CLAUDE_CODE_SESSION_ID"])
-marker = Marker.load(sid_hash)
-marker.wake_count = 0   # user 가 active 하므로 자리비움 상한 reset
+sid = _resolve_session_id()   # stdin JSON 우선, env fallback (refresh.py 와 동일 패턴)
+prompt = stdin.get("prompt", "")   # Claude Code hook payload 의 user input
+truncated = _truncate_prompt(prompt)   # 첫 줄만 + 40자 + "…" (control char strip)
+
+marker = Marker.load(sanitize(sid))
+marker.wake_count = 0          # user 가 active 하므로 자리비움 상한 reset
+if truncated:
+    marker.last_prompt = truncated   # v0.3.5: /cn:status 식별용
 marker.save()
 ```
 
-→ user input 마다 wake_count = 0 reset. `max_refresh_count` 는 "한 번 자리비움" 의 상한 의미.
+→ user input 마다 wake_count = 0 reset + last_prompt 갱신. `max_refresh_count` 는 "한 번 자리비움" 의 상한 의미.
+
+**last_prompt 보존 정책**: 빈 prompt 면 기존 값 그대로 (overwrite X). 사용자가 빈 message 보내거나 prompt 필드 없는 payload 시 마지막 의미 있는 prompt 가 유지됨.
 
 **max_refresh_count 도달 후 user input flow**:
 1. 자리비움 → wake_count = 10 도달 → 모든 추가 refresh.py 가 진입부에서 exit 0 (wake/notify 안 함)
@@ -250,7 +261,7 @@ for stale in marker_dir.glob("*.json"):
 >
 > 이전 v0.3.0~v0.3.2 의 `lib/install.py` 명세는 git history 에서 확인 가능.
 
-## 8. cn:status 출력
+## 8. cn:status 출력 (v0.3.5 재설계)
 
 ```
 🔮 cache-necromancer 상태
@@ -258,25 +269,36 @@ for stale in marker_dir.glob("*.json"):
 mode: hybrid · refresh_interval: 50m · max_refresh: 10
 
 ┌─ 세션 (현재) ────────────────────────────────────┐
-│ sid:               a1b2c3...****                 │
-│ 시작:               2026-05-16 09:00:00          │
-│ wake/notify count: 3 / 10                        │
-│ 마지막 wake/notify: 2026-05-16 11:30:00 (45m 전) │
+│ sid:                a1b2c3...****                │
+│ wake/notify count:  3 / 10                       │
 │ 다음 발동 예상:     2026-05-16 12:20:00 (5m 후)  │
-│ cache 추정:        2026-05-16 12:30:00 만료      │
 └──────────────────────────────────────────────────┘
 
 ┌─ 다른 세션 ──────────────────────────────────────┐
-│ d4e5f6...****  · wake/notify 1/10 · 마지막 5h 전 │
+│ ┌─ d4e5f6 ─────────────────────────┐             │
+│ │ 다음:    12:20:00 (5m)           │             │
+│ │ 마지막:  "코딜리티 Q3 풀자..."   │             │
+│ └──────────────────────────────────┘             │
+│                                                  │
+│ ┌─ a7b8c9 ─────────────────────────┐             │
+│ │ 다음:    12:18:30 (3m 30s)       │             │
+│ │ 마지막:  "tradingview RSI 검증"  │             │
+│ └──────────────────────────────────┘             │
 └──────────────────────────────────────────────────┘
 
-레이블 표기 사유: `wake_count` 가 mode 무관 통합 카운터 (§3.1) 라 `notify` mode 사용자가 "wake 됐다" 로 오해하지 않도록 `wake/notify` 로 명시. mode = `auto` 인 세션도 동일 레이블 (mode 별 분기 X — 단순 일관성 우선).
-
 ┌─ 설정 상태 ──────────────────────────────────────┐
-│ plugin: cache-necromancer v0.3.0 (active)        │
+│ plugin: cache-necromancer v0.3.5 (active)        │
 │ hook 등록: ✅ (plugin manifest)                  │
 │ deprecated config: 없음                          │
 └──────────────────────────────────────────────────┘
+```
+
+**v0.3.5 변경**:
+- 현재 세션 박스: `시작` / `마지막 wake/notify` / `cache 추정` 3개 줄 제거 (회고는 cn.log 에서). 핵심 3줄 (sid / wake count / 다음 발동) 만 유지
+- 다른 세션 박스: `wake/notify count` / `마지막 N분 전` 제거. `다음 fire 시간` + `마지막 프롬프트` 추가. sid 가 각 inner 박스 제목 (중첩 박스 디자인)
+- 다른 세션 최대 5개 표시. 초과 시 `... 외 N개` 안내. `latest_fire` 내림차순 정렬
+- plugin 버전은 `.claude-plugin/plugin.json` 에서 dynamic 읽음 (hard-code X)
+- 레이블 `wake/notify` 는 통합 카운터 의미 명시 — `notify` mode 사용자가 "wake 됐다" 로 오해 방지
 ```
 
 특이 case:

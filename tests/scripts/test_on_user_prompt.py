@@ -51,6 +51,72 @@ class TestResetWakeCount:
         assert loaded.wake_count == 0
 
 
+class TestLastPromptCapture:
+    """v0.3.5: stdin payload 의 prompt 를 truncate 후 marker.last_prompt 저장."""
+
+    def test_saves_short_prompt_as_is(self, cn_root, monkeypatch):
+        sid = "short-prompt"
+        _set_stdin(monkeypatch, {"session_id": sid, "prompt": "hello world"})
+        main()
+        assert Marker.load(sanitize(sid)).last_prompt == "hello world"
+
+    def test_truncates_long_prompt_to_40_chars(self, cn_root, monkeypatch):
+        sid = "long-prompt"
+        long_text = "x" * 100
+        _set_stdin(monkeypatch, {"session_id": sid, "prompt": long_text})
+        main()
+        loaded = Marker.load(sanitize(sid))
+        # 40자 + … = 41자 (display 폭)
+        assert loaded.last_prompt.endswith("…")
+        assert len(loaded.last_prompt) == 41  # 40 + "…"
+
+    def test_truncates_at_exactly_40_chars(self, cn_root, monkeypatch):
+        sid = "edge-40"
+        text_40 = "a" * 40
+        _set_stdin(monkeypatch, {"session_id": sid, "prompt": text_40})
+        main()
+        # 정확히 40 = truncate 안 함
+        assert Marker.load(sanitize(sid)).last_prompt == text_40
+
+    def test_takes_first_line_only(self, cn_root, monkeypatch):
+        sid = "multiline"
+        _set_stdin(monkeypatch, {
+            "session_id": sid,
+            "prompt": "첫 줄 내용\n두 번째 줄\n세 번째 줄",
+        })
+        main()
+        assert Marker.load(sanitize(sid)).last_prompt == "첫 줄 내용"
+
+    def test_empty_prompt_leaves_last_prompt_unchanged(self, cn_root, monkeypatch):
+        """prompt 비어있을 시 기존 last_prompt 보존 (overwrite X)."""
+        sid = "preserve"
+        Marker(sid_hash=sanitize(sid), last_prompt="기존값").save()
+        _set_stdin(monkeypatch, {"session_id": sid, "prompt": ""})
+        main()
+        assert Marker.load(sanitize(sid)).last_prompt == "기존값"
+
+    def test_missing_prompt_field_leaves_last_prompt_unchanged(self, cn_root, monkeypatch):
+        sid = "no-prompt-field"
+        Marker(sid_hash=sanitize(sid), last_prompt="기존값").save()
+        _set_stdin(monkeypatch, {"session_id": sid})  # no prompt key
+        main()
+        assert Marker.load(sanitize(sid)).last_prompt == "기존값"
+
+    def test_strips_control_chars(self, cn_root, monkeypatch):
+        """프롬프트 안의 ANSI / control char 등은 제거."""
+        sid = "with-ctrl"
+        _set_stdin(monkeypatch, {
+            "session_id": sid,
+            "prompt": "안녕\x00\x07\x1b[31m빨강",
+        })
+        main()
+        loaded = Marker.load(sanitize(sid))
+        # control char 가 제거되어야 함 (ANSI escape 의 `\x1b` 와 `\x00`, `\x07` 등)
+        assert "\x00" not in loaded.last_prompt
+        assert "\x1b" not in loaded.last_prompt
+        assert "\x07" not in loaded.last_prompt
+
+
 class TestEdgeCases:
     def test_no_session_id_returns_silently(self, cn_root, monkeypatch):
         _set_stdin(monkeypatch, {})
