@@ -2,6 +2,31 @@
 
 이 프로젝트의 모든 주목할 만한 변경사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고, [Semantic Versioning](https://semver.org/lang/ko/) 을 준수합니다.
 
+## [0.3.4] — 2026-05-16
+
+**`/cn:config` 슬래시 명령 instructions 갱신** — v0.3.0 사이클에서 빠진 정리 항목. v0.2.x 옵션을 묻고 daemon 재시작을 실행하던 outdated instructions 를 v0.3.0+ 호환 옵션으로 재작성.
+
+### Changed
+
+- **`commands/cn:config.md`**: 인터랙티브 질문 4개를 v0.3.0+ config 키로 재구성:
+  - Q1 `mode` (notify/auto/hybrid) — "fire" → "wake" 용어 통일
+  - Q2 `refresh_interval_minutes` (2/30/50/90) — default 55 → 50 반영 (1h cache 안전 마진)
+  - Q3 `max_refresh_count` (5/10/20/50) — 동일
+  - Q4 `system_notification` (true/false) — v0.2.x 의 `imminent_threshold_minutes` 자리 대체
+- 적용 시점 안내: "데몬 재시작 필요" → "다음 Stop hook 발화부터 자동 적용 (재시작 불필요)".
+- v0.2.x deprecated 키 보존 안내 + `pkill` / `daemon.lock` 명령 제거.
+- 기본 템플릿 갱신: v0.3.0+ 의 [general]/[notify]/[refresh] 구조로 단순화.
+
+### Fixed
+
+- 사용자가 `/cn:config` 호출 시 deprecated `imminent_threshold_minutes` 가 묻혀 v0.3.0+ 환경에 무의미한 옵션이 추가되던 회귀 해소.
+- 변경 후 무의미한 `pkill -f "python.*-m daemon"` 실행되던 부작용 제거 (daemon 폐기됨).
+
+### Notes
+
+- 코드 변경 없음. slash command instructions only.
+- v0.3.0~v0.3.3 사용자는 plugin update 시 새 instructions 가 자동 적용.
+
 ## [0.3.3] — 2026-05-16
 
 **`cn install` / `cn uninstall` CLI 폐기** — plugin marketplace 가 공식 설치 경로로 안착했고 (`/plugin install cache-necromancer` 한 명령으로 hook 자동 등록), 수동 fallback CLI 의 실 사용 빈도가 거의 0 으로 확인됨. YAGNI 적용하여 ~500줄 정리.

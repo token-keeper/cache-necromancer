@@ -1,6 +1,6 @@
 ---
 description: cache-necromancer 설정 변경 (인터랙티브)
-allowed-tools: AskUserQuestion, Read, Edit, Write, Bash(pkill:*), Bash(rm:*), Bash(ls:*)
+allowed-tools: AskUserQuestion, Read, Edit, Write
 ---
 
 cache-necromancer 의 `~/.cache-necromancer/config.toml` 을 인터랙티브로 변경한다. 4개 설정 항목을 한 번에 질문하며, 현재값은 옵션 라벨에 `✓ ` prefix 로 표시한다. 각 질문에는 후보 외 자유 입력을 위한 `Type something` 옵션이 자동 제공된다.
@@ -14,9 +14,9 @@ cache-necromancer 의 `~/.cache-necromancer/config.toml` 을 인터랙티브로 
 - `[general].mode`
 - `[general].refresh_interval_minutes`
 - `[general].max_refresh_count`
-- `[notify].imminent_threshold_minutes`
+- `[notify].system_notification`
 
-파일이 없으면 기본값 가정: `hybrid` / `55` / `10` / `5`.
+파일이 없으면 기본값 가정: `hybrid` / `50` / `10` / `true`. (v0.3.0+ default)
 
 ### 2. AskUserQuestion 호출 (4개 질문 한 번에)
 
@@ -25,37 +25,37 @@ cache-necromancer 의 `~/.cache-necromancer/config.toml` 을 인터랙티브로 
 **Q1: Mode**
 - question: `"mode 를 선택하세요 (현재: <현재값>)"`
 - options (3개):
-  - `notify` — 알림만 (fire 없음, 비용 0)
-  - `auto` — 자동 fire (무인 자동화)
-  - `hybrid` — 60초 사전 알림 후 fire (취소 가능)
+  - `notify` — 알림만 (wake 없음, cache 갱신 효과 0)
+  - `auto` — 자동 wake (무인 자동화)
+  - `hybrid` — 사전 알림 + 60초 후 자동 wake (사용자 input 시 취소)
 
 **Q2: Interval**
-- question: `"refresh_interval 을 선택하세요 (현재: <현재값>분)"`
+- question: `"refresh_interval 을 선택하세요 (현재: <현재값>분) — cache TTL 만료 직전 wake 까지의 sleep"`
 - options (4개):
   - `2` — 테스트용
   - `30` — 빠른 갱신
-  - `55` — 기본값
-  - `120` — 느린 갱신
+  - `50` — 기본값 (1h cache 기준 안전 마진)
+  - `90` — 느린 갱신 (cache 만료 위험 ↑)
 
 **Q3: Max count**
-- question: `"max_refresh_count 를 선택하세요 (현재: <현재값>) — 세션당 최대 갱신 횟수, 비용 상한"`
+- question: `"max_refresh_count 를 선택하세요 (현재: <현재값>) — 한 세션 최대 wake/notify 횟수, 비용 상한"`
 - options (4개):
   - `5` — 보수적 (비용 최소화)
   - `10` — 기본값
   - `20` — 여유 있음
   - `50` — 거의 무제한
 
-**Q4: Imminent**
-- question: `"imminent_threshold_minutes 를 선택하세요 (현재: <현재값>분) — 다음 fire N분 전에 임박 알림"`
-- options (4개):
-  - `1` — 직전 알림
-  - `3` — 짧은 사전 알림
-  - `5` — 기본값
-  - `10` — 여유 있는 사전 알림
+**Q4: System notification**
+- question: `"system_notification 을 선택하세요 (현재: <현재값>) — macOS 알림 표시 여부 (hybrid/notify 모드 영향)"`
+- options (2개):
+  - `true` — 알림 활성 (기본)
+  - `false` — 알림 끔
 
 ### 3. 답변값 정규화
 
 각 답변에서 `✓ ` prefix 와 공백을 strip 하여 순수 값만 추출 (`✓ hybrid` → `hybrid`). 사용자가 `Type something` 으로 자유 입력한 경우엔 strip 없이 입력값 그대로 사용.
+
+`system_notification` 답변은 `true` / `false` 문자열을 그대로 TOML boolean 으로 작성한다 (따옴표 없음).
 
 ### 4. config.toml 갱신
 
@@ -65,8 +65,8 @@ cache-necromancer 의 `~/.cache-necromancer/config.toml` 을 인터랙티브로 
   - `mode = "<현재값>"` → `mode = "<새값>"`
   - `refresh_interval_minutes = <현재값>` → `refresh_interval_minutes = <새값>`
   - `max_refresh_count = <현재값>` → `max_refresh_count = <새값>`
-  - `imminent_threshold_minutes = <현재값>` → `imminent_threshold_minutes = <새값>`
-- **파일이 없는 경우**: `Write` 로 아래 템플릿에 4개 선택값 반영 후 생성:
+  - `system_notification = <현재값>` → `system_notification = <새값>`
+- **파일이 없는 경우**: `Write` 로 아래 v0.3.0+ 기본 템플릿에 4개 선택값 반영 후 생성:
 
 ```toml
 # cache-necromancer 설정 — /cn:config 로 변경 가능
@@ -75,40 +75,33 @@ mode = "<선택값>"
 refresh_interval_minutes = <선택값>
 max_refresh_count = <선택값>
 
-[refresh]
-prompt = "."
-hybrid_wait_seconds = 60
-fire_timeout_seconds = 120
-
 [notify]
-terminal_bell = true
-system_notification = true
-imminent_threshold_minutes = <선택값>
+system_notification = <선택값>
+
+[refresh]
+hybrid_wait_seconds = 60
 ```
 
 - **4개 모두 그대로**: 갱신 안 함 (Edit/Write 호출 모두 생략).
 
-### 5. 데몬 재시작 (refresh_interval_minutes 외 어떤 키라도 변경된 경우)
+### 5. 적용 시점 안내
 
-`refresh_interval_minutes` 는 Stop hook 이 매번 reload 하므로 단독 변경 시 데몬 재시작 불필요. **그 외 3개 키 (`mode`, `max_refresh_count`, `imminent_threshold_minutes`) 중 어느 하나라도 변경된 경우 데몬 재시작 필요**.
+v0.3.0+ 부터는 별도 daemon 재시작 불필요. config 는 매 hook fire 시 다시 읽힘 → **다음 Stop hook 발화 시 자동 적용**. 단:
 
-`Bash` 로 실행:
+- `refresh_interval_minutes` 변경: 이미 sleep 중인 refresh.py 프로세스에는 영향 X. 다음 사이클부터 적용.
+- `mode` 변경: 동일.
+- 그 외 (`max_refresh_count`, `system_notification`): 동일.
 
-```bash
-pkill -f "python.*-m daemon" 2>/dev/null; rm -f ~/.cache-necromancer/daemon.lock; true
-```
-
-다음 Stop hook 이 새 데몬을 spawn 하면서 갱신된 config 가 적용된다.
+별도 명령 실행 불필요.
 
 ### 6. 완료 보고
 
 - **변경 없음**: `"변경 사항 없음 (4개 키 모두 그대로)"`
-- **변경 있음**: 변경된 각 키마다 한 줄씩 `"✓ <key> <이전>→<새값>"` 보고. 마지막에 데몬 재시작 여부 한 줄 추가:
-  - 재시작한 경우: `"데몬 재시작됨. 다음 응답부터 적용."`
-  - 재시작 안 한 경우 (refresh_interval 만 변경): `"데몬 재시작 불필요. 다음 Stop hook 부터 적용."`
+- **변경 있음**: 변경된 각 키마다 한 줄씩 `"✓ <key> <이전>→<새값>"` 보고. 마지막에 한 줄:
+  - `"다음 Stop hook 발화부터 자동 적용. 별도 재시작 불필요."`
 
 ## 주의
 
-- 사용자가 `~/.cache-necromancer/config.toml` 의 다른 키 (예: `[refresh].prompt`, `[refresh].hybrid_wait_seconds`, `[notify].terminal_bell`, `[advanced].*`) 를 직접 편집한 경우, 그 값을 보존해야 한다. `Edit` 도구로 *해당 키 라인만* 갱신한다 (전체 덮어쓰기 금지).
-- 데몬 재시작 명령은 plugin 외부 프로세스를 종료한다. 위 3개 키가 안 바뀐 경우엔 실행하지 않는다 (불필요한 부작용 방지).
-- `refresh_prompt` 키는 자주 바꾸지 않는 advanced 설정이라 /cn:config 에서 제외. 변경이 필요하면 `~/.cache-necromancer/config.toml` 의 `[refresh].prompt` 를 직접 편집.
+- 사용자가 `~/.cache-necromancer/config.toml` 의 다른 키 (예: `[refresh].hybrid_wait_seconds`) 또는 v0.2.x 잔재 deprecated 키 (`[refresh].prompt`, `[notify].terminal_bell`, `[notify].imminent_threshold_minutes`, `[refresh].fire_timeout_seconds`, `[advanced].*`) 를 직접 편집한 경우, 그 값을 보존해야 한다. `Edit` 도구로 *해당 키 라인만* 갱신한다 (전체 덮어쓰기 금지). 단 deprecated 키는 v0.3.0+ 에서 무시되며 stderr 경고 출력.
+- v0.3.0+ 에서 daemon 자체가 폐기되었으므로 `pkill` / `daemon.lock` 정리 등은 불필요.
+- `hybrid_wait_seconds` 는 hybrid 모드의 사전 알림 후 wake 까지의 대기 시간 (default 60s). 자주 바꾸지 않는 advanced 설정이라 /cn:config 에서 제외. 변경이 필요하면 `~/.cache-necromancer/config.toml` 의 `[refresh].hybrid_wait_seconds` 를 직접 편집.
