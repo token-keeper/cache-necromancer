@@ -2,6 +2,27 @@
 
 이 프로젝트의 모든 주목할 만한 변경사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고, [Semantic Versioning](https://semver.org/lang/ko/) 을 준수합니다.
 
+## [0.3.10] — 2026-05-17
+
+**Wake PING 에 fire 시각 + repeat count 표시** — chat history 만 봐도 언제 몇 번째 wake 였는지 확인 가능. `ok` 한 마디뿐이라 어색하던 wake-up turn 의 가독성 개선.
+
+### Changed
+
+- **`scripts/refresh.py`**:
+  - `PING_MESSAGE` 정적 상수 → `PING_PREFIX` + `_build_ping(wake_count, max_count)` 동적 빌더로 교체.
+  - 메시지에 KST `HH:MM` + `N/M` (`wake_count/max_refresh_count`) 포함.
+  - 응답 형식을 `ok @HH:MM (N/M)` 으로 강제 — chat scrollback 에서 시점/잔여 횟수 즉시 식별.
+  - `_do_wake` 시그니처에 `config` 인자 추가 (`max_refresh_count` 참조).
+  - Before: `[cn:keepalive] reply 'ok' only. ...`
+  - After: `[cn:keepalive 16:42 KST, 7/10] reply with exactly 'ok @16:42 (7/10)'. ...`
+- **`tests/scripts/test_refresh.py`**: `PING_MESSAGE` import → `PING_PREFIX` 로 교체, 시각/카운트 포맷 검증 테스트 추가.
+
+### Notes
+
+- KST 변환은 `datetime.now(timezone(timedelta(hours=9)))` 로 system timezone 무관.
+- output token: `ok` (1 token) → `ok @16:42 (7/10)` (~10 token). cache hit (input prompt) 에는 영향 X.
+- max wake 도달 시 wake 자체가 skip 되므로 메시지 표시 안 됨 (변동 없음).
+
 ## [0.3.9] — 2026-05-16
 
 **Wake `PING_MESSAGE` 에 minimal output 지시 추가** — 모델이 wake-up turn 에서 'ok' 외 추가 토큰 발생 가능성 차단 강화.
