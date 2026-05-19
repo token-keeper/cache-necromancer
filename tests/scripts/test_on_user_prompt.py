@@ -120,10 +120,16 @@ class TestLastPromptCapture:
 class TestPingSelfInterference:
     """v0.3.11: refresh.py 의 PING 도 prompt 로 hook 에 도달 →
     wake_count 가 reset 되어 매 wake 마다 '1/N' 무한 반복하던 버그 회귀 방지.
+
+    실제 환경에서 PING 은 raw 가 아니라 Claude Code 가 `<task-notification>`
+    + `<system-reminder>` wrapper 안에 감싸서 stdin prompt 로 전달함.
+    그래서 startswith(PING_PREFIX) 가 아닌 substring + task-notification
+    시작 둘 다 체크.
     """
 
-    def test_ping_prefix_skips_wake_count_reset(self, cn_root, monkeypatch):
-        sid = "ping-session"
+    def test_raw_ping_skips_reset(self, cn_root, monkeypatch):
+        """예전 단순 케이스 — raw PING 으로 prompt 가 시작."""
+        sid = "ping-raw"
         sh = sanitize(sid)
         Marker(sid_hash=sh, wake_count=3, last_prompt="기존").save()
 
@@ -132,16 +138,35 @@ class TestPingSelfInterference:
         assert main() == 0
 
         loaded = Marker.load(sh)
-        assert loaded.wake_count == 3  # reset 안 됨
-        assert loaded.last_prompt == "기존"  # 갱신 안 됨
+        assert loaded.wake_count == 3
+        assert loaded.last_prompt == "기존"
 
-    def test_ping_prefix_skips_even_when_marker_missing(self, cn_root, monkeypatch):
+    def test_wrapped_ping_skips_reset(self, cn_root, monkeypatch):
+        """실제 형식 — Claude Code 의 wrapper 안에 PING."""
+        sid = "ping-wrapped"
+        sh = sanitize(sid)
+        Marker(sid_hash=sh, wake_count=3, last_prompt="기존").save()
+
+        wrapped = (
+            "<task-notification>\n<summary>Stop hook feedback</summary>\n"
+            "</task-notification>\n<system-reminder>\n"
+            "Stop hook blocking error from command \"Stop\": "
+            "[cn:keepalive 14:30 KST, 4/10] reply with exactly 'ok @14:30 (4/10)'. "
+            "No tools, no analysis.\n</system-reminder>"
+        )
+        _set_stdin(monkeypatch, {"session_id": sid, "prompt": wrapped})
+        assert main() == 0
+
+        loaded = Marker.load(sh)
+        assert loaded.wake_count == 3
+        assert loaded.last_prompt == "기존"
+
+    def test_ping_skips_even_when_marker_missing(self, cn_root, monkeypatch):
         """PING 만 들어오고 marker 없을 시 marker 새로 만들지도 않음."""
         sid = "ping-no-marker"
         ping = "[cn:keepalive 09:00 KST, 1/10] reply..."
         _set_stdin(monkeypatch, {"session_id": sid, "prompt": ping})
         assert main() == 0
-        # marker file 생성 안 되어야 함 (PING 으로 인한 부수효과 X)
         from lib.marker import marker_path
         assert not marker_path(sanitize(sid)).exists()
 
@@ -152,6 +177,40 @@ class TestPingSelfInterference:
         Marker(sid_hash=sh, wake_count=5).save()
 
         _set_stdin(monkeypatch, {"session_id": sid, "prompt": "안녕 클로드"})
+        assert main() == 0
+        assert Marker.load(sh).wake_count == 0
+
+
+class TestSystemEventSkip:
+    """v0.3.11: Claude Code 의 background `<task-notification>` 도
+    UserPromptSubmit hook 으로 도달함 (PING 없는 task done 알림 등).
+    사용자 input 아니므로 reset skip.
+    """
+
+    def test_plain_task_notification_skips(self, cn_root, monkeypatch):
+        sid = "bg-task"
+        sh = sanitize(sid)
+        Marker(sid_hash=sh, wake_count=5, last_prompt="원래").save()
+
+        notification = (
+            "<task-notification>\n<task-id>abc123</task-id>\n"
+            "<status>completed</status>\n</task-notification>"
+        )
+        _set_stdin(monkeypatch, {"session_id": sid, "prompt": notification})
+        assert main() == 0
+
+        loaded = Marker.load(sh)
+        assert loaded.wake_count == 5
+        assert loaded.last_prompt == "원래"
+
+    def test_user_input_starting_with_angle_bracket_still_resets(self, cn_root, monkeypatch):
+        """`<` 로 시작하는 사용자 input (e.g. HTML 질문) 은 reset 정상 동작.
+        시스템 wrapper 와 정확히 구별되려면 `<task-notification>` 전체 매칭."""
+        sid = "user-angle"
+        sh = sanitize(sid)
+        Marker(sid_hash=sh, wake_count=4).save()
+
+        _set_stdin(monkeypatch, {"session_id": sid, "prompt": "<div> 태그 어떻게 써?"})
         assert main() == 0
         assert Marker.load(sh).wake_count == 0
 

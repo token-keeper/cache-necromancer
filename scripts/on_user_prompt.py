@@ -6,9 +6,13 @@
   2. marker.last_prompt = truncate(stdin payload 의 prompt, 40자)
      /cn:status 에서 다른 세션 식별용. PRD §8 예외 (single-user alpha 가정).
 
-자기간섭 방지: refresh.py 의 PING 도 prompt 로 hook 에 도달함.
-PING_PREFIX 로 시작하는 prompt 는 wake_count reset/last_prompt 갱신 skip —
-PING 은 사용자 input 아님, 시스템 자기 keepalive.
+자기간섭 방지: refresh.py 의 PING 및 Claude Code 의 background
+task-notification 도 user prompt 로 hook 에 도달함. system event 인
+prompt 는 reset/last_prompt 갱신 skip — 진짜 user input 만 reset 한다.
+
+판별 기준 (실제 stdin 형식 디버그 확인):
+  - `<task-notification>` 으로 시작 → background event (PING wrapper 포함)
+  - PING_PREFIX (`[cn:keepalive`) 가 prompt 안에 substring 으로 존재 → wrapped PING
 
 PRD 불변: 어떤 실패도 chat 동작 차단 X (best-effort, exit 0).
 """
@@ -68,9 +72,19 @@ def main() -> int:
         return 0
 
     raw_prompt = str(stdin.get("prompt", ""))
-    # PING 자기 주입은 사용자 input 아님 — reset/last_prompt 갱신 skip.
-    # 이게 없으면 매 wake 마다 wake_count 가 0 으로 reset 되어 "1/N" 무한 반복.
-    if raw_prompt.startswith(PING_PREFIX):
+    # 시스템 이벤트 (background task, PING 자기 주입) 는 사용자 input 아님 → skip.
+    # 이게 없으면 매 wake 마다 wake_count 가 0 으로 reset 되어 "1/N" 무한 반복 +
+    # max_refresh_count cap 무력화.
+    #
+    # 실제 stdin prompt 형식 (디버그 확인):
+    #   - PING:  '<task-notification>...<system-reminder>...[cn:keepalive ...]...'
+    #   - bg task done: '<task-notification>\n<task-id>...</task-notification>'
+    #   - 진짜 user input: 사용자가 입력한 raw 텍스트
+    #
+    # substring 매칭의 false positive: 사용자가 일부러 '[cn:keepalive' 텍스트를
+    # 메시지에 포함시키면 reset skip. 영향 = 자기 marker 의 wake_count 만,
+    # max_refresh_count cap 으로 보호됨. single-user alpha 가정상 수용.
+    if raw_prompt.startswith("<task-notification>") or PING_PREFIX in raw_prompt:
         return 0
 
     prompt_truncated = _truncate_prompt(raw_prompt)

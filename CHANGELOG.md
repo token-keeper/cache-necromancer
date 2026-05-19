@@ -4,25 +4,28 @@
 
 ## [0.3.11] — 2026-05-19
 
-**`on_user_prompt` 자기간섭 fix — `wake_count` 가 매 wake 마다 `0` 으로 reset 되어 PING 표시가 `1/N` 무한 반복하던 버그 수정.**
+**`on_user_prompt` 자기간섭 fix — `wake_count` 가 매 wake 마다 `0` 으로 reset 되어 PING 표시가 `1/N` 무한 반복 + `max_refresh_count` cap 무력화되던 버그 수정.**
 
 ### Fixed
 
-- **`scripts/on_user_prompt.py`**: stdin `prompt` 가 `[cn:keepalive` 로 시작하면 `wake_count` reset / `last_prompt` 갱신 skip.
-  - 원인: v0.3.10 의 PING (`[cn:keepalive ... N/M]`) 도 UserPromptSubmit hook 의 prompt 로 전달됨. 기존 코드는 모든 prompt 에 `marker.wake_count = 0` 적용 → 매 wake 직후 reset → 다음 wake 도 `count=1` → PING 도 `1/N` → ...
-  - 결과: `1/10 → 2/10 → 3/10 → ...` 정상 누적, `max_refresh_count` 도 의도대로 동작.
+- **`scripts/on_user_prompt.py`**: stdin `prompt` 가 `<task-notification>` 으로 시작하거나 `[cn:keepalive` 를 substring 으로 포함하면 `wake_count` reset / `last_prompt` 갱신 skip.
+  - **원인**: v0.3.10 의 PING (`[cn:keepalive ... N/M]`) 이 raw 가 아니라 Claude Code 가 `<task-notification>...<system-reminder>...PING...</system-reminder>` wrapper 안에 감싸서 UserPromptSubmit hook 의 `stdin.prompt` 로 전달. 기존 코드의 `startswith(PING_PREFIX)` 가 매칭 실패 → reset 진행 → 매 wake 마다 `wake_count=0` → `1/N` 반복 + cap 미발동.
+  - **추가 발견**: Claude Code 의 background `<task-notification>` (e.g. `Bash run_in_background` 완료 알림) 도 UserPromptSubmit hook trigger. 이것도 사용자 input 아니므로 skip.
+  - **결과**: `1/10 → 2/10 → 3/10 → ... → 10/10` 정상 누적, `max_refresh_count` cap 의도대로 작동 (10 회 도달 후 wake skip → cost 상한 보장).
 
 ### Tests
 
-- `tests/scripts/test_on_user_prompt.py::TestPingSelfInterference` 3건 추가:
-  - PING_PREFIX prompt → `wake_count` / `last_prompt` 보존
-  - PING_PREFIX prompt + marker 없음 → marker file 생성 안 함 (부수효과 X)
-  - 일반 prompt → 기존 reset 동작 유지 (regression 방지)
-- 124/124 pass.
+- `tests/scripts/test_on_user_prompt.py::TestPingSelfInterference` 4건:
+  - raw PING / **wrapped PING (실제 형식)** / marker 없을 시 부수효과 X / regression
+- `tests/scripts/test_on_user_prompt.py::TestSystemEventSkip` 2건:
+  - plain `<task-notification>` (PING 없음) skip / `<` 로 시작하는 user input (`<div> 태그 어떻게 써?`) 은 reset 정상
+- 127/127 pass.
 
 ### Notes
 
-- `PING_PREFIX` 상수는 `scripts/refresh.py` 와 `scripts/on_user_prompt.py` 양쪽에 하드코딩 (현재 `scripts/` 가 패키지 아님). 추후 `lib/` 로 통합 예정. 둘 중 하나만 변경 시 자기간섭 재발하므로 코드 주석에 명시.
+- **substring 매칭 false positive**: 사용자가 일부러 메시지에 `[cn:keepalive` 텍스트를 포함시키면 reset skip. 영향 범위 = 자기 marker 의 wake_count 만, `max_refresh_count` cap 으로 보호. single-user alpha 가정상 수용.
+- `PING_PREFIX` 상수는 `scripts/refresh.py` 와 `scripts/on_user_prompt.py` 양쪽에 하드코딩 (현재 `scripts/` 가 패키지 아님). 추후 `lib/` 로 통합 예정.
+- 진단 과정에서 디버그 로그 추가 → 실제 stdin payload 형식 확인 → wrapped PING 발견 → fix 보완 (`startswith` → `in` substring + `<task-notification>` 시작 체크).
 
 ## [0.3.10] — 2026-05-17
 
