@@ -215,6 +215,69 @@ class TestSystemEventSkip:
         assert Marker.load(sh).wake_count == 0
 
 
+class TestPolicyEdgeCases:
+    """v0.3.11 보완: codex 권장 정책 고정 테스트. substring + startswith 의
+    경계/false positive 동작이 의도된 것임을 명시적으로 기록.
+    """
+
+    def test_user_text_containing_ping_prefix_is_skipped(self, cn_root, monkeypatch):
+        """false positive 수용 정책 고정 — 사용자가 메시지에 '[cn:keepalive' 텍스트를
+        직접 포함시키면 reset skip. single-user alpha + cap 보호로 허용."""
+        sid = "user-with-ping-text"
+        sh = sanitize(sid)
+        Marker(sid_hash=sh, wake_count=2).save()
+
+        _set_stdin(monkeypatch, {
+            "session_id": sid,
+            "prompt": "PING 문자열이 뭐였지? '[cn:keepalive' 였나?",
+        })
+        assert main() == 0
+        # 의도된 skip — 정책 변경 시 이 테스트가 먼저 깨짐
+        assert Marker.load(sh).wake_count == 2
+
+    def test_partial_prefix_still_resets(self, cn_root, monkeypatch):
+        """경계 — '[cn:keepaliv' (마지막 e 없음) 는 PING_PREFIX 아님 → reset 진행."""
+        sid = "partial-prefix"
+        sh = sanitize(sid)
+        Marker(sid_hash=sh, wake_count=3).save()
+
+        _set_stdin(monkeypatch, {"session_id": sid, "prompt": "[cn:keepaliv typo"})
+        assert main() == 0
+        assert Marker.load(sh).wake_count == 0
+
+    def test_leading_whitespace_before_task_notification_resets(self, cn_root, monkeypatch):
+        """startswith 정책 — 앞에 공백/개행 있으면 system event 아닌 user input
+        으로 간주. 현재 관측된 Claude Code wrapper 는 leading whitespace 없음."""
+        sid = "ws-task-notif"
+        sh = sanitize(sid)
+        Marker(sid_hash=sh, wake_count=5).save()
+
+        _set_stdin(monkeypatch, {
+            "session_id": sid,
+            "prompt": "  <task-notification>이건 사용자가 쓴 텍스트</task-notification>",
+        })
+        assert main() == 0
+        assert Marker.load(sh).wake_count == 0
+
+    def test_system_reminder_only_wrapper_with_ping_skips(self, cn_root, monkeypatch):
+        """`<system-reminder>` 단독 wrapper + PING — task-notification 없는 케이스도
+        substring 조건으로 skip 보장."""
+        sid = "sysrem-only"
+        sh = sanitize(sid)
+        Marker(sid_hash=sh, wake_count=4, last_prompt="원래").save()
+
+        wrapped = (
+            "<system-reminder>\n[cn:keepalive 10:30 KST, 5/10] reply with exactly "
+            "'ok @10:30 (5/10)'.\n</system-reminder>"
+        )
+        _set_stdin(monkeypatch, {"session_id": sid, "prompt": wrapped})
+        assert main() == 0
+
+        loaded = Marker.load(sh)
+        assert loaded.wake_count == 4
+        assert loaded.last_prompt == "원래"
+
+
 class TestEdgeCases:
     def test_no_session_id_returns_silently(self, cn_root, monkeypatch):
         _set_stdin(monkeypatch, {})

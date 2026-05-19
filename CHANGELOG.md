@@ -19,7 +19,12 @@
   - raw PING / **wrapped PING (실제 형식)** / marker 없을 시 부수효과 X / regression
 - `tests/scripts/test_on_user_prompt.py::TestSystemEventSkip` 2건:
   - plain `<task-notification>` (PING 없음) skip / `<` 로 시작하는 user input (`<div> 태그 어떻게 써?`) 은 reset 정상
-- 127/127 pass.
+- `tests/scripts/test_on_user_prompt.py::TestPolicyEdgeCases` 4건 (codex 권장 정책 고정):
+  - 사용자 텍스트 안에 `[cn:keepalive` 포함 시 skip (false positive 수용 정책 명시)
+  - partial prefix `[cn:keepaliv` 는 reset 정상 (경계)
+  - leading whitespace + `<task-notification>` 는 reset (startswith 정책)
+  - `<system-reminder>` 단독 wrapper + PING 도 substring 으로 skip
+- 131/131 pass.
 
 ### Notes
 
