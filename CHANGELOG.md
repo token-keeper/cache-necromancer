@@ -2,6 +2,28 @@
 
 이 프로젝트의 모든 주목할 만한 변경사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고, [Semantic Versioning](https://semver.org/lang/ko/) 을 준수합니다.
 
+## [0.3.11] — 2026-05-19
+
+**`on_user_prompt` 자기간섭 fix — `wake_count` 가 매 wake 마다 `0` 으로 reset 되어 PING 표시가 `1/N` 무한 반복하던 버그 수정.**
+
+### Fixed
+
+- **`scripts/on_user_prompt.py`**: stdin `prompt` 가 `[cn:keepalive` 로 시작하면 `wake_count` reset / `last_prompt` 갱신 skip.
+  - 원인: v0.3.10 의 PING (`[cn:keepalive ... N/M]`) 도 UserPromptSubmit hook 의 prompt 로 전달됨. 기존 코드는 모든 prompt 에 `marker.wake_count = 0` 적용 → 매 wake 직후 reset → 다음 wake 도 `count=1` → PING 도 `1/N` → ...
+  - 결과: `1/10 → 2/10 → 3/10 → ...` 정상 누적, `max_refresh_count` 도 의도대로 동작.
+
+### Tests
+
+- `tests/scripts/test_on_user_prompt.py::TestPingSelfInterference` 3건 추가:
+  - PING_PREFIX prompt → `wake_count` / `last_prompt` 보존
+  - PING_PREFIX prompt + marker 없음 → marker file 생성 안 함 (부수효과 X)
+  - 일반 prompt → 기존 reset 동작 유지 (regression 방지)
+- 124/124 pass.
+
+### Notes
+
+- `PING_PREFIX` 상수는 `scripts/refresh.py` 와 `scripts/on_user_prompt.py` 양쪽에 하드코딩 (현재 `scripts/` 가 패키지 아님). 추후 `lib/` 로 통합 예정. 둘 중 하나만 변경 시 자기간섭 재발하므로 코드 주석에 명시.
+
 ## [0.3.10] — 2026-05-17
 
 **Wake PING 에 fire 시각 + repeat count 표시** — chat history 만 봐도 언제 몇 번째 wake 였는지 확인 가능. `ok` 한 마디뿐이라 어색하던 wake-up turn 의 가독성 개선.

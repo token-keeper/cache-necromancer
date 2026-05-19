@@ -117,6 +117,45 @@ class TestLastPromptCapture:
         assert "\x07" not in loaded.last_prompt
 
 
+class TestPingSelfInterference:
+    """v0.3.11: refresh.py 의 PING 도 prompt 로 hook 에 도달 →
+    wake_count 가 reset 되어 매 wake 마다 '1/N' 무한 반복하던 버그 회귀 방지.
+    """
+
+    def test_ping_prefix_skips_wake_count_reset(self, cn_root, monkeypatch):
+        sid = "ping-session"
+        sh = sanitize(sid)
+        Marker(sid_hash=sh, wake_count=3, last_prompt="기존").save()
+
+        ping = "[cn:keepalive 14:30 KST, 4/10] reply with exactly 'ok @14:30 (4/10)'."
+        _set_stdin(monkeypatch, {"session_id": sid, "prompt": ping})
+        assert main() == 0
+
+        loaded = Marker.load(sh)
+        assert loaded.wake_count == 3  # reset 안 됨
+        assert loaded.last_prompt == "기존"  # 갱신 안 됨
+
+    def test_ping_prefix_skips_even_when_marker_missing(self, cn_root, monkeypatch):
+        """PING 만 들어오고 marker 없을 시 marker 새로 만들지도 않음."""
+        sid = "ping-no-marker"
+        ping = "[cn:keepalive 09:00 KST, 1/10] reply..."
+        _set_stdin(monkeypatch, {"session_id": sid, "prompt": ping})
+        assert main() == 0
+        # marker file 생성 안 되어야 함 (PING 으로 인한 부수효과 X)
+        from lib.marker import marker_path
+        assert not marker_path(sanitize(sid)).exists()
+
+    def test_normal_prompt_still_resets(self, cn_root, monkeypatch):
+        """regression: PING 아닌 일반 prompt 는 그대로 reset 동작."""
+        sid = "normal-session"
+        sh = sanitize(sid)
+        Marker(sid_hash=sh, wake_count=5).save()
+
+        _set_stdin(monkeypatch, {"session_id": sid, "prompt": "안녕 클로드"})
+        assert main() == 0
+        assert Marker.load(sh).wake_count == 0
+
+
 class TestEdgeCases:
     def test_no_session_id_returns_silently(self, cn_root, monkeypatch):
         _set_stdin(monkeypatch, {})
