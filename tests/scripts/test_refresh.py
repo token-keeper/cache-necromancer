@@ -15,7 +15,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from lib.marker import Marker  # noqa: E402
-from scripts.refresh import PING_MESSAGE, main  # noqa: E402
+from scripts.refresh import PING_PREFIX, main  # noqa: E402
 
 
 @pytest.fixture
@@ -75,13 +75,28 @@ class TestModeAuto:
         rc = main()
         assert rc == 2
         # stderr 에 ping 메시지
-        assert PING_MESSAGE in capsys.readouterr().err
+        assert PING_PREFIX in capsys.readouterr().err
         # marker 갱신 확인
         m = _load_marker_for_sid(session_env)
         assert m.wake_count == 1
         assert m.last_wake_at > 0
         # auto mode → notify 호출 X
         assert silent_notify == []
+
+    def test_auto_ping_includes_time_and_count(
+        self, cn_root, session_env, fast_sleep, silent_notify, capsys
+    ):
+        """v0.3.10: PING 에 KST 시각 + 'N/M' wake 카운트 + 응답 강제 포맷."""
+        _write_config(cn_root, mode="auto", max_refresh=10)
+        main()
+        err = capsys.readouterr().err
+        # 첫 wake 라 1/10
+        assert "1/10" in err
+        # KST 시각 라벨
+        assert "KST," in err
+        # 응답 강제 — 'ok @HH:MM (1/10)' 형식
+        assert "reply with exactly 'ok @" in err
+        assert "(1/10)'" in err
 
 
 class TestModeNotify:
@@ -92,7 +107,7 @@ class TestModeNotify:
         rc = main()
         assert rc == 0
         # stderr 에 ping 메시지 X (wake 안 했으니)
-        assert PING_MESSAGE not in capsys.readouterr().err
+        assert PING_PREFIX not in capsys.readouterr().err
         m = _load_marker_for_sid(session_env)
         assert m.wake_count == 1
         assert m.last_wake_at > 0
@@ -118,7 +133,7 @@ class TestModeHybrid:
         _write_config(cn_root, mode="hybrid")
         rc = main()
         assert rc == 2
-        assert PING_MESSAGE in capsys.readouterr().err
+        assert PING_PREFIX in capsys.readouterr().err
         m = _load_marker_for_sid(session_env)
         assert m.wake_count == 1
         # hybrid → 알림 1회
@@ -145,7 +160,7 @@ class TestModeHybrid:
 
         rc = main()
         assert rc == 0  # wake 취소
-        assert PING_MESSAGE not in capsys.readouterr().err
+        assert PING_PREFIX not in capsys.readouterr().err
         m = _load_marker_for_sid(session_env)
         # wake 안 했으므로 wake_count 0
         assert m.wake_count == 0
@@ -164,7 +179,7 @@ class TestSkipConditions:
 
         rc = main()
         assert rc == 0
-        assert PING_MESSAGE not in capsys.readouterr().err
+        assert PING_PREFIX not in capsys.readouterr().err
         m = _load_marker_for_sid(session_env)
         # wake_count 변경 없음 (진입부 latest_fire 갱신만)
         assert m.wake_count == 3
@@ -183,7 +198,7 @@ class TestSkipConditions:
 
         rc = main()
         assert rc == 0
-        assert PING_MESSAGE not in capsys.readouterr().err
+        assert PING_PREFIX not in capsys.readouterr().err
         m = _load_marker_for_sid(session_env)
         # 더 최근 fire 의 latest_fire 가 살아있음
         assert m.wake_count == 0  # wake skip
@@ -228,7 +243,7 @@ class TestSessionIdResolution:
         _write_config(cn_root, mode="auto")
         rc = main()
         assert rc == 2
-        assert PING_MESSAGE in capsys.readouterr().err
+        assert PING_PREFIX in capsys.readouterr().err
         # stdin 으로 받은 sid 의 marker 가 갱신됨
         from lib.session_id import sanitize
         m = Marker.load(sanitize(session_stdin))
@@ -281,6 +296,6 @@ class TestSessionIdResolution:
 
         monkeypatch.setattr(M, "save", maybe_fail)
         rc = main()
-        # save 실패에도 wake 진행 (PING_MESSAGE 발송 + exit 2)
+        # save 실패에도 wake 진행 (PING_PREFIX 발송 + exit 2)
         assert rc == 2
-        assert PING_MESSAGE in capsys.readouterr().err
+        assert PING_PREFIX in capsys.readouterr().err

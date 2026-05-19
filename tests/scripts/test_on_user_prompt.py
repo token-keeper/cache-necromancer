@@ -117,6 +117,167 @@ class TestLastPromptCapture:
         assert "\x07" not in loaded.last_prompt
 
 
+class TestPingSelfInterference:
+    """v0.3.11: refresh.py 의 PING 도 prompt 로 hook 에 도달 →
+    wake_count 가 reset 되어 매 wake 마다 '1/N' 무한 반복하던 버그 회귀 방지.
+
+    실제 환경에서 PING 은 raw 가 아니라 Claude Code 가 `<task-notification>`
+    + `<system-reminder>` wrapper 안에 감싸서 stdin prompt 로 전달함.
+    그래서 startswith(PING_PREFIX) 가 아닌 substring + task-notification
+    시작 둘 다 체크.
+    """
+
+    def test_raw_ping_skips_reset(self, cn_root, monkeypatch):
+        """예전 단순 케이스 — raw PING 으로 prompt 가 시작."""
+        sid = "ping-raw"
+        sh = sanitize(sid)
+        Marker(sid_hash=sh, wake_count=3, last_prompt="기존").save()
+
+        ping = "[cn:keepalive 14:30 KST, 4/10] reply with exactly 'ok @14:30 (4/10)'."
+        _set_stdin(monkeypatch, {"session_id": sid, "prompt": ping})
+        assert main() == 0
+
+        loaded = Marker.load(sh)
+        assert loaded.wake_count == 3
+        assert loaded.last_prompt == "기존"
+
+    def test_wrapped_ping_skips_reset(self, cn_root, monkeypatch):
+        """실제 형식 — Claude Code 의 wrapper 안에 PING."""
+        sid = "ping-wrapped"
+        sh = sanitize(sid)
+        Marker(sid_hash=sh, wake_count=3, last_prompt="기존").save()
+
+        wrapped = (
+            "<task-notification>\n<summary>Stop hook feedback</summary>\n"
+            "</task-notification>\n<system-reminder>\n"
+            "Stop hook blocking error from command \"Stop\": "
+            "[cn:keepalive 14:30 KST, 4/10] reply with exactly 'ok @14:30 (4/10)'. "
+            "No tools, no analysis.\n</system-reminder>"
+        )
+        _set_stdin(monkeypatch, {"session_id": sid, "prompt": wrapped})
+        assert main() == 0
+
+        loaded = Marker.load(sh)
+        assert loaded.wake_count == 3
+        assert loaded.last_prompt == "기존"
+
+    def test_ping_skips_even_when_marker_missing(self, cn_root, monkeypatch):
+        """PING 만 들어오고 marker 없을 시 marker 새로 만들지도 않음."""
+        sid = "ping-no-marker"
+        ping = "[cn:keepalive 09:00 KST, 1/10] reply..."
+        _set_stdin(monkeypatch, {"session_id": sid, "prompt": ping})
+        assert main() == 0
+        from lib.marker import marker_path
+        assert not marker_path(sanitize(sid)).exists()
+
+    def test_normal_prompt_still_resets(self, cn_root, monkeypatch):
+        """regression: PING 아닌 일반 prompt 는 그대로 reset 동작."""
+        sid = "normal-session"
+        sh = sanitize(sid)
+        Marker(sid_hash=sh, wake_count=5).save()
+
+        _set_stdin(monkeypatch, {"session_id": sid, "prompt": "안녕 클로드"})
+        assert main() == 0
+        assert Marker.load(sh).wake_count == 0
+
+
+class TestSystemEventSkip:
+    """v0.3.11: Claude Code 의 background `<task-notification>` 도
+    UserPromptSubmit hook 으로 도달함 (PING 없는 task done 알림 등).
+    사용자 input 아니므로 reset skip.
+    """
+
+    def test_plain_task_notification_skips(self, cn_root, monkeypatch):
+        sid = "bg-task"
+        sh = sanitize(sid)
+        Marker(sid_hash=sh, wake_count=5, last_prompt="원래").save()
+
+        notification = (
+            "<task-notification>\n<task-id>abc123</task-id>\n"
+            "<status>completed</status>\n</task-notification>"
+        )
+        _set_stdin(monkeypatch, {"session_id": sid, "prompt": notification})
+        assert main() == 0
+
+        loaded = Marker.load(sh)
+        assert loaded.wake_count == 5
+        assert loaded.last_prompt == "원래"
+
+    def test_user_input_starting_with_angle_bracket_still_resets(self, cn_root, monkeypatch):
+        """`<` 로 시작하는 사용자 input (e.g. HTML 질문) 은 reset 정상 동작.
+        시스템 wrapper 와 정확히 구별되려면 `<task-notification>` 전체 매칭."""
+        sid = "user-angle"
+        sh = sanitize(sid)
+        Marker(sid_hash=sh, wake_count=4).save()
+
+        _set_stdin(monkeypatch, {"session_id": sid, "prompt": "<div> 태그 어떻게 써?"})
+        assert main() == 0
+        assert Marker.load(sh).wake_count == 0
+
+
+class TestPolicyEdgeCases:
+    """v0.3.11 보완: codex 권장 정책 고정 테스트. substring + startswith 의
+    경계/false positive 동작이 의도된 것임을 명시적으로 기록.
+    """
+
+    def test_user_text_containing_ping_prefix_is_skipped(self, cn_root, monkeypatch):
+        """false positive 수용 정책 고정 — 사용자가 메시지에 '[cn:keepalive' 텍스트를
+        직접 포함시키면 reset skip. single-user alpha + cap 보호로 허용."""
+        sid = "user-with-ping-text"
+        sh = sanitize(sid)
+        Marker(sid_hash=sh, wake_count=2).save()
+
+        _set_stdin(monkeypatch, {
+            "session_id": sid,
+            "prompt": "PING 문자열이 뭐였지? '[cn:keepalive' 였나?",
+        })
+        assert main() == 0
+        # 의도된 skip — 정책 변경 시 이 테스트가 먼저 깨짐
+        assert Marker.load(sh).wake_count == 2
+
+    def test_partial_prefix_still_resets(self, cn_root, monkeypatch):
+        """경계 — '[cn:keepaliv' (마지막 e 없음) 는 PING_PREFIX 아님 → reset 진행."""
+        sid = "partial-prefix"
+        sh = sanitize(sid)
+        Marker(sid_hash=sh, wake_count=3).save()
+
+        _set_stdin(monkeypatch, {"session_id": sid, "prompt": "[cn:keepaliv typo"})
+        assert main() == 0
+        assert Marker.load(sh).wake_count == 0
+
+    def test_leading_whitespace_before_task_notification_resets(self, cn_root, monkeypatch):
+        """startswith 정책 — 앞에 공백/개행 있으면 system event 아닌 user input
+        으로 간주. 현재 관측된 Claude Code wrapper 는 leading whitespace 없음."""
+        sid = "ws-task-notif"
+        sh = sanitize(sid)
+        Marker(sid_hash=sh, wake_count=5).save()
+
+        _set_stdin(monkeypatch, {
+            "session_id": sid,
+            "prompt": "  <task-notification>이건 사용자가 쓴 텍스트</task-notification>",
+        })
+        assert main() == 0
+        assert Marker.load(sh).wake_count == 0
+
+    def test_system_reminder_only_wrapper_with_ping_skips(self, cn_root, monkeypatch):
+        """`<system-reminder>` 단독 wrapper + PING — task-notification 없는 케이스도
+        substring 조건으로 skip 보장."""
+        sid = "sysrem-only"
+        sh = sanitize(sid)
+        Marker(sid_hash=sh, wake_count=4, last_prompt="원래").save()
+
+        wrapped = (
+            "<system-reminder>\n[cn:keepalive 10:30 KST, 5/10] reply with exactly "
+            "'ok @10:30 (5/10)'.\n</system-reminder>"
+        )
+        _set_stdin(monkeypatch, {"session_id": sid, "prompt": wrapped})
+        assert main() == 0
+
+        loaded = Marker.load(sh)
+        assert loaded.wake_count == 4
+        assert loaded.last_prompt == "원래"
+
+
 class TestEdgeCases:
     def test_no_session_id_returns_silently(self, cn_root, monkeypatch):
         _set_stdin(monkeypatch, {})

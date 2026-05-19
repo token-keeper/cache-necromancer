@@ -17,6 +17,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -30,7 +31,23 @@ from lib.marker import Marker  # noqa: E402
 from lib.notify import notify  # noqa: E402
 from lib.session_id import sanitize  # noqa: E402
 
-PING_MESSAGE = "[cn:keepalive] reply 'ok' only. No tools, no analysis. Use minimal output tokens."
+PING_PREFIX = "[cn:keepalive"
+_KST = timezone(timedelta(hours=9))
+
+
+def _build_ping(wake_count: int, max_count: int) -> str:
+    """동적 PING 메시지 — KST 시각 + 'N/M' wake 카운트 포함.
+
+    응답 형식도 'ok @HH:MM (N/M)' 으로 강제해서 chat history 만 봐도
+    언제 몇 번째 wake 였는지 확인 가능.
+    """
+    hhmm = datetime.now(_KST).strftime("%H:%M")
+    nm = f"{wake_count}/{max_count}"
+    return (
+        f"{PING_PREFIX} {hhmm} KST, {nm}] "
+        f"reply with exactly 'ok @{hhmm} ({nm})'. "
+        "No tools, no analysis. Use minimal output tokens."
+    )
 
 
 def _resolve_root() -> Path:
@@ -66,7 +83,7 @@ def _save_marker(marker: Marker, context: str) -> bool:
         return False
 
 
-def _do_wake(marker: Marker, sid_hash: str) -> int:
+def _do_wake(marker: Marker, sid_hash: str, config: Config) -> int:
     """wake_count 증가 + last_wake_at 갱신 + stderr ping + exit 2.
 
     save 실패 시 wake 자체는 진행 (cache 갱신 우선, count 누락 허용).
@@ -75,7 +92,7 @@ def _do_wake(marker: Marker, sid_hash: str) -> int:
     marker.last_wake_at = int(time.time())
     _save_marker(marker, "wake")
     log_info(f"[refresh] wake sid={sid_hash} count={marker.wake_count}")
-    print(PING_MESSAGE, file=sys.stderr)
+    print(_build_ping(marker.wake_count, config.max_refresh_count), file=sys.stderr)
     return 2
 
 
@@ -164,7 +181,7 @@ def main() -> int:
             return 0
 
     # auto 또는 hybrid 통과 → wake
-    return _do_wake(marker, sid_hash)
+    return _do_wake(marker, sid_hash, config)
 
 
 if __name__ == "__main__":

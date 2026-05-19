@@ -2,6 +2,57 @@
 
 이 프로젝트의 모든 주목할 만한 변경사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고, [Semantic Versioning](https://semver.org/lang/ko/) 을 준수합니다.
 
+## [0.3.11] — 2026-05-19
+
+**`on_user_prompt` 자기간섭 fix — `wake_count` 가 매 wake 마다 `0` 으로 reset 되어 PING 표시가 `1/N` 무한 반복 + `max_refresh_count` cap 무력화되던 버그 수정.**
+
+### Fixed
+
+- **`scripts/on_user_prompt.py`**: stdin `prompt` 가 `<task-notification>` 으로 시작하거나 `[cn:keepalive` 를 substring 으로 포함하면 `wake_count` reset / `last_prompt` 갱신 skip.
+  - **원인**: v0.3.10 의 PING (`[cn:keepalive ... N/M]`) 이 raw 가 아니라 Claude Code 가 `<task-notification>...<system-reminder>...PING...</system-reminder>` wrapper 안에 감싸서 UserPromptSubmit hook 의 `stdin.prompt` 로 전달. 기존 코드의 `startswith(PING_PREFIX)` 가 매칭 실패 → reset 진행 → 매 wake 마다 `wake_count=0` → `1/N` 반복 + cap 미발동.
+  - **추가 발견**: Claude Code 의 background `<task-notification>` (e.g. `Bash run_in_background` 완료 알림) 도 UserPromptSubmit hook trigger. 이것도 사용자 input 아니므로 skip.
+  - **결과**: `1/10 → 2/10 → 3/10 → ... → 10/10` 정상 누적, `max_refresh_count` cap 의도대로 작동 (10 회 도달 후 wake skip → cost 상한 보장).
+
+### Tests
+
+- `tests/scripts/test_on_user_prompt.py::TestPingSelfInterference` 4건:
+  - raw PING / **wrapped PING (실제 형식)** / marker 없을 시 부수효과 X / regression
+- `tests/scripts/test_on_user_prompt.py::TestSystemEventSkip` 2건:
+  - plain `<task-notification>` (PING 없음) skip / `<` 로 시작하는 user input (`<div> 태그 어떻게 써?`) 은 reset 정상
+- `tests/scripts/test_on_user_prompt.py::TestPolicyEdgeCases` 4건 (codex 권장 정책 고정):
+  - 사용자 텍스트 안에 `[cn:keepalive` 포함 시 skip (false positive 수용 정책 명시)
+  - partial prefix `[cn:keepaliv` 는 reset 정상 (경계)
+  - leading whitespace + `<task-notification>` 는 reset (startswith 정책)
+  - `<system-reminder>` 단독 wrapper + PING 도 substring 으로 skip
+- 131/131 pass.
+
+### Notes
+
+- **substring 매칭 false positive**: 사용자가 일부러 메시지에 `[cn:keepalive` 텍스트를 포함시키면 reset skip. 영향 범위 = 자기 marker 의 wake_count 만, `max_refresh_count` cap 으로 보호. single-user alpha 가정상 수용.
+- `PING_PREFIX` 상수는 `scripts/refresh.py` 와 `scripts/on_user_prompt.py` 양쪽에 하드코딩 (현재 `scripts/` 가 패키지 아님). 추후 `lib/` 로 통합 예정.
+- 진단 과정에서 디버그 로그 추가 → 실제 stdin payload 형식 확인 → wrapped PING 발견 → fix 보완 (`startswith` → `in` substring + `<task-notification>` 시작 체크).
+
+## [0.3.10] — 2026-05-17
+
+**Wake PING 에 fire 시각 + repeat count 표시** — chat history 만 봐도 언제 몇 번째 wake 였는지 확인 가능. `ok` 한 마디뿐이라 어색하던 wake-up turn 의 가독성 개선.
+
+### Changed
+
+- **`scripts/refresh.py`**:
+  - `PING_MESSAGE` 정적 상수 → `PING_PREFIX` + `_build_ping(wake_count, max_count)` 동적 빌더로 교체.
+  - 메시지에 KST `HH:MM` + `N/M` (`wake_count/max_refresh_count`) 포함.
+  - 응답 형식을 `ok @HH:MM (N/M)` 으로 강제 — chat scrollback 에서 시점/잔여 횟수 즉시 식별.
+  - `_do_wake` 시그니처에 `config` 인자 추가 (`max_refresh_count` 참조).
+  - Before: `[cn:keepalive] reply 'ok' only. ...`
+  - After: `[cn:keepalive 16:42 KST, 7/10] reply with exactly 'ok @16:42 (7/10)'. ...`
+- **`tests/scripts/test_refresh.py`**: `PING_MESSAGE` import → `PING_PREFIX` 로 교체, 시각/카운트 포맷 검증 테스트 추가.
+
+### Notes
+
+- KST 변환은 `datetime.now(timezone(timedelta(hours=9)))` 로 system timezone 무관.
+- output token: `ok` (1 token) → `ok @16:42 (7/10)` (~10 token). cache hit (input prompt) 에는 영향 X.
+- max wake 도달 시 wake 자체가 skip 되므로 메시지 표시 안 됨 (변동 없음).
+
 ## [0.3.9] — 2026-05-16
 
 **Wake `PING_MESSAGE` 에 minimal output 지시 추가** — 모델이 wake-up turn 에서 'ok' 외 추가 토큰 발생 가능성 차단 강화.
