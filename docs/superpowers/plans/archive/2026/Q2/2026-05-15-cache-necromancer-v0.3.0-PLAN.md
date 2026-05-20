@@ -1,7 +1,7 @@
 # cache-necromancer v0.3.0 — PLAN
 
 > **Status**: Draft (작성 2026-05-16)
-> **Author**: Brody Byun
+> **Author**: brody424
 > **Related**: [PRD](../specs/2026-05-15-cache-necromancer-v0.3.0-PRD.md), [TECH_SPEC](../specs/2026-05-15-cache-necromancer-v0.3.0-TECH_SPEC.md)
 > **PR strategy**: 단일 PR (docs + 구현 + README), 10 commits, 사용자 결정 (300줄 룰 deviate)
 

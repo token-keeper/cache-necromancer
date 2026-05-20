@@ -148,7 +148,7 @@ cache-necromancer/
   "name": "cache-necromancer",
   "version": "0.1.0",
   "description": "Auto-refresh Claude Code prompt cache TTL via headless CLI",
-  "author": {"name": "Brody Byun"},
+  "author": {"name": "brody424"},
   "license": "MIT",
   "keywords": ["cache", "cost", "macos"],
   "hooks": "./hooks/hooks.json"

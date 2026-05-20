@@ -160,7 +160,7 @@ cache-necromancer/
   "version": "0.1.0",
   "description": "Auto-refresh Claude Code prompt cache TTL via minimal tmux injection",
   "author": {
-    "name": "Brody Byun"
+    "name": "brody424"
   },
   "license": "MIT",
   "keywords": ["cache", "tmux", "macos"],

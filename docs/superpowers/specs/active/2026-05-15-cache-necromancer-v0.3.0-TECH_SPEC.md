@@ -1,7 +1,7 @@
 # cache-necromancer v0.3.0 — TECH_SPEC
 
 > **Status**: Draft (작성 2026-05-16)
-> **Author**: Brody Byun
+> **Author**: brody424
 > **Related**: [PRD](2026-05-15-cache-necromancer-v0.3.0-PRD.md), [PLAN](../plans/2026-05-15-cache-necromancer-v0.3.0-PLAN.md)
 > **Supersedes**: v0.2.x daemon-based subprocess fire architecture
 
