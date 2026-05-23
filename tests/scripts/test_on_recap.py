@@ -232,3 +232,4 @@ def test_systemmessage_is_valid_json(session_stdin, temp_root, capsys):
     assert "🪦" in raw  # ensure_ascii=False 확인 (raw emoji)
     parsed = json.loads(raw)
     assert "systemMessage" in parsed
+

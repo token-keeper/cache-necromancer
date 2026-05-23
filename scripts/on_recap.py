@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stop hook 의 sync 본체 — recap 영역에 다음 wake 시각 표시.
+"""Stop hook 의 sync 본체 — turn 종료 즉시 recap 영역에 다음 wake 시각 표시.
 
 design spec: docs/superpowers/specs/active/2026-05-23-cache-recap-message-design.md
 PRD 불변: 어떤 실패도 chat 동작 차단 X (silent fail).
