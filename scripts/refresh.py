@@ -17,7 +17,7 @@ import json
 import os
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -32,19 +32,18 @@ from lib.notify import notify  # noqa: E402
 from lib.session_id import sanitize  # noqa: E402
 
 PING_PREFIX = "[cn:keepalive"
-_KST = timezone(timedelta(hours=9))
 
 
 def _build_ping(wake_count: int, max_count: int) -> str:
-    """동적 PING 메시지 — KST 시각 + 'N/M' wake 카운트 포함.
+    """동적 PING 메시지 — local 시각 + 'N/M' wake 카운트 포함.
 
     응답 형식도 'ok @HH:MM (N/M)' 으로 강제해서 chat history 만 봐도
     언제 몇 번째 wake 였는지 확인 가능.
     """
-    hhmm = datetime.now(_KST).strftime("%H:%M")
+    hhmm = datetime.now().strftime("%H:%M")
     nm = f"{wake_count}/{max_count}"
     return (
-        f"{PING_PREFIX} {hhmm} KST, {nm}] "
+        f"{PING_PREFIX} {hhmm}, {nm}] "
         f"reply with exactly 'ok @{hhmm} ({nm})'. "
         "No tools, no analysis. Use minimal output tokens."
     )

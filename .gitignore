@@ -9,3 +9,6 @@ uv.lock
 
 # Project-local Claude Code config (POC / 개인 hook 등)
 .claude/
+
+# Dev-only local marketplace (self-marketplace 폐기됨, 로컬 directory source 용)
+.claude-plugin/marketplace.json

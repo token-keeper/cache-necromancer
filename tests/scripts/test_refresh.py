@@ -86,17 +86,37 @@ class TestModeAuto:
     def test_auto_ping_includes_time_and_count(
         self, cn_root, session_env, fast_sleep, silent_notify, capsys
     ):
-        """v0.3.10: PING 에 KST 시각 + 'N/M' wake 카운트 + 응답 강제 포맷."""
+        """v0.3.12: PING 에 local 시각 + 'N/M' wake 카운트 + 응답 강제 포맷.
+
+        KST hardcode 제거 (v0.3.12) — local time 사용.
+        """
+        import re
         _write_config(cn_root, mode="auto", max_refresh=10)
         main()
         err = capsys.readouterr().err
         # 첫 wake 라 1/10
         assert "1/10" in err
-        # KST 시각 라벨
-        assert "KST," in err
+        # KST suffix 제거됨
+        assert "KST" not in err
+        # HH:MM 형식 (KST suffix 없이)
+        assert re.search(r"\[cn:keepalive \d{2}:\d{2}, 1/10\]", err)
         # 응답 강제 — 'ok @HH:MM (1/10)' 형식
-        assert "reply with exactly 'ok @" in err
-        assert "(1/10)'" in err
+        assert re.search(r"reply with exactly 'ok @\d{2}:\d{2} \(1/10\)'", err)
+
+    def test_build_ping_uses_naive_local_now(self):
+        """회귀 가드: _build_ping 이 datetime.now() naive 호출.
+
+        freezegun 으로 frozen UTC 시각 고정. datetime.now() naive 면 그 시각 그대로
+        반환. datetime.now(_KST) 같은 aware 호출이면 KST tz 변환되어 다른 결과.
+        """
+        from freezegun import freeze_time
+        from scripts.refresh import _build_ping
+        # frozen UTC = 2026-05-23 03:15:00. naive .now() → '03:15' 그대로.
+        with freeze_time("2026-05-23 03:15:00"):
+            ping = _build_ping(1, 10)
+            assert "03:15" in ping
+            assert "ok @03:15 (1/10)" in ping
+            assert "KST" not in ping
 
 
 class TestModeNotify:
