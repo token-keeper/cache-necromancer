@@ -41,11 +41,32 @@ def _resolve_session_id() -> str:
     return os.environ.get("CLAUDE_CODE_SESSION_ID", "")
 
 
+def _build_message_auto_hybrid(death_hhmm: str) -> str:
+    return f"🪦 캐시는 {death_hhmm} KST 에 살리러 갈게요!"
+
+
 def _main_impl() -> int:
     sid = _resolve_session_id()
     if not sid:
         return 0
-    sanitize(sid)  # 다음 task 에서 실제 사용
+    try:
+        sanitize(sid)
+    except ValueError:
+        return 0
+
+    config_path = _resolve_root() / "config.toml"
+    try:
+        ensure_config_file(config_path)
+        config = load_config(config_path)
+    except (OSError, ValueError):
+        return 0
+
+    interval = config.refresh_interval_minutes
+    death_at = datetime.now(_KST) + timedelta(minutes=interval)
+    death_hhmm = death_at.strftime("%H:%M")
+
+    message = _build_message_auto_hybrid(death_hhmm)
+    print(json.dumps({"systemMessage": message}, ensure_ascii=False))
     return 0
 
 

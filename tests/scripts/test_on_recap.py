@@ -3,8 +3,10 @@ import io
 import json
 import sys
 from pathlib import Path
+from unittest import mock
 
 import pytest
+from freezegun import freeze_time
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
@@ -56,6 +58,16 @@ def empty_stdin(monkeypatch):
     monkeypatch.setattr("sys.stdin", io.StringIO(""))
 
 
+@pytest.fixture
+def temp_root(monkeypatch, tmp_path):
+    """CN_ROOT 를 tmp_path 로 격리. config.toml 자동 생성됨."""
+    monkeypatch.setenv("CN_ROOT", str(tmp_path))
+    return tmp_path
+
+
+  # KST offset
+
+
 def test_main_no_session_id_exits_silently(empty_stdin, capsys):
     """session_id 없으면 stdout empty + exit 0."""
     from scripts.on_recap import main
@@ -75,3 +87,30 @@ def test_main_top_level_exception_silent_fail(session_stdin, capsys, monkeypatch
     captured = capsys.readouterr()
     assert rc == 0
     assert captured.out == ""
+
+
+
+@freeze_time("2026-05-23 01:00:00")
+def test_auto_mode_normal_message(session_stdin, temp_root, capsys):
+    """auto mode + interval=50, fire=10:00 (UTC 01:00) → '🪦 캐시는 10:50 KST 에 살리러 갈게요!'"""
+    (temp_root / "config.toml").write_text(
+        '[general]\nmode = "auto"\nrefresh_interval_minutes = 50\n', encoding="utf-8"
+    )
+    from scripts.on_recap import main
+    rc = main()
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert out["systemMessage"] == "🪦 캐시는 10:50 KST 에 살리러 갈게요!"
+
+
+@freeze_time("2026-05-23 14:55:00")
+def test_midnight_rollover(session_stdin, temp_root, capsys):
+    """fire=23:55 (UTC 14:55), interval=30 → '00:25 KST'"""
+    (temp_root / "config.toml").write_text(
+        '[general]\nmode = "auto"\nrefresh_interval_minutes = 30\n', encoding="utf-8"
+    )
+    from scripts.on_recap import main
+    rc = main()
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert "00:25 KST" in out["systemMessage"]
