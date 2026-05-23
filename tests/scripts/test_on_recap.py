@@ -1,7 +1,11 @@
 """Tests for scripts/on_recap.py + hooks/hooks.json 구조 (recap design spec)."""
+import io
 import json
 import sys
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
@@ -36,3 +40,39 @@ def test_hooks_json_second_stop_is_async_refresh_unchanged():
     assert "refresh.py" in second["command"]
     assert second["asyncRewake"] is True
     assert second["timeout"] == 3600
+
+
+@pytest.fixture
+def session_stdin(monkeypatch):
+    """stdin JSON 으로 session_id 주입."""
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    sid = "test-recap-sid"
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": sid})))
+    return sid
+
+
+@pytest.fixture
+def empty_stdin(monkeypatch):
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+
+
+def test_main_no_session_id_exits_silently(empty_stdin, capsys):
+    """session_id 없으면 stdout empty + exit 0."""
+    from scripts.on_recap import main
+    rc = main()
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert captured.out == ""
+
+
+def test_main_top_level_exception_silent_fail(session_stdin, capsys, monkeypatch):
+    """예상 밖 예외 발생해도 stdout empty + exit 0."""
+    def boom(_):
+        raise RuntimeError("boom")
+    monkeypatch.setattr("scripts.on_recap.sanitize", boom)
+    from scripts.on_recap import main
+    rc = main()
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert captured.out == ""
