@@ -103,6 +103,21 @@ class TestModeAuto:
         # 응답 강제 — 'ok @HH:MM (1/10)' 형식
         assert re.search(r"reply with exactly 'ok @\d{2}:\d{2} \(1/10\)'", err)
 
+    def test_build_ping_uses_naive_local_now(self):
+        """회귀 가드: _build_ping 이 datetime.now() naive 호출.
+
+        freezegun 으로 frozen UTC 시각 고정. datetime.now() naive 면 그 시각 그대로
+        반환. datetime.now(_KST) 같은 aware 호출이면 KST tz 변환되어 다른 결과.
+        """
+        from freezegun import freeze_time
+        from scripts.refresh import _build_ping
+        # frozen UTC = 2026-05-23 03:15:00. naive .now() → '03:15' 그대로.
+        with freeze_time("2026-05-23 03:15:00"):
+            ping = _build_ping(1, 10)
+            assert "03:15" in ping
+            assert "ok @03:15 (1/10)" in ping
+            assert "KST" not in ping
+
 
 class TestModeNotify:
     def test_notify_exits_0_and_increments_wake_count(
