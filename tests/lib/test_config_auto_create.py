@@ -11,6 +11,7 @@ def test_creates_default_when_missing(tmp_path):
     assert "[general]" in content
     assert "mode" in content
     assert "refresh_interval_minutes = 50" in content
+    assert "cache_ttl_minutes = 60" in content
     assert "max_refresh_count = 10" in content
     assert 'language = "en"' in content
     assert "[notify]" in content

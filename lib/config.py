@@ -34,6 +34,7 @@ class NotifyConfig:
 class Config:
     mode: Literal["notify", "auto", "hybrid"] = "hybrid"
     refresh_interval_minutes: int = 50  # v0.2.x 55 → 50 (1h cache + 안전 마진)
+    cache_ttl_minutes: int = 60  # Anthropic prompt cache TTL (1h ext cache 기본)
     max_refresh_count: int = 10
     language: str = "en"  # ko | en | ja | zh (validate 는 lib.i18n.normalize_language)
     refresh: RefreshConfig = field(default_factory=RefreshConfig)
@@ -135,6 +136,7 @@ def load_config(path: Path) -> Config:
     return Config(
         mode=mode,
         refresh_interval_minutes=general.get("refresh_interval_minutes", 50),
+        cache_ttl_minutes=general.get("cache_ttl_minutes", 60),
         max_refresh_count=general.get("max_refresh_count", 10),
         language=general.get("language", "en"),
         refresh=RefreshConfig(**refresh_data),
@@ -148,7 +150,8 @@ _DEFAULT_TEMPLATE = """# cache-necromancer 설정 (v0.3.0)
 
 [general]
 mode = "{mode}"                       # notify | auto | hybrid
-refresh_interval_minutes = 50         # cache TTL 만료 직전 (1h cache 기준)
+refresh_interval_minutes = 50         # cache TTL 만료 직전 wake 주기 (1h cache 기준)
+cache_ttl_minutes = 60                # Anthropic prompt cache TTL (recap 메시지 표시용)
 max_refresh_count = 10                # 한 세션 최대 wake/notify 횟수
 language = "en"                       # recap 메시지 언어: ko | en | ja | zh
 

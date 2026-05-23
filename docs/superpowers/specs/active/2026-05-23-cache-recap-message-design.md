@@ -1,20 +1,22 @@
 # Cache Recap Message — Design (v0.3.12)
 
-> Stop hook fire 시점에 사용자에게 "다음 wake 시각" 을 Claude Code recap 영역(systemMessage) 으로 즉시 표시.
+> Stop hook fire 시점에 사용자에게 "캐시 만료 시각" 을 Claude Code recap 영역(systemMessage) 으로 즉시 표시.
 > 사용자 시스템 local time + config 명시 언어 (한/영/일/중) 지원.
 
 ## 1. 목적
 
-- 사용자가 prompt → Claude 응답 후 turn 종료 시점에 **다음 wake 시각을 명시적으로 인지**할 수 있도록 한다.
+- 사용자가 prompt → Claude 응답 후 turn 종료 시점에 **캐시가 죽는 시각을 명시적으로 인지**할 수 있도록 한다.
 - 기존 PING (refresh_interval_minutes 만료 직전 wake) 와 **별개의 정보성 메시지** — wake 트리거 아님.
 - 다국어 지원: 한국어, 영어, 일본어, 중국어 (4개).
 - 사용자 시스템 local time 사용 (KST hardcode 폐기).
+- 시각 계산 = `fire + cache_ttl_minutes` (`refresh_interval_minutes` 와 분리 — 후자는 wake 주기, ttl 보다 안전 마진 만큼 짧음).
 
 ## 2. 범위
 
 ### 포함
 - Stop hook fire 시점 즉시 systemMessage 출력 (sync hook 신규)
-- 시각 = `fire_time + config.refresh_interval_minutes` (사용자 local time)
+- 시각 = `fire_time + config.cache_ttl_minutes` (사용자 local time)
+- `config.cache_ttl_minutes` 신설 (default 60 = Anthropic 1h ext cache)
 - 언어별 메시지 + 시각 표기 (4개)
 - config 의 `[general].language` 명시 설정
 - 기존 refresh.py PING 도 local time 으로 변경 (KST hardcode 제거)
@@ -98,7 +100,8 @@ print(json.dumps({"systemMessage": message}, ensure_ascii=False))
 ```toml
 [general]
 mode = "auto"
-refresh_interval_minutes = 50
+refresh_interval_minutes = 50         # wake 주기 (cache TTL 보다 짧음)
+cache_ttl_minutes = 60                # recap 메시지 시각 = fire + ttl
 max_refresh_count = 10
 language = "ko"
 ```
@@ -114,11 +117,11 @@ language = "ko"
 silent fail 케이스:
 - stdin session_id 없음 → stdout empty + exit 0
 - sanitize ValueError (invalid session_id) → stdout empty + exit 0
-- `refresh_interval_minutes` 가 int 아니거나 ≤ 0 → stdout empty + exit 0
+- `cache_ttl_minutes` 가 int 아니거나 ≤ 0 → stdout empty + exit 0
 - 예상 밖 예외 (datetime/json/print) → top-level 캐치 + stdout empty + exit 0
 
 graceful degrade (silent fail 아님):
-- config 로드 실패 (invalid TOML / OSError) → lib.config 가 default Config fallback. on_recap 은 default 값 (interval=50, language="en") 으로 메시지 출력. lib.config 가 stderr 경고 출력.
+- config 로드 실패 (invalid TOML / OSError) → lib.config 가 default Config fallback. on_recap 은 default 값 (ttl=60, language="en") 으로 메시지 출력. lib.config 가 stderr 경고 출력.
 
 ### 3.6 refresh.py PING 변경 (local time)
 
@@ -233,12 +236,12 @@ def _main_impl() -> int:
     except (OSError, ValueError):
         return 0
 
-    interval = config.refresh_interval_minutes
-    if not isinstance(interval, int) or interval <= 0:
+    ttl = config.cache_ttl_minutes
+    if not isinstance(ttl, int) or ttl <= 0:
         return 0
 
     lang = normalize_language(config.language)
-    death_at = datetime.now() + timedelta(minutes=interval)
+    death_at = datetime.now() + timedelta(minutes=ttl)
     message = build_recap_message(lang, death_at.hour, death_at.minute)
     print(json.dumps({"systemMessage": message}, ensure_ascii=False))
     return 0

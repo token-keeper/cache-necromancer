@@ -55,12 +55,12 @@ def _main_impl() -> int:
     except (OSError, ValueError):
         return 0
 
-    interval = config.refresh_interval_minutes
-    if not isinstance(interval, int) or interval <= 0:
+    ttl = config.cache_ttl_minutes
+    if not isinstance(ttl, int) or ttl <= 0:
         return 0
 
     lang = normalize_language(config.language)
-    death_at = datetime.now() + timedelta(minutes=interval)
+    death_at = datetime.now() + timedelta(minutes=ttl)
     message = build_recap_message(lang, death_at.hour, death_at.minute)
     print(json.dumps({"systemMessage": message}, ensure_ascii=False))
     return 0

@@ -5,10 +5,11 @@ from lib.config import Config, load_config
 
 
 def test_load_defaults_when_file_missing(tmp_path):
-    """존재하지 않는 path → 기본값 Config (5개 옵션만)."""
+    """존재하지 않는 path → 기본값 Config."""
     c = load_config(tmp_path / "nonexistent.toml")
     assert c.mode == "hybrid"
     assert c.refresh_interval_minutes == 50  # v0.2.x 55 → 50
+    assert c.cache_ttl_minutes == 60  # Anthropic 1h ext cache 기본
     assert c.max_refresh_count == 10
     assert c.refresh.hybrid_wait_seconds == 60
     assert c.notify.system_notification is True
@@ -146,3 +147,19 @@ def test_config_language_unknown_value_loaded_as_is(tmp_path):
     p.write_text('[general]\nmode = "auto"\nlanguage = "xx"\n')
     c = load_config(p)
     assert c.language == "xx"
+
+
+def test_config_cache_ttl_default_60(tmp_path):
+    """config 에 cache_ttl_minutes 미지정 시 default = 60 (1h ext cache)."""
+    p = tmp_path / "c.toml"
+    p.write_text('[general]\nmode = "auto"\n')
+    c = load_config(p)
+    assert c.cache_ttl_minutes == 60
+
+
+def test_config_cache_ttl_loaded_from_toml(tmp_path):
+    """[general].cache_ttl_minutes 값이 Config 에 반영 (5min cache 케이스)."""
+    p = tmp_path / "c.toml"
+    p.write_text('[general]\nmode = "auto"\ncache_ttl_minutes = 5\n')
+    c = load_config(p)
+    assert c.cache_ttl_minutes == 5
