@@ -85,28 +85,150 @@ def test_main_top_level_exception_silent_fail(session_stdin, capsys, monkeypatch
     assert captured.out == ""
 
 
+# ---- 메시지 4 언어 (local time, fire=10:00, interval=50 → 10:50) ----
 
-@freeze_time("2026-05-23 01:00:00")
-def test_auto_mode_normal_message(session_stdin, temp_root, capsys):
-    """auto mode + interval=50, fire=10:00 (UTC 01:00) → '🪦 캐시는 10:50 KST 에 살리러 갈게요!'"""
+@freeze_time("2026-05-23 10:00:00")
+def test_recap_message_ko(session_stdin, temp_root, capsys):
     (temp_root / "config.toml").write_text(
-        '[general]\nmode = "auto"\nrefresh_interval_minutes = 50\n', encoding="utf-8"
+        '[general]\nmode = "auto"\nrefresh_interval_minutes = 50\nlanguage = "ko"\n',
+        encoding="utf-8",
     )
     from scripts.on_recap import main
     rc = main()
     out = json.loads(capsys.readouterr().out)
     assert rc == 0
-    assert out["systemMessage"] == "🪦 캐시는 10:50 KST 에 살리러 갈게요!"
+    assert out["systemMessage"] == "🪦 캐시는 10시 50분에 죽어요."
 
 
-@freeze_time("2026-05-23 14:55:00")
-def test_midnight_rollover(session_stdin, temp_root, capsys):
-    """fire=23:55 (UTC 14:55), interval=30 → '00:25 KST'"""
+@freeze_time("2026-05-23 10:00:00")
+def test_recap_message_en(session_stdin, temp_root, capsys):
     (temp_root / "config.toml").write_text(
-        '[general]\nmode = "auto"\nrefresh_interval_minutes = 30\n', encoding="utf-8"
+        '[general]\nmode = "auto"\nrefresh_interval_minutes = 50\nlanguage = "en"\n',
+        encoding="utf-8",
+    )
+    from scripts.on_recap import main
+    main()
+    out = json.loads(capsys.readouterr().out)
+    assert out["systemMessage"] == "🪦 Cache dies at 10:50."
+
+
+@freeze_time("2026-05-23 10:00:00")
+def test_recap_message_ja(session_stdin, temp_root, capsys):
+    (temp_root / "config.toml").write_text(
+        '[general]\nmode = "auto"\nrefresh_interval_minutes = 50\nlanguage = "ja"\n',
+        encoding="utf-8",
+    )
+    from scripts.on_recap import main
+    main()
+    out = json.loads(capsys.readouterr().out)
+    assert out["systemMessage"] == "🪦 キャッシュは10時50分に死にます。"
+
+
+@freeze_time("2026-05-23 10:00:00")
+def test_recap_message_zh(session_stdin, temp_root, capsys):
+    (temp_root / "config.toml").write_text(
+        '[general]\nmode = "auto"\nrefresh_interval_minutes = 50\nlanguage = "zh"\n',
+        encoding="utf-8",
+    )
+    from scripts.on_recap import main
+    main()
+    out = json.loads(capsys.readouterr().out)
+    assert out["systemMessage"] == "🪦 缓存将在10点50分死亡。"
+
+
+# ---- 자정 넘김 ----
+
+@freeze_time("2026-05-23 23:55:00")
+def test_midnight_rollover_en(session_stdin, temp_root, capsys):
+    """fire=23:55, interval=30 → 00:25"""
+    (temp_root / "config.toml").write_text(
+        '[general]\nmode = "auto"\nrefresh_interval_minutes = 30\nlanguage = "en"\n',
+        encoding="utf-8",
+    )
+    from scripts.on_recap import main
+    main()
+    out = json.loads(capsys.readouterr().out)
+    assert out["systemMessage"] == "🪦 Cache dies at 00:25."
+
+
+@freeze_time("2026-05-23 23:55:00")
+def test_midnight_rollover_ko(session_stdin, temp_root, capsys):
+    (temp_root / "config.toml").write_text(
+        '[general]\nmode = "auto"\nrefresh_interval_minutes = 30\nlanguage = "ko"\n',
+        encoding="utf-8",
+    )
+    from scripts.on_recap import main
+    main()
+    out = json.loads(capsys.readouterr().out)
+    assert out["systemMessage"] == "🪦 캐시는 0시 25분에 죽어요."
+
+
+# ---- language fallback ----
+
+@freeze_time("2026-05-23 10:00:00")
+def test_recap_default_language_en(session_stdin, temp_root, capsys):
+    """config 에 language 없으면 'en'."""
+    (temp_root / "config.toml").write_text(
+        '[general]\nmode = "auto"\nrefresh_interval_minutes = 50\n',
+        encoding="utf-8",
+    )
+    from scripts.on_recap import main
+    main()
+    out = json.loads(capsys.readouterr().out)
+    assert out["systemMessage"] == "🪦 Cache dies at 10:50."
+
+
+@freeze_time("2026-05-23 10:00:00")
+def test_recap_invalid_language_falls_back_to_en(session_stdin, temp_root, capsys):
+    (temp_root / "config.toml").write_text(
+        '[general]\nmode = "auto"\nrefresh_interval_minutes = 50\nlanguage = "xx"\n',
+        encoding="utf-8",
+    )
+    from scripts.on_recap import main
+    main()
+    out = json.loads(capsys.readouterr().out)
+    assert out["systemMessage"] == "🪦 Cache dies at 10:50."
+
+
+# ---- interval 가드 ----
+
+@pytest.mark.parametrize("interval", [0, -1, -100])
+def test_invalid_interval_silent_fail(session_stdin, temp_root, capsys, interval):
+    (temp_root / "config.toml").write_text(
+        f'[general]\nmode = "auto"\nrefresh_interval_minutes = {interval}\n'
+        'language = "en"\n',
+        encoding="utf-8",
     )
     from scripts.on_recap import main
     rc = main()
-    out = json.loads(capsys.readouterr().out)
     assert rc == 0
-    assert "00:25 KST" in out["systemMessage"]
+    assert capsys.readouterr().out == ""
+
+
+def test_config_invalid_toml_falls_back_to_default(
+    session_stdin, temp_root, capsys
+):
+    """config.toml 이 invalid → lib.config 가 default Config fallback (graceful).
+    on_recap 은 default 값 (interval=50, language='en') 으로 메시지 출력."""
+    (temp_root / "config.toml").write_text("not valid = = =", encoding="utf-8")
+    from scripts.on_recap import main
+    rc = main()
+    assert rc == 0
+    raw = capsys.readouterr().out
+    parsed = json.loads(raw)
+    assert "systemMessage" in parsed
+    assert "Cache dies at" in parsed["systemMessage"]  # default lang = "en"
+
+
+def test_systemmessage_is_valid_json(session_stdin, temp_root, capsys):
+    """stdout 이 valid JSON + systemMessage key 존재 + emoji raw 출력."""
+    (temp_root / "config.toml").write_text(
+        '[general]\nmode = "auto"\nrefresh_interval_minutes = 50\nlanguage = "ko"\n',
+        encoding="utf-8",
+    )
+    from scripts.on_recap import main
+    main()
+    raw = capsys.readouterr().out
+    assert "🪦" in raw  # ensure_ascii=False 확인 (raw emoji)
+    parsed = json.loads(raw)
+    assert "systemMessage" in parsed

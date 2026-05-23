@@ -112,10 +112,13 @@ language = "ko"
 `main()` 전체 try/except Exception wrap. 어떤 예외도 chat 동작 차단 X.
 
 silent fail 케이스:
-- config 로드 실패 → stdout empty + exit 0
 - stdin session_id 없음 → stdout empty + exit 0
+- sanitize ValueError (invalid session_id) → stdout empty + exit 0
 - `refresh_interval_minutes` 가 int 아니거나 ≤ 0 → stdout empty + exit 0
 - 예상 밖 예외 (datetime/json/print) → top-level 캐치 + stdout empty + exit 0
+
+graceful degrade (silent fail 아님):
+- config 로드 실패 (invalid TOML / OSError) → lib.config 가 default Config fallback. on_recap 은 default 값 (interval=50, language="en") 으로 메시지 출력. lib.config 가 stderr 경고 출력.
 
 ### 3.6 refresh.py PING 변경 (local time)
 

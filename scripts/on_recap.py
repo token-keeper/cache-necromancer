@@ -7,7 +7,7 @@ PRD 불변: 어떤 실패도 chat 동작 차단 X (silent fail).
 import json
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -16,11 +16,9 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from lib.config import ensure_config_file, load_config  # noqa: E402
+from lib.i18n import build_recap_message, normalize_language  # noqa: E402
 from lib.logger import log_warn  # noqa: E402
-from lib.marker import Marker  # noqa: E402
 from lib.session_id import sanitize  # noqa: E402
-
-_KST = timezone(timedelta(hours=9))
 
 
 def _resolve_root() -> Path:
@@ -41,10 +39,6 @@ def _resolve_session_id() -> str:
     return os.environ.get("CLAUDE_CODE_SESSION_ID", "")
 
 
-def _build_message_auto_hybrid(death_hhmm: str) -> str:
-    return f"🪦 캐시는 {death_hhmm} KST 에 살리러 갈게요!"
-
-
 def _main_impl() -> int:
     sid = _resolve_session_id()
     if not sid:
@@ -62,10 +56,12 @@ def _main_impl() -> int:
         return 0
 
     interval = config.refresh_interval_minutes
-    death_at = datetime.now(_KST) + timedelta(minutes=interval)
-    death_hhmm = death_at.strftime("%H:%M")
+    if not isinstance(interval, int) or interval <= 0:
+        return 0
 
-    message = _build_message_auto_hybrid(death_hhmm)
+    lang = normalize_language(config.language)
+    death_at = datetime.now() + timedelta(minutes=interval)
+    message = build_recap_message(lang, death_at.hour, death_at.minute)
     print(json.dumps({"systemMessage": message}, ensure_ascii=False))
     return 0
 
@@ -75,7 +71,7 @@ def main() -> int:
         return _main_impl()
     except Exception as e:
         try:
-            log_warn(f"[on_recap] 예외 silent fail: {type(e).__name__}: {e}")
+            log_warn(f"[on_recap] silent fail: {type(e).__name__}: {e}")
         except Exception:
             pass
         return 0
