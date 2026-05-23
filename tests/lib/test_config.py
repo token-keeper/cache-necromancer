@@ -122,3 +122,27 @@ def test_no_warning_when_no_deprecated_options(tmp_path, capsys):
     load_config(p)
     err = capsys.readouterr().err
     assert "deprecated" not in err
+
+
+def test_config_language_default_is_en(tmp_path):
+    """config 에 language 미지정 시 default = 'en'."""
+    p = tmp_path / "c.toml"
+    p.write_text('[general]\nmode = "auto"\n')
+    c = load_config(p)
+    assert c.language == "en"
+
+
+def test_config_language_loaded_from_toml(tmp_path):
+    """[general].language 값이 Config 에 반영."""
+    p = tmp_path / "c.toml"
+    p.write_text('[general]\nmode = "auto"\nlanguage = "ko"\n')
+    c = load_config(p)
+    assert c.language == "ko"
+
+
+def test_config_language_unknown_value_loaded_as_is(tmp_path):
+    """load 단계는 validate X (normalize_language 단계에서 fallback)."""
+    p = tmp_path / "c.toml"
+    p.write_text('[general]\nmode = "auto"\nlanguage = "xx"\n')
+    c = load_config(p)
+    assert c.language == "xx"

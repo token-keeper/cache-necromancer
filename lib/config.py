@@ -35,6 +35,7 @@ class Config:
     mode: Literal["notify", "auto", "hybrid"] = "hybrid"
     refresh_interval_minutes: int = 50  # v0.2.x 55 → 50 (1h cache + 안전 마진)
     max_refresh_count: int = 10
+    language: str = "en"  # ko | en | ja | zh (validate 는 lib.i18n.normalize_language)
     refresh: RefreshConfig = field(default_factory=RefreshConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
 
@@ -135,6 +136,7 @@ def load_config(path: Path) -> Config:
         mode=mode,
         refresh_interval_minutes=general.get("refresh_interval_minutes", 50),
         max_refresh_count=general.get("max_refresh_count", 10),
+        language=general.get("language", "en"),
         refresh=RefreshConfig(**refresh_data),
         notify=NotifyConfig(**notify_data),
     )
@@ -148,6 +150,7 @@ _DEFAULT_TEMPLATE = """# cache-necromancer 설정 (v0.3.0)
 mode = "{mode}"                       # notify | auto | hybrid
 refresh_interval_minutes = 50         # cache TTL 만료 직전 (1h cache 기준)
 max_refresh_count = 10                # 한 세션 최대 wake/notify 횟수
+language = "en"                       # recap 메시지 언어: ko | en | ja | zh
 
 [notify]
 system_notification = true            # macOS osascript 알림
