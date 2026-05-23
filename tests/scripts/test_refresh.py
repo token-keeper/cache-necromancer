@@ -86,17 +86,22 @@ class TestModeAuto:
     def test_auto_ping_includes_time_and_count(
         self, cn_root, session_env, fast_sleep, silent_notify, capsys
     ):
-        """v0.3.10: PING 에 KST 시각 + 'N/M' wake 카운트 + 응답 강제 포맷."""
+        """v0.3.12: PING 에 local 시각 + 'N/M' wake 카운트 + 응답 강제 포맷.
+
+        KST hardcode 제거 (v0.3.12) — local time 사용.
+        """
+        import re
         _write_config(cn_root, mode="auto", max_refresh=10)
         main()
         err = capsys.readouterr().err
         # 첫 wake 라 1/10
         assert "1/10" in err
-        # KST 시각 라벨
-        assert "KST," in err
+        # KST suffix 제거됨
+        assert "KST" not in err
+        # HH:MM 형식 (KST suffix 없이)
+        assert re.search(r"\[cn:keepalive \d{2}:\d{2}, 1/10\]", err)
         # 응답 강제 — 'ok @HH:MM (1/10)' 형식
-        assert "reply with exactly 'ok @" in err
-        assert "(1/10)'" in err
+        assert re.search(r"reply with exactly 'ok @\d{2}:\d{2} \(1/10\)'", err)
 
 
 class TestModeNotify:
