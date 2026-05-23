@@ -3,7 +3,6 @@ import io
 import json
 import sys
 from pathlib import Path
-from unittest import mock
 
 import pytest
 from freezegun import freeze_time
@@ -63,9 +62,6 @@ def temp_root(monkeypatch, tmp_path):
     """CN_ROOT 를 tmp_path 로 격리. config.toml 자동 생성됨."""
     monkeypatch.setenv("CN_ROOT", str(tmp_path))
     return tmp_path
-
-
-  # KST offset
 
 
 def test_main_no_session_id_exits_silently(empty_stdin, capsys):
