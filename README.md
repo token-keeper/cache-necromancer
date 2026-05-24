@@ -2,9 +2,7 @@
 
 ![cache-necromancer banner](docs/assets/banner.png)
 
-# cache-necromancer
-
-> **Claude Code 1시간 프롬프트 캐시 만료 직전에 자동으로 캐시를 살리는 macOS 플러그인.**
+> **Claude Code 1시간 프롬프트 캐시 만료 직전에 자동으로 캐시를 살리는 Claude Code 플러그인.**
 
 ![status](https://img.shields.io/badge/status-alpha-orange) ![license](https://img.shields.io/badge/license-MIT-blue) ![platform](https://img.shields.io/badge/platform-macOS-lightgrey)
 
