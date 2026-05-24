@@ -30,6 +30,7 @@ class TestLoadSave:
             last_wake_at=999,
             session_started_at=500,
             last_prompt="진행 중인 작업 메모",
+            cwd="/Users/x/projects/y",
         )
         m.save()
         loaded = Marker.load("abc123")
@@ -39,6 +40,7 @@ class TestLoadSave:
         assert loaded.last_wake_at == 999
         assert loaded.session_started_at == 500
         assert loaded.last_prompt == "진행 중인 작업 메모"
+        assert loaded.cwd == "/Users/x/projects/y"
 
     def test_load_legacy_marker_without_last_prompt(self, cn_root):
         """v0.3.4 이전 marker file (last_prompt 필드 없음) 백워드 호환 — 빈 string default."""
@@ -56,6 +58,25 @@ class TestLoadSave:
         loaded = Marker.load("legacy")
         assert loaded.latest_fire == 100
         assert loaded.last_prompt == ""
+
+    def test_load_legacy_marker_without_cwd(self, cn_root):
+        """v0.3.12 이전 marker (cwd 필드 없음) 백워드 호환 — 빈 string default."""
+        marker_dir().mkdir(parents=True, exist_ok=True)
+        marker_path("legacy-cwd").write_text(
+            json.dumps({
+                "latest_fire": 100,
+                "wake_count": 1,
+                "last_wake_at": 50,
+                "session_started_at": 10,
+                "last_prompt": "old",
+                # cwd 키 의도적 없음
+            }),
+            encoding="utf-8",
+        )
+        loaded = Marker.load("legacy-cwd")
+        assert loaded.latest_fire == 100
+        assert loaded.last_prompt == "old"
+        assert loaded.cwd == ""
 
     def test_load_corrupt_json_returns_empty(self, cn_root):
         marker_dir().mkdir(parents=True, exist_ok=True)

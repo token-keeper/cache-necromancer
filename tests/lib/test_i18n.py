@@ -10,9 +10,12 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from lib.i18n import (  # noqa: E402
     DEFAULT_LANGUAGE,
+    STATUS_LABELS,
     SUPPORTED_LANGUAGES,
     build_recap_message,
+    mode_label_i18n,
     normalize_language,
+    status_label,
 )
 
 
@@ -51,3 +54,62 @@ def test_normalize_language_invalid_falls_back_to_en(invalid, capsys):
     err = capsys.readouterr().err.lower()
     assert "fallback" in err
     assert "unknown language" in err
+
+
+# ---------- STATUS_LABELS / status_label ----------
+
+class TestStatusLabels:
+    def test_all_four_languages_present(self):
+        assert set(STATUS_LABELS.keys()) == {"ko", "en", "ja", "zh"}
+
+    def test_all_languages_have_same_keys(self):
+        en_keys = set(STATUS_LABELS["en"].keys())
+        for lang in ("ko", "ja", "zh"):
+            assert set(STATUS_LABELS[lang].keys()) == en_keys, (
+                f"{lang} 의 키 셋이 en 과 불일치"
+            )
+
+    @pytest.mark.parametrize("lang,key,expected", [
+        ("ko", "current_session", "세션 (현재)"),
+        ("en", "current_session", "Session (current)"),
+        ("ja", "current_session", "セッション (現在)"),
+        ("zh", "current_session", "会话 (当前)"),
+        ("ko", "cwd", "폴더"),
+        ("en", "cwd", "cwd"),
+        ("ja", "cwd", "ディレクトリ"),
+        ("zh", "cwd", "目录"),
+    ])
+    def test_status_label_lookup(self, lang, key, expected):
+        assert status_label(lang, key) == expected
+
+    def test_status_label_unknown_key_returns_key(self):
+        # 알 수 없는 키는 en fallback 도 없어 → key 그대로
+        assert status_label("en", "totally-unknown-key") == "totally-unknown-key"
+
+
+# ---------- mode_label_i18n ----------
+
+class TestModeLabelI18n:
+    @pytest.mark.parametrize("lang,mode,fragment", [
+        ("ko", "notify", "알림만"),
+        ("en", "notify", "notify only"),
+        ("ja", "notify", "通知のみ"),
+        ("zh", "notify", "仅通知"),
+        ("ko", "auto", "자동 wake"),
+        ("en", "auto", "auto wake"),
+        ("ja", "auto", "自動 wake"),
+        ("zh", "auto", "自动 wake"),
+    ])
+    def test_basic_modes(self, lang, mode, fragment):
+        out = mode_label_i18n(lang, mode, 60)
+        assert fragment in out
+
+    @pytest.mark.parametrize("lang", ["ko", "en", "ja", "zh"])
+    def test_hybrid_includes_wait_seconds(self, lang):
+        out = mode_label_i18n(lang, "hybrid", 45)
+        assert "45" in out
+
+    def test_unknown_mode_renders_question(self):
+        out = mode_label_i18n("en", "weird", 60)
+        assert "weird" in out
+        assert "❓" in out

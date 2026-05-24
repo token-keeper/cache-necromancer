@@ -51,6 +51,44 @@ class TestResetWakeCount:
         assert loaded.wake_count == 0
 
 
+class TestCwdCapture:
+    """v0.3.13: stdin payload 의 cwd 를 marker.cwd 저장."""
+
+    def test_saves_cwd_from_stdin(self, cn_root, monkeypatch):
+        sid = "cwd-sess"
+        _set_stdin(monkeypatch, {
+            "session_id": sid,
+            "prompt": "hello",
+            "cwd": "/Users/foo/projects/bar",
+        })
+        main()
+        assert Marker.load(sanitize(sid)).cwd == "/Users/foo/projects/bar"
+
+    def test_cwd_empty_string_does_not_overwrite_existing(self, cn_root, monkeypatch):
+        sid = "preserve-cwd"
+        sh = sanitize(sid)
+        Marker(sid_hash=sh, cwd="/old/path").save()
+        _set_stdin(monkeypatch, {"session_id": sid, "prompt": "x", "cwd": ""})
+        main()
+        assert Marker.load(sh).cwd == "/old/path"
+
+    def test_cwd_missing_in_stdin_preserved(self, cn_root, monkeypatch):
+        sid = "no-cwd-key"
+        sh = sanitize(sid)
+        Marker(sid_hash=sh, cwd="/keep/this").save()
+        _set_stdin(monkeypatch, {"session_id": sid, "prompt": "x"})
+        main()
+        assert Marker.load(sh).cwd == "/keep/this"
+
+    def test_cwd_whitespace_only_treated_as_empty(self, cn_root, monkeypatch):
+        sid = "ws-cwd"
+        sh = sanitize(sid)
+        Marker(sid_hash=sh, cwd="/orig").save()
+        _set_stdin(monkeypatch, {"session_id": sid, "prompt": "x", "cwd": "   "})
+        main()
+        assert Marker.load(sh).cwd == "/orig"
+
+
 class TestLastPromptCapture:
     """v0.3.5: stdin payload 의 prompt 를 truncate 후 marker.last_prompt 저장."""
 

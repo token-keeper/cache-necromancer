@@ -88,12 +88,15 @@ def main() -> int:
         return 0
 
     prompt_truncated = _truncate_prompt(raw_prompt)
+    cwd_value = str(stdin.get("cwd", "")).strip()
 
     try:
         marker = Marker.load(sid_hash)
         marker.wake_count = 0
         if prompt_truncated:
             marker.last_prompt = prompt_truncated
+        if cwd_value:
+            marker.cwd = cwd_value
         marker.save()
     except OSError as e:
         try:

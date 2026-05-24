@@ -2,6 +2,28 @@
 
 이 프로젝트의 모든 주목할 만한 변경사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고, [Semantic Versioning](https://semver.org/lang/ko/) 을 준수합니다.
 
+## [0.3.13] — 2026-05-24
+
+**`/cn:status` 박스 재구성 + 4 언어 i18n + 폴더 위치 + stale 세션 필터**
+
+### Added
+
+- **marker schema `cwd` 필드**: `lib/marker.py` — UserPromptSubmit hook 의 stdin `cwd` 를 저장. `/cn:status` 의 "다른 세션" 박스에서 home 약식 (`~/path`) 표시.
+- **`lib/i18n.py` 확장**: `STATUS_LABELS` (4 언어 × 박스 라벨) + `status_label()` + `mode_label_i18n()` 추가. recap 메시지에 이어 `/cn:status` 도 `[general].language` 따라 ko/en/ja/zh 출력.
+- **stale 세션 필터**: 다음 발동 예상이 과거 (음수 delta) 인 marker 는 "다른 세션" 표시에서 제외. wake cycle 종료된 세션 (max_refresh_count 도달 / chat 종료) 의 노이즈 차단. cleanup_stale 7d 와 별개 — marker 파일 자체는 유지.
+
+### Changed
+
+- **`/cn:status` 박스 재구성** (v0.3.13 mockup):
+  - 상단 `mode: ... · refresh_interval ...` 헤더 줄 제거 → 하단 "상태" 박스로 이동
+  - "다른 세션": 라벨 통일 + `폴더:` 추가 (next_fire / prompt / cwd 3줄)
+  - "설정 상태" → "상태" 로 rename. `hook 등록` / `deprecated config` 노출 제거 (alpha 단계 noise 차단)
+- **`scripts/on_user_prompt.py`**: stdin `cwd` 캡처 → `marker.cwd` 갱신 (빈 문자열은 기존 값 보존).
+
+### Tests
+
+103 added/updated → 전체 pytest 통과 유지.
+
 ## [0.3.12] — 2026-05-23
 
 **Recap systemMessage + 4 언어 i18n + KST 제거 + `cache_ttl_minutes` 분리** — turn 종료 즉시 cache 만료 시각을 Claude Code recap 영역에 표시.
