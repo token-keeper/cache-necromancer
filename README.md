@@ -22,39 +22,6 @@ Claude Code 프롬프트 캐시 TTL = **1 시간**.
 
 > 회의 / 점심 / 자리 비움 50분 → 돌아와서 작업 재개 → 비용 폭탄.
 
-## 어떻게 동작하는가
-
-매 turn 끝마다 `Stop` hook + `asyncRewake` 로 background sleep 시작.
-
-50분 동안 user input 이 없으면 chat 세션이 **자기 자신을 wake** — 짧은 ping turn → 모델 `ok` 1 token.
-
-chat 프로세스 내부에서 wake 하므로 system prompt + tools 가 byte-exact 보존됨 → **cache prefix 100% hit**.
-
-wake 1회 비용 ≤ $0.10.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant U as User
-    participant C as Chat session
-    participant H as Stop hook (asyncRewake)
-    participant M as Model
-
-    U->>C: prompt
-    C->>M: assistant turn
-    M-->>C: response
-    C->>H: Stop event
-    H-->>H: background sleep 50m
-
-    Note over U,H: 50분 동안 user input 없음
-
-    H->>C: ping
-    C->>M: minimal turn (cache_read)
-    M-->>C: "ok" (1 token)
-
-    Note over C,M: cache TTL 갱신 · 비용 ≤ $0.10
-```
-
 ## 설치
 
 ```bash
@@ -63,6 +30,20 @@ sequenceDiagram
 ```
 
 설치 후 **새 chat 세션** 부터 적용 (Claude Code settings hot-reload 안 함).
+
+## 슬래시 명령
+
+| 명령 | 설명 |
+|---|---|
+| `/cn:config` | 모드 변경 |
+| `/cn:status` | 세션 상태 + 다음 발동 예상 (API 비용 0) |
+
+Wake 발생 시 transcript:
+
+```
+[cn:keepalive 16:42, 3/10] reply with exactly 'ok @16:42 (3/10)'. ...
+ok @16:42 (3/10)
+```
 
 ## 작동 모드
 
@@ -99,18 +80,37 @@ Stop says: 🪦 Cache dies at 09:37.
 
 `language` 4종: `ko` / `en` / `ja` / `zh`. 시각 = `now + cache_ttl_minutes`, 사용자 시스템 local time.
 
-## 슬래시 명령
+## 어떻게 동작하는가
 
-| 명령 | 설명 |
-|---|---|
-| `/cn:config` | 모드 변경 |
-| `/cn:status` | 세션 상태 + 다음 발동 예상 (API 비용 0) |
+매 turn 끝마다 `Stop` hook + `asyncRewake` 로 background sleep 시작.
 
-Wake 발생 시 transcript:
+50분 동안 user input 이 없으면 chat 세션이 **자기 자신을 wake** — 짧은 ping turn → 모델 `ok` 1 token.
 
-```
-[cn:keepalive 16:42, 3/10] reply with exactly 'ok @16:42 (3/10)'. ...
-ok @16:42 (3/10)
+chat 프로세스 내부에서 wake 하므로 system prompt + tools 가 byte-exact 보존됨 → **cache prefix 100% hit**.
+
+wake 1회 비용 ≤ $0.10.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User
+    participant C as Chat session
+    participant H as Stop hook (asyncRewake)
+    participant M as Model
+
+    U->>C: prompt
+    C->>M: assistant turn
+    M-->>C: response
+    C->>H: Stop event
+    H-->>H: background sleep 50m
+
+    Note over U,H: 50분 동안 user input 없음
+
+    H->>C: ping
+    C->>M: minimal turn (cache_read)
+    M-->>C: "ok" (1 token)
+
+    Note over C,M: cache TTL 갱신 · 비용 ≤ $0.10
 ```
 
 ## 안전성
@@ -125,22 +125,6 @@ ok @16:42 (3/10)
 - 공식 권장 패턴 아님 (Anthropic 캐시 정책 회색지대). 개인 사용 목적.
 - 매 wake = minimal turn 비용 발생.
 - wake-up turn (`ok @HH:MM`) 은 영구 transcript 기록.
-
-## 파일 위치
-
-```
-~/.cache-necromancer/
-├── cn.log.YYYY-MM-DD       # sid_hash + token만
-├── config.toml
-└── marker/<sid_hash>.json
-```
-
-## 개발
-
-```bash
-uv venv && uv sync --extra dev
-uv run pytest
-```
 
 ## 라이선스
 
