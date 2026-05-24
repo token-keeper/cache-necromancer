@@ -2,6 +2,43 @@
 
 이 프로젝트의 모든 주목할 만한 변경사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고, [Semantic Versioning](https://semver.org/lang/ko/) 을 준수합니다.
 
+## [0.3.12] — 2026-05-23
+
+**Recap systemMessage + 4 언어 i18n + KST 제거 + `cache_ttl_minutes` 분리** — turn 종료 즉시 cache 만료 시각을 Claude Code recap 영역에 표시.
+
+### Added
+
+- **`scripts/on_recap.py`**: Stop hook sync 본체. turn 종료 즉시 `🪦 캐시는 H시 M분에 죽어요.` systemMessage 출력 (wake 트리거 X, 정보성).
+- **`lib/i18n.py`**: 언어별 메시지 + 시각 표기 (`ko`/`en`/`ja`/`zh`).
+  - ko: `🪦 캐시는 9시 37분에 죽어요.`
+  - en: `🪦 Cache dies at 09:37.`
+  - ja: `🪦 キャッシュは9時37分に死にます。`
+  - zh: `🪦 缓存将在9点37分死亡。`
+- **`config.toml`** 신규 필드:
+  - `[general].cache_ttl_minutes = 60` — Anthropic 1h ext cache TTL (recap 메시지 시각 = `fire + ttl`).
+  - `[general].language = "en"` — 메시지 언어 (default "en", invalid 값 → stderr warn + "en" fallback).
+- **`hooks/hooks.json`**: Stop 배열에 sync `on_recap.py` (timeout 5) 추가, async `refresh.py` 그대로.
+
+### Changed
+
+- **`scripts/refresh.py`**: PING fire 시각 KST hardcode 제거 → 사용자 시스템 local time 사용. PING 형식 `[cn:keepalive HH:MM, N/M]` (KST suffix 제거), reply 형식 `ok @HH:MM (N/M)` 유지.
+- **`README.md`**: banner 이미지 추가, recap 메시지 섹션 신설, config 예제 갱신.
+
+### Fixed
+
+- **recap 메시지 시각 계산**: `refresh_interval_minutes` (wake 주기, default 50) 와 `cache_ttl_minutes` (cache 만료, default 60) 분리. 기존엔 메시지가 `fire + 50` 으로 계산되어 실제 cache 만료보다 10분 일찍 표시 (`🪦 죽어요` 의미 불일치).
+
+### Tests
+
+- 신규: `tests/lib/test_i18n.py` (22건), `tests/scripts/test_on_recap.py` (16건 — 4 언어 메시지 + 자정 넘김 + ttl 가드 + interval/ttl 분리 + default fallback).
+- 갱신: `tests/scripts/test_refresh.py` (KST 제거 검증 + freezegun PING 회귀 가드).
+- 175 → **179 passed**.
+
+### Notes
+
+- **silent fail (PRD 불변)**: 모든 예외 top-level catch → exit 0. chat 동작 차단 X.
+- **`refresh_interval_minutes` vs `cache_ttl_minutes`**: 전자는 wake 주기 (TTL 보다 안전 마진 만큼 짧음), 후자는 메시지 시각 계산용. 사용자가 5분 cache 모드면 `cache_ttl_minutes = 5` 로 변경 가능.
+
 ## [0.3.11] — 2026-05-19
 
 **`on_user_prompt` 자기간섭 fix — `wake_count` 가 매 wake 마다 `0` 으로 reset 되어 PING 표시가 `1/N` 무한 반복 + `max_refresh_count` cap 무력화되던 버그 수정.**

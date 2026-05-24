@@ -1,8 +1,14 @@
+<div align="center">
+
+![cache-necromancer banner](docs/assets/banner.png)
+
 # cache-necromancer
 
 > **Claude Code 의 1시간 프롬프트 캐시 TTL이 만료되기 직전에 자동으로 캐시를 살리는 플러그인.** 죽어가는 캐시를 부활시키는 네크로맨서.
 
-![status](https://img.shields.io/badge/status-alpha-orange) ![license](https://img.shields.io/badge/license-MIT-blue) ![platform](https://img.shields.io/badge/platform-macOS-lightgrey)
+![status](https://img.shields.io/badge/status-alpha-orange) ![license](https://img.shields.io/badge/license-MIT-blue) ![platform](https://img.shields.io/badge/platform-macOS-lightgrey) ![version](https://img.shields.io/badge/version-0.3.12-purple)
+
+</div>
 
 ---
 
@@ -46,8 +52,10 @@ Claude Code 는 컨텍스트 캐시를 1시간 동안 보관한다. 그 안에 �
 ```toml
 [general]
 mode = "hybrid"
-refresh_interval_minutes = 50         # cache TTL 만료 직전 (1h cache 기준)
+refresh_interval_minutes = 50         # wake 주기 (cache TTL 만료 직전, 1h cache 기준)
+cache_ttl_minutes = 60                # Anthropic prompt cache TTL (recap 메시지 시각 표시용)
 max_refresh_count = 10                # 한 세션 최대 wake/notify 횟수
+language = "en"                       # recap 메시지 언어: ko | en | ja | zh
 
 [notify]
 system_notification = true            # macOS osascript 알림
@@ -55,6 +63,28 @@ system_notification = true            # macOS osascript 알림
 [refresh]
 hybrid_wait_seconds = 60              # hybrid 모드 알림 후 사용자 input 대기
 ```
+
+## Recap 메시지 (v0.3.12+)
+
+매 turn 종료 직후 Claude Code 의 recap 영역에 **cache 만료 시각**이 자동 표시된다.
+
+```
+Stop says: 🪦 캐시는 9시 37분에 죽어요.
+```
+
+- 트리거: `Stop` hook sync 본체 (wake X, 정보성만)
+- 시각 계산: `현재 시각 + cache_ttl_minutes` (default 60)
+- 사용자 시스템 local time (KST hardcode X)
+- 4 언어: `[general].language = "ko" | "en" | "ja" | "zh"` (default `"en"`)
+
+| 언어 | 메시지 예시 |
+|------|-------------|
+| `ko` | `🪦 캐시는 9시 37분에 죽어요.` |
+| `en` | `🪦 Cache dies at 09:37.` |
+| `ja` | `🪦 キャッシュは9時37分に死にます。` |
+| `zh` | `🪦 缓存将在9点37分死亡。` |
+
+> 만료 시각은 wake 주기 (`refresh_interval_minutes = 50`) 가 아니라 cache TTL (`cache_ttl_minutes = 60`) 기준. wake 는 만료보다 10분 일찍 발사되어 안전 마진 확보.
 
 ## 슬래시 명령
 
@@ -94,9 +124,11 @@ hybrid_wait_seconds = 60              # hybrid 모드 알림 후 사용자 input
 Wake 가 발생하면 transcript 에 다음과 같이 남는다:
 
 ```
-[cn:keepalive 16:42 KST, 3/10] reply with exactly 'ok @16:42 (3/10)'. ...
+[cn:keepalive 16:42, 3/10] reply with exactly 'ok @16:42 (3/10)'. ...
 ok @16:42 (3/10)
 ```
+
+> v0.3.12 부터 PING 시각은 KST hardcode 가 아니라 **사용자 시스템 local time** 으로 표시.
 
 시각 + repeat count 가 함께 찍히므로 scrollback 만 봐도 언제 몇 번째 wake 였는지 즉시 식별된다.
 
@@ -189,7 +221,7 @@ rm ~/.cache-necromancer/marker/<sid_hash>.json
 uv venv && uv sync --extra dev
 
 # 테스트
-uv run pytest      # 131 passed
+uv run pytest      # 179 passed
 ```
 
 ## v0.2.x 에서 업그레이드
@@ -213,7 +245,7 @@ rm -rf ~/.cache-necromancer/lock ~/.cache-necromancer/state
 
 ## 변경 이력
 
-`CHANGELOG.md` 참조. 최신: **v0.3.11** (2026-05-19) — `on_user_prompt` 의 wake_count reset 무한 루프 fix.
+`CHANGELOG.md` 참조. 최신: **v0.3.12** (2026-05-23) — recap systemMessage + 4 언어 i18n + `cache_ttl_minutes` 분리 + KST 제거.
 
 ## 라이선스
 
