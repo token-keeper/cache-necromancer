@@ -38,6 +38,10 @@ Claude Code 프롬프트 캐시 TTL = **1 시간**.
 | `/cn:config` | 모드 변경 |
 | `/cn:status` | 세션 상태 + 다음 발동 예상 (API 비용 0) |
 
+`/cn:status` 출력 예시:
+
+![/cn:status 출력](docs/assets/cn-status-ko.png)
+
 Wake 발생 시 transcript:
 
 ```
