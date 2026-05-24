@@ -58,6 +58,22 @@ def _truncate_prompt(raw: str) -> str:
     return cleaned[:PROMPT_MAX_CHARS].rstrip() + "…"
 
 
+# macOS path 에 ANSI escape / 제어문자가 포함 가능 (`mkdir $'\x1b[31m...'`).
+# /cn:status 박스 출력 교란 + terminal escape 주입 방지.
+CWD_MAX_CHARS = 200
+
+
+def _sanitize_cwd(raw: str) -> str:
+    """첫 줄만 + control char 제거 + 200자 초과 시 '…' 표시."""
+    if not raw:
+        return ""
+    first_line = raw.splitlines()[0].strip() if raw.splitlines() else ""
+    cleaned = "".join(c for c in first_line if c.isprintable() or c == " ")
+    if len(cleaned) <= CWD_MAX_CHARS:
+        return cleaned
+    return cleaned[:CWD_MAX_CHARS].rstrip() + "…"
+
+
 def main() -> int:
     try:
         # session_id 우선 stdin, fallback environment
@@ -88,12 +104,15 @@ def main() -> int:
         return 0
 
     prompt_truncated = _truncate_prompt(raw_prompt)
+    cwd_value = _sanitize_cwd(str(stdin.get("cwd", "")))
 
     try:
         marker = Marker.load(sid_hash)
         marker.wake_count = 0
         if prompt_truncated:
             marker.last_prompt = prompt_truncated
+        if cwd_value:
+            marker.cwd = cwd_value
         marker.save()
     except OSError as e:
         try:

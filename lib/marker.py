@@ -38,6 +38,8 @@ class Marker:
       - last_prompt: 가장 최근 user prompt (40자 truncate, /cn:status 의
         세션 식별용). PRD §8 도구 정신 예외: marker 0600 권한 +
         본인 환경 한정 노출 (single-user alpha 가정).
+      - cwd: 가장 최근 user prompt 의 작업 디렉터리 (Claude Code hook
+        stdin payload 의 `cwd`). /cn:status 의 다른 세션 식별용.
     """
     sid_hash: str
     latest_fire: int = 0
@@ -45,6 +47,7 @@ class Marker:
     last_wake_at: int = 0
     session_started_at: int = 0
     last_prompt: str = ""
+    cwd: str = ""
 
     @classmethod
     def load(cls, sid_hash: str) -> "Marker":
@@ -63,6 +66,7 @@ class Marker:
                     data.get("session_started_at", int(time.time()))
                 ),
                 last_prompt=str(data.get("last_prompt", "")),
+                cwd=str(data.get("cwd", "")),
             )
         except (json.JSONDecodeError, OSError, ValueError, TypeError):
             return cls(sid_hash=sid_hash, session_started_at=int(time.time()))
@@ -83,6 +87,7 @@ class Marker:
             "last_wake_at": self.last_wake_at,
             "session_started_at": self.session_started_at,
             "last_prompt": self.last_prompt,
+            "cwd": self.cwd,
         }
         tmp_path: str | None = None
         try:
