@@ -12,15 +12,46 @@
 
 ## 무엇이 문제인가
 
-Claude Code 캐시 TTL = 1h. 그 안에 다음 요청 → cache_read 비용 (정상의 10%). 만료 후 → 전체 cache_create 비용 (×10).
+Claude Code 프롬프트 캐시 TTL = **1 시간**.
 
-자리 비움 50분 → 다시 작업 → 비용 ×10.
+캐시 유효 중 다음 요청 → `cache_read` 비용 (정상의 약 10%).
+
+캐시 만료 후 다음 요청 → 전체 `cache_create` 비용 다시 청구 (**×10**).
+
+> 회의 / 점심 / 자리 비움 50분 → 돌아와서 작업 재개 → 비용 ×10.
 
 ## 어떻게 동작하는가
 
-매 turn 끝마다 `Stop` hook + `asyncRewake` 로 background sleep. 50분 동안 user input 없으면 chat 세션이 자기 자신을 wake (짧은 ping → 모델 `ok` 1 token).
+매 turn 끝마다 `Stop` hook + `asyncRewake` 로 background sleep 시작.
 
-chat 프로세스 내부 wake → system prompt + tools byte-exact 보존 → **cache prefix 100% hit**. wake 비용 ≤ $0.10.
+50분 동안 user input 이 없으면 chat 세션이 **자기 자신을 wake** — 짧은 ping turn → 모델 `ok` 1 token.
+
+chat 프로세스 내부에서 wake 하므로 system prompt + tools 가 byte-exact 보존됨 → **cache prefix 100% hit**.
+
+wake 1회 비용 ≤ $0.10.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User
+    participant C as Chat session
+    participant H as Stop hook (asyncRewake)
+    participant M as Model
+
+    U->>C: prompt
+    C->>M: assistant turn
+    M-->>C: response
+    C->>H: Stop event
+    H-->>H: background sleep 50m
+
+    Note over U,H: 50분 동안 user input 없음
+
+    H->>C: ping
+    C->>M: minimal turn (cache_read)
+    M-->>C: "ok" (1 token)
+
+    Note over C,M: cache TTL 갱신 · 비용 ≤ $0.10
+```
 
 ## 설치
 
