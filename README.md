@@ -6,6 +6,8 @@
 
 ![status](https://img.shields.io/badge/status-alpha-orange) ![license](https://img.shields.io/badge/license-MIT-blue) ![platform](https://img.shields.io/badge/platform-macOS-lightgrey)
 
+**한국어** · [English](README.en.md)
+
 </div>
 
 ---
