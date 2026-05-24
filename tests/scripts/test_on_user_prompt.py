@@ -88,6 +88,49 @@ class TestCwdCapture:
         main()
         assert Marker.load(sh).cwd == "/orig"
 
+    def test_cwd_strips_ansi_escape(self, cn_root, monkeypatch):
+        """ANSI escape (`\\x1b[31m`) 같은 control char 는 제거 — 박스 출력 교란 차단."""
+        sid = "ansi-cwd"
+        _set_stdin(monkeypatch, {
+            "session_id": sid,
+            "prompt": "x",
+            "cwd": "/Users/foo/\x1b[31mevil\x1b[0m/path",
+        })
+        main()
+        cwd = Marker.load(sanitize(sid)).cwd
+        assert "\x1b" not in cwd
+        # printable 부분은 보존
+        assert "/Users/foo/" in cwd
+        assert "evil" in cwd
+
+    def test_cwd_strips_newline_takes_first_line(self, cn_root, monkeypatch):
+        """경로에 개행 포함 시 첫 줄만 보존."""
+        sid = "newline-cwd"
+        _set_stdin(monkeypatch, {
+            "session_id": sid,
+            "prompt": "x",
+            "cwd": "/Users/foo\nmalicious-second-line",
+        })
+        main()
+        cwd = Marker.load(sanitize(sid)).cwd
+        assert "\n" not in cwd
+        assert "malicious-second-line" not in cwd
+        assert cwd == "/Users/foo"
+
+    def test_cwd_truncated_over_200_chars(self, cn_root, monkeypatch):
+        """200자 초과 path 는 truncate + '…' 표시."""
+        sid = "long-cwd"
+        long_path = "/" + ("a" * 250)
+        _set_stdin(monkeypatch, {
+            "session_id": sid,
+            "prompt": "x",
+            "cwd": long_path,
+        })
+        main()
+        cwd = Marker.load(sanitize(sid)).cwd
+        assert cwd.endswith("…")
+        assert len(cwd) == 201  # 200 + "…"
+
 
 class TestLastPromptCapture:
     """v0.3.5: stdin payload 의 prompt 를 truncate 후 marker.last_prompt 저장."""

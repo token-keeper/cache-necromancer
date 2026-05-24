@@ -103,23 +103,27 @@ def _abbrev_home(path: str) -> str:
     return path
 
 
+def _compute_pad(labels: list[str]) -> int:
+    """가장 긴 라벨 + ':' + 공백 1자 — display_width 기반 (CJK 폭 정확)."""
+    return max(display_width(lbl) for lbl in labels) + 2
+
+
+def _row(label: str, value: str, pad: int) -> str:
+    """`label:` + value 정렬. pad 안에 라벨 + ':' + 공백 분량 들어감."""
+    return f"{label}:{' ' * (pad - display_width(label) - 1)}{value}"
+
+
 def _build_session_box(marker: Marker, config: Config, now: datetime, lang) -> list[str]:
     """현재 세션 박스 (i18n)."""
     masked = mask_sid(marker.sid_hash)
     L_sid = status_label(lang, "sid")
     L_count = status_label(lang, "repeat_count")
     L_next = status_label(lang, "next_fire")
-
-    # 라벨 폭 정렬 — 가장 긴 라벨 + ":" + 공백
-    labels = [L_sid, L_count, L_next]
-    pad = max(display_width(lbl) for lbl in labels) + 2  # ":" + space
-
-    def _row(label: str, value: str) -> str:
-        return f"{label}:{' ' * (pad - display_width(label) - 1)}{value}"
+    pad = _compute_pad([L_sid, L_count, L_next])
 
     lines = [
-        _row(L_sid, masked),
-        _row(L_count, f"{marker.wake_count} / {config.max_refresh_count}"),
+        _row(L_sid, masked, pad),
+        _row(L_count, f"{marker.wake_count} / {config.max_refresh_count}", pad),
     ]
     if marker.latest_fire > 0:
         next_dt = _ns_to_dt(marker.latest_fire, now) + timedelta(
@@ -129,6 +133,7 @@ def _build_session_box(marker: Marker, config: Config, now: datetime, lang) -> l
             _row(
                 L_next,
                 f"{next_dt.strftime('%Y-%m-%d %H:%M:%S')} ({_format_delta(next_dt, now)})",
+                pad,
             )
         )
 
@@ -140,12 +145,7 @@ def _other_session_lines(marker: Marker, config: Config, now: datetime, lang) ->
     L_next = status_label(lang, "next_fire")
     L_prompt = status_label(lang, "prompt")
     L_cwd = status_label(lang, "cwd")
-
-    labels = [L_next, L_prompt, L_cwd]
-    pad = max(display_width(lbl) for lbl in labels) + 2
-
-    def _row(label: str, value: str) -> str:
-        return f"{label}:{' ' * (pad - display_width(label) - 1)}{value}"
+    pad = _compute_pad([L_next, L_prompt, L_cwd])
 
     if marker.latest_fire > 0:
         next_dt = _ns_to_dt(marker.latest_fire, now) + timedelta(
@@ -159,9 +159,9 @@ def _other_session_lines(marker: Marker, config: Config, now: datetime, lang) ->
     cwd = _abbrev_home(marker.cwd) if marker.cwd else "—"
 
     return [
-        _row(L_next, next_val),
-        _row(L_prompt, f'"{prompt}"'),
-        _row(L_cwd, cwd),
+        _row(L_next, next_val, pad),
+        _row(L_prompt, f'"{prompt}"', pad),
+        _row(L_cwd, cwd, pad),
     ]
 
 
@@ -224,12 +224,7 @@ def _build_status_box(config: Config, lang) -> list[str]:
     L_mode = status_label(lang, "mode")
     L_settings = status_label(lang, "settings")
     L_plugin = status_label(lang, "plugin")
-
-    labels = [L_mode, L_settings, L_plugin]
-    pad = max(display_width(lbl) for lbl in labels) + 2
-
-    def _row(label: str, value: str) -> str:
-        return f"{label}:{' ' * (pad - display_width(label) - 1)}{value}"
+    pad = _compute_pad([L_mode, L_settings, L_plugin])
 
     mode_text = mode_label_i18n(lang, config.mode, config.refresh.hybrid_wait_seconds)
     settings_text = (
@@ -238,9 +233,9 @@ def _build_status_box(config: Config, lang) -> list[str]:
     plugin_text = f"cache-necromancer v{_plugin_version()} (active)"
 
     lines = [
-        _row(L_mode, mode_text),
-        _row(L_settings, settings_text),
-        _row(L_plugin, plugin_text),
+        _row(L_mode, mode_text, pad),
+        _row(L_settings, settings_text, pad),
+        _row(L_plugin, plugin_text, pad),
     ]
     if config.mode == "notify":
         lines.append(status_label(lang, "notify_warn"))
