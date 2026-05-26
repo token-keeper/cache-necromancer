@@ -2,6 +2,19 @@
 
 이 프로젝트의 모든 주목할 만한 변경사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고, [Semantic Versioning](https://semver.org/lang/ko/) 을 준수합니다.
 
+## [0.4.2] — 2026-05-26
+
+**옛날 버전 refresh.py sleep 잔존 process 자동 정리**
+
+### Fixed
+
+- **옛날 버전 refresh.py SIGTERM** (`scripts/refresh.py`): 0.4.1 의 self-gate 가 새 fire 의 옛날 버전 호출은 차단하지만, plugin update **직전**에 spawn 되어 이미 sleep 중인 옛날 refresh.py 프로세스는 영향을 못 받았다 (대표 사례: `time.sleep(50*60)` 중인 25개의 0.4.0 refresh.py 가 0.4.1 install 후에도 깨어나 옛날 포맷 알림 발사). 진입부의 `is_latest_install()` 통과 직후 `_kill_older_buddies()` 가 `pgrep -laf` 로 자기보다 옛날 버전의 cache-necromancer refresh.py 를 찾아 `SIGTERM`. pgrep 미설치 / SIGTERM 실패 / version 파싱 실패 모두 silent. dev 환경 (parents[1] 이 version 패턴 아닐 때) 은 자동 skip.
+
+### Tests
+
+7 added → 전체 235 pytest 통과.
+- `test_refresh.py::TestKillOlderBuddies`: 옛날 kill / 같은·새 버전 skip / 자기 PID skip / subprocess error silent / pgrep missing silent / os.kill 실패 silent / dev 환경 skip
+
 ## [0.4.1] — 2026-05-26
 
 **옛날 install 버전 self-gate — 업데이트 시 중복 fire 차단**

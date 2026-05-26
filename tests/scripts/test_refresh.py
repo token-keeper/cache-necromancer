@@ -488,3 +488,122 @@ class TestSessionIdResolution:
         # save 실패에도 wake 진행 (PING_PREFIX 발송 + exit 2)
         assert rc == 2
         assert PING_PREFIX in capsys.readouterr().err
+
+
+class TestKillOlderBuddies:
+    """_kill_older_buddies() — 자기보다 옛날 버전의 refresh.py SIGTERM."""
+
+    @pytest.fixture
+    def kill_capture(self, monkeypatch):
+        """os.kill 호출을 (pid, sig) 리스트로 capture."""
+        calls = []
+        monkeypatch.setattr("scripts.refresh.os.kill", lambda p, s: calls.append((p, s)))
+        return calls
+
+    @pytest.fixture
+    def fake_pgrep(self, monkeypatch):
+        """pgrep stdout 주입 + 예외 주입 (state['raise'])."""
+        state = {"stdout": "", "raise": None}
+
+        def fake_run(*args, **kwargs):
+            if state["raise"] is not None:
+                raise state["raise"]
+
+            class R:
+                pass
+            R.stdout = state["stdout"]
+            return R()
+
+        monkeypatch.setattr("scripts.refresh.subprocess.run", fake_run)
+        return state
+
+    @staticmethod
+    def _set_my_version(monkeypatch, version: str, pid: int = 99):
+        from pathlib import Path as _P
+        monkeypatch.setattr(
+            "scripts.refresh._HERE",
+            _P(f"/fake/cache-necromancer/{version}/scripts"),
+        )
+        monkeypatch.setattr("scripts.refresh.os.getpid", lambda: pid)
+
+    def test_older_buddies_killed(self, monkeypatch, kill_capture, fake_pgrep):
+        import signal as _sig
+        from scripts.refresh import _kill_older_buddies
+        self._set_my_version(monkeypatch, "0.4.2", pid=99)
+        fake_pgrep["stdout"] = (
+            "100 python3 cache-necromancer/0.4.0/scripts/refresh.py\n"
+            "101 python3 cache-necromancer/0.3.13/scripts/refresh.py\n"
+        )
+        _kill_older_buddies()
+        assert sorted(kill_capture) == [(100, _sig.SIGTERM), (101, _sig.SIGTERM)]
+
+    def test_same_or_newer_not_killed(self, monkeypatch, kill_capture, fake_pgrep):
+        from scripts.refresh import _kill_older_buddies
+        self._set_my_version(monkeypatch, "0.4.2", pid=99)
+        fake_pgrep["stdout"] = (
+            "200 python3 cache-necromancer/0.4.2/scripts/refresh.py\n"
+            "201 python3 cache-necromancer/0.5.0/scripts/refresh.py\n"
+            "202 python3 cache-necromancer/0.10.0/scripts/refresh.py\n"
+        )
+        _kill_older_buddies()
+        assert kill_capture == []
+
+    def test_self_pid_skipped(self, monkeypatch, kill_capture, fake_pgrep):
+        import signal as _sig
+        from scripts.refresh import _kill_older_buddies
+        self._set_my_version(monkeypatch, "0.4.2", pid=99)
+        fake_pgrep["stdout"] = (
+            "99 python3 cache-necromancer/0.4.0/scripts/refresh.py\n"
+            "100 python3 cache-necromancer/0.4.0/scripts/refresh.py\n"
+        )
+        _kill_older_buddies()
+        assert kill_capture == [(100, _sig.SIGTERM)]
+
+    def test_subprocess_error_silent(self, monkeypatch, kill_capture, fake_pgrep):
+        import subprocess as _sp
+        from scripts.refresh import _kill_older_buddies
+        self._set_my_version(monkeypatch, "0.4.2", pid=99)
+        fake_pgrep["raise"] = _sp.SubprocessError("boom")
+        _kill_older_buddies()
+        assert kill_capture == []
+
+    def test_pgrep_missing_silent(self, monkeypatch, kill_capture, fake_pgrep):
+        from scripts.refresh import _kill_older_buddies
+        self._set_my_version(monkeypatch, "0.4.2", pid=99)
+        fake_pgrep["raise"] = FileNotFoundError("no pgrep")
+        _kill_older_buddies()
+        assert kill_capture == []
+
+    def test_os_kill_failure_silent(self, monkeypatch, fake_pgrep):
+        """os.kill 이 OSError 발생해도 silent 진행."""
+        from scripts.refresh import _kill_older_buddies
+        attempts = []
+
+        def fake_kill(pid, sig):
+            attempts.append(pid)
+            raise ProcessLookupError("dead already")
+
+        monkeypatch.setattr("scripts.refresh.os.kill", fake_kill)
+        self._set_my_version(monkeypatch, "0.4.2", pid=99)
+        fake_pgrep["stdout"] = (
+            "100 python3 cache-necromancer/0.4.0/scripts/refresh.py\n"
+            "101 python3 cache-necromancer/0.3.13/scripts/refresh.py\n"
+        )
+        _kill_older_buddies()  # 예외 X
+        assert sorted(attempts) == [100, 101]
+
+    def test_dev_environment_skips_pgrep(self, monkeypatch, kill_capture):
+        """parents[1] 이 version 패턴 아니면 pgrep 호출 자체 X."""
+        from pathlib import Path as _P
+        from scripts.refresh import _kill_older_buddies
+
+        def must_not_call(*a, **kw):
+            raise AssertionError("subprocess.run must not be called in dev env")
+
+        monkeypatch.setattr(
+            "scripts.refresh._HERE",
+            _P("/fake/cache-necromancer/scripts"),
+        )
+        monkeypatch.setattr("scripts.refresh.subprocess.run", must_not_call)
+        _kill_older_buddies()
+        assert kill_capture == []

@@ -15,6 +15,9 @@ PRD 불변: 어떤 실패도 chat 동작 차단 X (best-effort).
 """
 import json
 import os
+import re
+import signal
+import subprocess
 import sys
 import time
 from datetime import datetime, timedelta
@@ -54,6 +57,53 @@ def _build_ping(wake_count: int, max_count: int) -> str:
 def _resolve_root() -> Path:
     root = os.environ.get("CN_ROOT")
     return Path(root) if root else Path.home() / ".cache-necromancer"
+
+
+_BUDDY_PATTERN = re.compile(
+    r"cache-necromancer/([0-9.]+)/scripts/refresh\.py"
+)
+
+
+def _kill_older_buddies() -> None:
+    """자기보다 옛날 버전의 refresh.py 잔존 process 를 SIGTERM.
+
+    plugin 업데이트 직전에 spawn 되어 sleep 중인 옛날 코드의 refresh.py 들이
+    깨어나 옛날 포맷 알림을 발사하는 것을 차단. is_latest_install() 통과 후
+    호출되어 자기가 latest 임이 보장된 상태에서만 동작. pgrep 미설치 /
+    SIGTERM 실패 / parse 오류 모두 silent.
+    """
+    parts = _HERE.parent.name.split(".")
+    try:
+        my_version = tuple(int(p) for p in parts)
+    except ValueError:
+        return
+    my_pid = os.getpid()
+    try:
+        result = subprocess.run(
+            ["pgrep", "-laf", "cache-necromancer/.*/scripts/refresh.py"],
+            capture_output=True, text=True, timeout=2,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return
+    for line in (result.stdout or "").splitlines():
+        m = _BUDDY_PATTERN.search(line)
+        if not m:
+            continue
+        try:
+            pid = int(line.split(None, 1)[0])
+            ver = tuple(int(x) for x in m.group(1).split("."))
+        except (ValueError, IndexError):
+            continue
+        if pid == my_pid or ver >= my_version:
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+            log_info(
+                f"[refresh] killed older buddy pid={pid} "
+                f"version={'.'.join(map(str, ver))}"
+            )
+        except OSError:
+            pass
 
 
 def _resolve_session_id() -> str:
@@ -162,6 +212,7 @@ def _do_notify(marker: Marker, sid_hash: str, config: Config) -> int:
 def main() -> int:
     if not is_latest_install():
         return 0
+    _kill_older_buddies()
     sid = _resolve_session_id()
     if not sid:
         return 0
