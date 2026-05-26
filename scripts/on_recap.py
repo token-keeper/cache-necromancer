@@ -17,6 +17,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from lib.config import ensure_config_file, load_config  # noqa: E402
 from lib.i18n import build_recap_message, normalize_language  # noqa: E402
+from lib.install_version import is_latest_install  # noqa: E402
 from lib.logger import log_warn  # noqa: E402
 from lib.session_id import sanitize  # noqa: E402
 
@@ -40,6 +41,8 @@ def _resolve_session_id() -> str:
 
 
 def _main_impl() -> int:
+    if not is_latest_install():
+        return 0
     sid = _resolve_session_id()
     if not sid:
         return 0

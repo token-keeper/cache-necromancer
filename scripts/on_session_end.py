@@ -18,6 +18,7 @@ _PROJECT_ROOT = _HERE.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from lib.install_version import is_latest_install  # noqa: E402
 from lib.logger import log_info, log_warn  # noqa: E402
 from lib.marker import Marker, cleanup_stale  # noqa: E402
 from lib.session_id import sanitize  # noqa: E402
@@ -34,6 +35,8 @@ def _load_stdin_json() -> dict:
 
 
 def main() -> int:
+    if not is_latest_install():
+        return 0
     try:
         stdin = _load_stdin_json()
         session_id = stdin.get("session_id") or os.environ.get(

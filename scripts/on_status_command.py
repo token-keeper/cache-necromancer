@@ -16,6 +16,12 @@ import sys
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
+_PROJECT_ROOT = _HERE.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from lib.install_version import is_latest_install  # noqa: E402
+
 _CN_STATUS = _HERE / "cn_status.py"
 
 # 매칭 대상 — short + full namespace 모두 지원
@@ -34,6 +40,8 @@ def _matches(data: dict) -> bool:
 
 
 def main() -> int:
+    if not is_latest_install():
+        return 0
     try:
         data = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):

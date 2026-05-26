@@ -26,6 +26,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from lib.config import Config, ensure_config_file, load_config  # noqa: E402
+from lib.install_version import is_latest_install  # noqa: E402
 from lib.logger import log_info, log_warn  # noqa: E402
 from lib.marker import Marker  # noqa: E402
 from lib.mask import mask_sid  # noqa: E402
@@ -159,6 +160,8 @@ def _do_notify(marker: Marker, sid_hash: str, config: Config) -> int:
 
 
 def main() -> int:
+    if not is_latest_install():
+        return 0
     sid = _resolve_session_id()
     if not sid:
         return 0

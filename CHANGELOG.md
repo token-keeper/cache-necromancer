@@ -2,6 +2,19 @@
 
 이 프로젝트의 모든 주목할 만한 변경사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고, [Semantic Versioning](https://semver.org/lang/ko/) 을 준수합니다.
 
+## [0.4.1] — 2026-05-26
+
+**옛날 install 버전 self-gate — 업데이트 시 중복 fire 차단**
+
+### Fixed
+
+- **옛날 버전 hook fire 차단** (`lib/install_version.py` 신규, 5개 hook entry point): Claude Code plugin 시스템은 hook command 경로를 register 시점의 절대경로로 박기 때문에 marketplace 가 새 버전으로 bump 되어도 옛날 세션의 register 는 그대로 살아있다. `/reload-plugins` 가 새 register 를 추가만 하고 옛날 register 를 제거하지 않아 같은 세션이 0.3.13 + 0.4.0 처럼 두 버전을 동시 fire 시키는 현상이 관찰됐다. 각 hook entry point (`refresh.py`, `on_user_prompt.py`, `on_session_end.py`, `on_recap.py`, `on_status_command.py`) 진입부에서 `is_latest_install()` 로 자기가 install cache 의 latest 버전인지 확인 → 아니면 즉시 exit. dev source / 비-install 환경은 자동 통과. 효과는 0.4.1 부터 적용 — 0.4.1 코드가 install 된 이후의 옛날 버전 fire 만 차단.
+
+### Tests
+
+6 added → 전체 228 pytest 통과.
+- `test_install_version.py`: latest match / older mismatch / dev 환경 / 단일 install / SemVer tuple 비교 / 비-version sibling 무시
+
 ## [0.4.0] — 2026-05-26
 
 **활성 chat 세션 wake 가드 + 알림 식별 메타데이터**
