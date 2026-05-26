@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "cache-necromancer",
-  "version": "0.3.13",
+  "version": "0.3.14",
   "description": "Auto-refresh Claude Code prompt cache TTL via Stop hook + asyncRewake",
   "author": {"name": "brody424"},
   "license": "MIT",

@@ -14,7 +14,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from lib.marker import Marker  # noqa: E402
+from lib.marker import Marker, marker_path  # noqa: E402
 from scripts.refresh import PING_PREFIX, main  # noqa: E402
 
 
@@ -222,6 +222,61 @@ class TestSkipConditions:
         m = _load_marker_for_sid(session_env)
         # 더 최근 fire 의 latest_fire 가 살아있음
         assert m.wake_count == 0  # wake skip
+
+    def test_session_end_during_sleep_skips_and_no_zombie(
+        self, cn_root, session_env, monkeypatch, silent_notify, capsys
+    ):
+        """SessionEnd 가 sleep 중 발생 → wake/notify skip + 좀비 마커 재생성 X.
+
+        회귀 가드: SessionEnd 가 마커 파일을 삭제했지만 백그라운드 refresh.py
+        가 이미 sleep 중이라 살아있음. sleep 후 Marker.load 가 fresh marker
+        (latest_fire=0) 를 반환 — supersede 체크가 0 > my_ts 로 False 라
+        가드 없이는 wake 가 실행되고 좀비 마커가 재생성됨.
+        """
+        _write_config(cn_root, mode="auto")
+        from lib.session_id import sanitize
+        sid_hash = sanitize(session_env)
+
+        def fake_sleep(secs):
+            # SessionEnd 시뮬레이션 — 마커 파일 삭제
+            marker_path(sid_hash).unlink(missing_ok=True)
+
+        monkeypatch.setattr("scripts.refresh.time.sleep", fake_sleep)
+
+        rc = main()
+        assert rc == 0
+        assert PING_PREFIX not in capsys.readouterr().err
+        assert silent_notify == []
+        # 좀비 마커 재생성 X
+        assert not marker_path(sid_hash).exists()
+
+    def test_session_end_during_hybrid_wait_cancels_wake(
+        self, cn_root, session_env, monkeypatch, silent_notify, capsys
+    ):
+        """hybrid_wait 중 SessionEnd → wake 취소 + 좀비 마커 재생성 X.
+
+        hybrid 첫 sleep 통과 후 notify 는 이미 발송됨. 두 번째 sleep
+        (hybrid_wait) 중 SessionEnd → 좀비 wake 방지.
+        """
+        _write_config(cn_root, mode="hybrid", refresh_interval=50, hybrid_wait=60)
+        from lib.session_id import sanitize
+        sid_hash = sanitize(session_env)
+
+        sleep_count = {"n": 0}
+
+        def fake_sleep(secs):
+            sleep_count["n"] += 1
+            if sleep_count["n"] == 2:
+                marker_path(sid_hash).unlink(missing_ok=True)
+
+        monkeypatch.setattr("scripts.refresh.time.sleep", fake_sleep)
+
+        rc = main()
+        assert rc == 0
+        assert PING_PREFIX not in capsys.readouterr().err
+        # notify 는 첫 sleep 통과 직후 발송됨
+        assert len(silent_notify) == 1
+        assert not marker_path(sid_hash).exists()
 
 
 class TestErrorPaths:

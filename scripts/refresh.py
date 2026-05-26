@@ -153,6 +153,13 @@ def main() -> int:
 
     # sleep 후 marker 재 load — 더 최근 fire 가 있으면 skip
     marker = Marker.load(sid_hash)
+    # latest_fire == 0 = SessionEnd 가 마커 파일을 삭제해서 Marker.load 가
+    # fresh marker 를 반환한 경우. 이미 종료된 세션의 좀비 wake/notify 방지 +
+    # 좀비 마커 재생성 방지. (refresh.py 진입부에 my_ts 로 저장했으므로 정상
+    # 흐름에서는 0 이 될 수 없음.)
+    if marker.latest_fire == 0:
+        log_info(f"[refresh] marker 사라짐 (SessionEnd 후), skip sid={sid_hash}")
+        return 0
     if marker.latest_fire > my_ts:
         log_info(
             f"[refresh] superseded (newer fire={marker.latest_fire} > "
@@ -172,6 +179,11 @@ def main() -> int:
             )
         time.sleep(config.refresh.hybrid_wait_seconds)
         marker = Marker.load(sid_hash)
+        if marker.latest_fire == 0:
+            log_info(
+                f"[refresh] hybrid wait 중 SessionEnd, wake 취소 sid={sid_hash}"
+            )
+            return 0
         if marker.latest_fire > my_ts:
             log_info(
                 "[refresh] hybrid wait 중 user input — wake 취소 sid="

@@ -2,6 +2,18 @@
 
 이 프로젝트의 모든 주목할 만한 변경사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고, [Semantic Versioning](https://semver.org/lang/ko/) 을 준수합니다.
 
+## [0.3.14] — 2026-05-26
+
+**SessionEnd 후 좀비 wake 버그 픽스**
+
+### Fixed
+
+- **좀비 wake/notify 차단**: `scripts/refresh.py` — Stop hook 의 백그라운드 refresh.py 가 sleep 중일 때 SessionEnd 가 marker 파일을 삭제해도, sleep 후 `Marker.load()` 가 fresh marker (`latest_fire=0`) 를 반환해 supersede 검사 (`latest_fire > my_ts`) 를 통과하던 문제. 종료된 세션이 알림을 발사하고 `latest_fire=0` 좀비 marker 가 디스크에 재생성됨. sleep 후 load 두 군데 (첫 sleep / hybrid_wait) 에 `latest_fire == 0` 가드 추가.
+
+### Tests
+
+회귀 가드 2개 추가 (`test_session_end_during_sleep_skips_and_no_zombie`, `test_session_end_during_hybrid_wait_cancels_wake`) → 전체 214개 pytest 통과 유지.
+
 ## [0.3.13] — 2026-05-24
 
 **`/cn:status` 박스 재구성 + 4 언어 i18n + 폴더 위치 + stale 세션 필터**
