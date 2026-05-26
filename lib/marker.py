@@ -31,7 +31,9 @@ class Marker:
     """Marker file 의 in-memory representation.
 
     Fields (TECH_SPEC §3.1):
-      - latest_fire: 가장 최근 Stop hook fire 시각 (Unix timestamp)
+      - latest_fire: 가장 최근 Stop hook fire 시각 (ns). refresh.py 진입부에서만
+        갱신. cn_status 의 "next fire" 시각 계산 기준이라 user prompt 시점은
+        포함하지 않는다 (의미 흐려짐 방지).
       - wake_count: 누적 wake 또는 notify 횟수 (mode 무관)
       - last_wake_at: 직전 wake/notify 시각
       - session_started_at: 세션 시작 시각
@@ -40,6 +42,11 @@ class Marker:
         본인 환경 한정 노출 (single-user alpha 가정).
       - cwd: 가장 최근 user prompt 의 작업 디렉터리 (Claude Code hook
         stdin payload 의 `cwd`). /cn:status 의 다른 세션 식별용.
+      - last_user_activity_at_ns: 가장 최근 진짜 user prompt 시각 (ns).
+        on_user_prompt.py 가 system event (PING/task-notification) 가 아닌
+        진짜 input 일 때만 갱신. refresh.py 의 supersede 체크에서
+        latest_fire 와 OR 로 묶임 — model 응답이 50분 넘게 진행되는 동안
+        사용자가 활발히 활동하고 있는 경우에도 wake 가 안 일어나도록 보장.
     """
     sid_hash: str
     latest_fire: int = 0
@@ -48,6 +55,7 @@ class Marker:
     session_started_at: int = 0
     last_prompt: str = ""
     cwd: str = ""
+    last_user_activity_at_ns: int = 0
 
     @classmethod
     def load(cls, sid_hash: str) -> "Marker":
@@ -67,6 +75,9 @@ class Marker:
                 ),
                 last_prompt=str(data.get("last_prompt", "")),
                 cwd=str(data.get("cwd", "")),
+                last_user_activity_at_ns=int(
+                    data.get("last_user_activity_at_ns", 0)
+                ),
             )
         except (json.JSONDecodeError, OSError, ValueError, TypeError):
             return cls(sid_hash=sid_hash, session_started_at=int(time.time()))
@@ -88,6 +99,7 @@ class Marker:
             "session_started_at": self.session_started_at,
             "last_prompt": self.last_prompt,
             "cwd": self.cwd,
+            "last_user_activity_at_ns": self.last_user_activity_at_ns,
         }
         tmp_path: str | None = None
         try:

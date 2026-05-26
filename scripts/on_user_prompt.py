@@ -19,6 +19,7 @@ PRD 불변: 어떤 실패도 chat 동작 차단 X (best-effort, exit 0).
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -109,6 +110,11 @@ def main() -> int:
     try:
         marker = Marker.load(sid_hash)
         marker.wake_count = 0
+        # supersede 신호: 진짜 user input 시점을 ns 로 기록. refresh.py 가 sleep
+        # 끝낸 후 비교해서 자기 my_ts 보다 늦으면 wake/notify 안 함.
+        # model 응답이 50분 넘게 진행되는 동안 사용자가 활발히 prompt 를 치고
+        # 있어도 wake 가 안 일어나도록 보장.
+        marker.last_user_activity_at_ns = time.time_ns()
         if prompt_truncated:
             marker.last_prompt = prompt_truncated
         if cwd_value:

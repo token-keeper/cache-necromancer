@@ -31,6 +31,7 @@ class TestLoadSave:
             session_started_at=500,
             last_prompt="진행 중인 작업 메모",
             cwd="/Users/x/projects/y",
+            last_user_activity_at_ns=1234567890,
         )
         m.save()
         loaded = Marker.load("abc123")
@@ -41,6 +42,7 @@ class TestLoadSave:
         assert loaded.session_started_at == 500
         assert loaded.last_prompt == "진행 중인 작업 메모"
         assert loaded.cwd == "/Users/x/projects/y"
+        assert loaded.last_user_activity_at_ns == 1234567890
 
     def test_load_legacy_marker_without_last_prompt(self, cn_root):
         """v0.3.4 이전 marker file (last_prompt 필드 없음) 백워드 호환 — 빈 string default."""
@@ -58,6 +60,25 @@ class TestLoadSave:
         loaded = Marker.load("legacy")
         assert loaded.latest_fire == 100
         assert loaded.last_prompt == ""
+
+    def test_load_legacy_marker_without_last_user_activity(self, cn_root):
+        """v0.3.14 이전 marker (last_user_activity_at_ns 필드 없음) 백워드 호환 — 0 default."""
+        marker_dir().mkdir(parents=True, exist_ok=True)
+        marker_path("legacy-activity").write_text(
+            json.dumps({
+                "latest_fire": 100,
+                "wake_count": 1,
+                "last_wake_at": 50,
+                "session_started_at": 10,
+                "last_prompt": "old",
+                "cwd": "/old/path",
+                # last_user_activity_at_ns 키 의도적 없음
+            }),
+            encoding="utf-8",
+        )
+        loaded = Marker.load("legacy-activity")
+        assert loaded.latest_fire == 100
+        assert loaded.last_user_activity_at_ns == 0
 
     def test_load_legacy_marker_without_cwd(self, cn_root):
         """v0.3.12 이전 marker (cwd 필드 없음) 백워드 호환 — 빈 string default."""

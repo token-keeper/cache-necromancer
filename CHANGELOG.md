@@ -2,6 +2,34 @@
 
 이 프로젝트의 모든 주목할 만한 변경사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고, [Semantic Versioning](https://semver.org/lang/ko/) 을 준수합니다.
 
+## [0.4.0] — 2026-05-26
+
+**활성 chat 세션 wake 가드 + 알림 식별 메타데이터**
+
+### Added
+
+- **`Marker.last_user_activity_at_ns` 필드**: `lib/marker.py` — 진짜 user input 시각 (ns) 기록. legacy marker 백워드 호환 (필드 없으면 0 default).
+- **알림 식별 메타데이터** (`lib/notify.py`, `scripts/refresh.py`): macOS 알림에 세션 식별 정보 노출 — 여러 세션 동시 사용 시 어느 프로젝트의 알림인지 즉시 구분 가능.
+  - title: `cache-necromancer · <project basename>`
+  - subtitle: `<sid8> · (N/M)`
+  - body: `<단축 경로> — <기존 메시지>`
+
+### Fixed
+
+- **활성 chat 세션 wake 가드** (`scripts/refresh.py`, `scripts/on_user_prompt.py`): 이전 버전은 supersede 기준이 `latest_fire` (Stop hook fire = model 응답 종료 시점) 만이라, model 응답이 50분 넘게 진행되는 동안 사용자가 활발히 prompt 를 치고 있어도 wake/notify 가 발생하는 hole 이 있었음. UserPromptSubmit hook 이 진짜 user input 일 때 `last_user_activity_at_ns` 를 갱신하고, refresh.py 의 supersede 체크 (첫 sleep 후 + hybrid_wait 후 두 곳) 가 `latest_fire > my_ts OR last_user_activity_at_ns > my_ts` 로 묶임. `cn_status` 의 "next fire" 계산은 `latest_fire` 기준 유지 (의미 분리).
+
+### Changed
+
+- **`lib/notify.py`**: `notify()` 에 `subtitle` 인자 추가, osascript 이스케이프를 `_osa_escape` 헬퍼로 분리 (`\` → `\\` 먼저, `"` → `\"` 다음).
+- **`pyproject.toml`**: 0.3.13 → 0.4.0 (이전 릴리즈에서 누락된 sync).
+
+### Tests
+
+5 added → 전체 222 pytest 통과.
+- `test_marker.py`: round-trip 에 새 필드, legacy 마커 backward-compat 추가
+- `test_on_user_prompt.py`: `TestUserActivityTimestamp` — user input 시 갱신 + system event (PING/task-notification) 갱신 X
+- `test_refresh.py`: `TestNotifyMetadata` (title/subtitle/body 검증 3개), user activity supersede (auto/hybrid 2개)
+
 ## [0.3.14] — 2026-05-26
 
 **SessionEnd 후 좀비 wake 버그 픽스**

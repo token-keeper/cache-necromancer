@@ -26,9 +26,17 @@ def fast_sleep(monkeypatch):
 
 @pytest.fixture
 def silent_notify(monkeypatch):
-    """notify 호출 capture (osascript 실행 안 함)."""
+    """notify 호출 capture (osascript 실행 안 함).
+
+    각 호출을 {"msg", "title", "subtitle", ...} dict 로 저장 — 호출 횟수
+    체크는 기존처럼 len()으로 가능하고, 새 테스트에서는 메타데이터 검증 가능.
+    """
     calls: list = []
-    monkeypatch.setattr("scripts.refresh.notify", lambda msg, **kw: calls.append(msg))
+
+    def fake(msg, **kw):
+        calls.append({"msg": msg, **kw})
+
+    monkeypatch.setattr("scripts.refresh.notify", fake)
     return calls
 
 
@@ -186,6 +194,58 @@ class TestModeHybrid:
         assert m.wake_count == 0
 
 
+class TestNotifyMetadata:
+    """알림 본문/title/subtitle 이 세션 식별 정보를 노출하는지 검증.
+
+    여러 chat 세션 동시 실행 시 어느 세션의 알림인지 구분 가능해야 함.
+    """
+
+    def test_notify_title_includes_project_basename(
+        self, cn_root, session_env, fast_sleep, silent_notify
+    ):
+        _write_config(cn_root, mode="notify", max_refresh=10)
+        from lib.session_id import sanitize
+        sid_hash = sanitize(session_env)
+        m = Marker.load(sid_hash)
+        m.cwd = f"{Path.home()}/work/my-project"
+        m.save()
+
+        main()
+        assert len(silent_notify) == 1
+        call = silent_notify[0]
+        assert call["title"] == "cache-necromancer · my-project"
+        # subtitle: <sid8> · (1/10)
+        assert call["subtitle"].endswith(" · (1/10)")
+        # body: 단축경로 + 기존 메시지
+        assert "~/work/my-project — " in call["msg"]
+        assert "cache 만료 임박" in call["msg"]
+
+    def test_notify_without_cwd_falls_back(
+        self, cn_root, session_env, fast_sleep, silent_notify
+    ):
+        """cwd 비어있으면 title 은 fallback, body prefix 없음."""
+        _write_config(cn_root, mode="notify")
+        main()
+        call = silent_notify[0]
+        assert call["title"] == "cache-necromancer"
+        assert "—" not in call["msg"]
+
+    def test_hybrid_notify_displays_pending_wake_count(
+        self, cn_root, session_env, fast_sleep, silent_notify
+    ):
+        """hybrid 는 wake 직전 알림이므로 N+1 (이번 알림이 곧 N+1번째 wake) 표시."""
+        _write_config(cn_root, mode="hybrid", max_refresh=5)
+        from lib.session_id import sanitize
+        sid_hash = sanitize(session_env)
+        m = Marker.load(sid_hash)
+        m.cwd = f"{Path.home()}/projects/foo"
+        m.save()
+
+        main()
+        assert len(silent_notify) == 1
+        assert silent_notify[0]["subtitle"].endswith(" · (1/5)")
+
+
 class TestSkipConditions:
     def test_max_refresh_count_blocks_wake(
         self, cn_root, session_env, fast_sleep, silent_notify, capsys
@@ -222,6 +282,60 @@ class TestSkipConditions:
         m = _load_marker_for_sid(session_env)
         # 더 최근 fire 의 latest_fire 가 살아있음
         assert m.wake_count == 0  # wake skip
+
+    def test_superseded_by_user_activity_skips_wake(
+        self, cn_root, session_env, monkeypatch, silent_notify, capsys
+    ):
+        """v0.3.15: sleep 동안 사용자가 prompt 를 쳐서 last_user_activity_at_ns
+        가 my_ts 보다 늦어지면 wake 안 일어남. model 응답이 50분 넘게 진행되어
+        새 Stop hook fire 가 안 들어와도 사용자 활동만으로 supersede 보장.
+        """
+        _write_config(cn_root, mode="auto")
+
+        def fake_sleep(secs):
+            from lib.session_id import sanitize
+            m = Marker.load(sanitize(session_env))
+            # latest_fire 는 그대로 (= 새 Stop hook fire 가 안 들어옴 시뮬레이션)
+            # user activity 만 더 늦은 ts 로 갱신
+            m.last_user_activity_at_ns = m.latest_fire + 9999
+            m.save()
+        monkeypatch.setattr("scripts.refresh.time.sleep", fake_sleep)
+
+        rc = main()
+        assert rc == 0
+        assert PING_PREFIX not in capsys.readouterr().err
+        assert silent_notify == []
+        m = _load_marker_for_sid(session_env)
+        assert m.wake_count == 0
+
+    def test_hybrid_wait_superseded_by_user_activity_cancels_wake(
+        self, cn_root, session_env, monkeypatch, silent_notify, capsys
+    ):
+        """hybrid wait 중에 사용자가 prompt 를 쳐서 last_user_activity_at_ns
+        갱신되면 wake 취소. 알림 자체는 첫 sleep 후 이미 발송됨.
+        """
+        _write_config(cn_root, mode="hybrid", refresh_interval=50, hybrid_wait=60)
+
+        sleep_count = {"n": 0}
+
+        def fake_sleep(secs):
+            sleep_count["n"] += 1
+            if sleep_count["n"] == 2:
+                # hybrid_wait 중 user activity 시뮬레이션
+                from lib.session_id import sanitize
+                m = Marker.load(sanitize(session_env))
+                m.last_user_activity_at_ns = m.latest_fire + 9999
+                m.save()
+
+        monkeypatch.setattr("scripts.refresh.time.sleep", fake_sleep)
+
+        rc = main()
+        assert rc == 0
+        assert PING_PREFIX not in capsys.readouterr().err
+        # notify 는 첫 sleep 통과 직후 발송됨 (wake 만 취소)
+        assert len(silent_notify) == 1
+        m = _load_marker_for_sid(session_env)
+        assert m.wake_count == 0
 
     def test_session_end_during_sleep_skips_and_no_zombie(
         self, cn_root, session_env, monkeypatch, silent_notify, capsys

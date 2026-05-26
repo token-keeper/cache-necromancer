@@ -37,7 +37,7 @@ class TestResetWakeCount:
 
         loaded = Marker.load(sh)
         assert loaded.wake_count == 0
-        # 다른 필드 보존
+        # latest_fire/last_wake_at 보존 (refresh.py 의 cn_status next-fire 계산용)
         assert loaded.latest_fire == 12345
         assert loaded.last_wake_at == 999
 
@@ -49,6 +49,49 @@ class TestResetWakeCount:
         # marker 생성됨 + wake_count = 0
         loaded = Marker.load(sanitize(sid))
         assert loaded.wake_count == 0
+
+
+class TestUserActivityTimestamp:
+    """v0.3.15: 진짜 user input 일 때 last_user_activity_at_ns 를 갱신.
+    refresh.py 의 supersede 체크가 latest_fire 와 OR 로 묶여서, model 응답이
+    50분 넘게 진행되는 동안 사용자가 prompt 를 활발히 쳐도 wake 안 일어남.
+    """
+
+    def test_user_input_updates_activity_ns(self, cn_root, monkeypatch):
+        sid = "activity-update"
+        sh = sanitize(sid)
+        Marker(sid_hash=sh, last_user_activity_at_ns=100).save()
+
+        _set_stdin(monkeypatch, {"session_id": sid, "prompt": "안녕"})
+        assert main() == 0
+
+        loaded = Marker.load(sh)
+        # 갱신됨 — 100 보다 훨씬 큰 ns timestamp 가 들어가야 함
+        assert loaded.last_user_activity_at_ns > 100
+        # 현재 wall clock ns 근방 (sanity)
+        import time as _t
+        assert loaded.last_user_activity_at_ns <= _t.time_ns()
+
+    def test_system_event_does_not_update_activity_ns(self, cn_root, monkeypatch):
+        """PING / task-notification 등 system event 는 user activity 가 아니므로
+        last_user_activity_at_ns 갱신 안 함. 안 그러면 wake 후 model 의 'ok' 응답
+        자체가 사용자 활동으로 인식되어 self-perpetuating supersede 발생.
+        """
+        sid = "sys-event"
+        sh = sanitize(sid)
+        Marker(sid_hash=sh, last_user_activity_at_ns=12345).save()
+
+        wrapped = (
+            "<task-notification>\n</task-notification>\n<system-reminder>\n"
+            "[cn:keepalive 14:30, 4/10] reply with exactly 'ok @14:30 (4/10)'."
+            "\n</system-reminder>"
+        )
+        _set_stdin(monkeypatch, {"session_id": sid, "prompt": wrapped})
+        assert main() == 0
+
+        loaded = Marker.load(sh)
+        # 그대로 보존
+        assert loaded.last_user_activity_at_ns == 12345
 
 
 class TestCwdCapture:

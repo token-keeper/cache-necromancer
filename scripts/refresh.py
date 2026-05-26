@@ -28,6 +28,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from lib.config import Config, ensure_config_file, load_config  # noqa: E402
 from lib.logger import log_info, log_warn  # noqa: E402
 from lib.marker import Marker  # noqa: E402
+from lib.mask import mask_sid  # noqa: E402
 from lib.notify import notify  # noqa: E402
 from lib.session_id import sanitize  # noqa: E402
 
@@ -72,6 +73,46 @@ def _resolve_session_id() -> str:
     return os.environ.get("CLAUDE_CODE_SESSION_ID", "")
 
 
+def _abbrev_home(path: str) -> str:
+    """홈 디렉터리 prefix → ~ 단축. 빈 문자열은 그대로."""
+    if not path:
+        return ""
+    home = str(Path.home())
+    if path == home:
+        return "~"
+    if path.startswith(home + "/"):
+        return "~" + path[len(home):]
+    return path
+
+
+def _notify_session(
+    message: str, marker: Marker, config: Config, count_for_display: int
+) -> None:
+    """세션 식별 정보를 채워 알림 발송.
+
+    여러 세션이 동시에 실행 중일 때 어느 프로젝트의 알림인지 구분할 수 있게:
+      - title:    cache-necromancer · <basename(cwd)>
+      - subtitle: <sid8> · (N/M)
+      - body:     <단축경로> — <message>
+    cwd 가 없으면 title/body 의 cwd 부분을 생략.
+    """
+    base_title = "cache-necromancer"
+    if marker.cwd:
+        basename = os.path.basename(marker.cwd.rstrip("/")) or marker.cwd
+        title = f"{base_title} · {basename}"
+    else:
+        title = base_title
+
+    subtitle = (
+        f"{mask_sid(marker.sid_hash)} · "
+        f"({count_for_display}/{config.max_refresh_count})"
+    )
+
+    abbrev = _abbrev_home(marker.cwd)
+    body = f"{abbrev} — {message}" if abbrev else message
+    notify(body, title=title, subtitle=subtitle)
+
+
 def _save_marker(marker: Marker, context: str) -> bool:
     """save 시도 + graceful degradation. 실패 시 False (호출자가 abort)."""
     try:
@@ -107,7 +148,12 @@ def _do_notify(marker: Marker, sid_hash: str, config: Config) -> int:
     marker.wake_count += 1
     marker.last_wake_at = int(time.time())
     _save_marker(marker, "notify")
-    notify("cache 만료 임박, 직접 chat 으로 돌아오세요")
+    _notify_session(
+        "cache 만료 임박, 직접 chat 으로 돌아오세요",
+        marker,
+        config,
+        marker.wake_count,
+    )
     log_info(f"[refresh] notify sid={sid_hash} count={marker.wake_count}")
     return 0
 
@@ -151,7 +197,7 @@ def main() -> int:
     # sleep — cache TTL 만료 직전까지
     time.sleep(config.refresh_interval_minutes * 60)
 
-    # sleep 후 marker 재 load — 더 최근 fire 가 있으면 skip
+    # sleep 후 marker 재 load — 더 최근 fire 또는 user activity 가 있으면 skip
     marker = Marker.load(sid_hash)
     # latest_fire == 0 = SessionEnd 가 마커 파일을 삭제해서 Marker.load 가
     # fresh marker 를 반환한 경우. 이미 종료된 세션의 좀비 wake/notify 방지 +
@@ -166,6 +212,16 @@ def main() -> int:
             f"my_ts={my_ts}), skip"
         )
         return 0
+    # 사용자가 sleep 동안 활발히 prompt 를 쳤다면 wake/notify 하지 않는다.
+    # model 응답이 50분 넘게 진행되어 새 Stop hook fire 가 안 들어와도
+    # last_user_activity_at_ns 가 갱신되어 있어서 가드됨.
+    if marker.last_user_activity_at_ns > my_ts:
+        log_info(
+            f"[refresh] superseded by user activity "
+            f"(last_user_activity_at_ns={marker.last_user_activity_at_ns} > "
+            f"my_ts={my_ts}), skip"
+        )
+        return 0
 
     # mode 별 분기
     if config.mode == "notify":
@@ -173,9 +229,13 @@ def main() -> int:
 
     if config.mode == "hybrid":
         if config.notify.system_notification:
-            notify(
+            # wake 가 일어나면 _do_wake 에서 wake_count++ 되므로 알림에는 +1 한 값을 표시
+            _notify_session(
                 f"{config.refresh.hybrid_wait_seconds}초 후 자동 wake — "
-                "직접 input 시 취소"
+                "직접 input 시 취소",
+                marker,
+                config,
+                marker.wake_count + 1,
             )
         time.sleep(config.refresh.hybrid_wait_seconds)
         marker = Marker.load(sid_hash)
@@ -187,6 +247,12 @@ def main() -> int:
         if marker.latest_fire > my_ts:
             log_info(
                 "[refresh] hybrid wait 중 user input — wake 취소 sid="
+                f"{sid_hash}"
+            )
+            return 0
+        if marker.last_user_activity_at_ns > my_ts:
+            log_info(
+                "[refresh] hybrid wait 중 user activity — wake 취소 sid="
                 f"{sid_hash}"
             )
             return 0
