@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
-"""Stop hook 의 asyncRewake 본체 (TECH_SPEC §4).
+"""Stop hook 의 asyncRewake 본체 (TECH_SPEC §4, v0.5.0 arm/예산 분기).
 
 Claude Code 의 Stop hook 에 등록되어 background 에서 실행됨:
   1. marker 의 latest_fire 갱신 (timestamp 비교용)
-  2. wake_count 가 max_refresh_count 도달 시 skip
+  2. arm=="always" 일 때만 진입부 max_refresh_count 체크 (skip)
   3. config.refresh_interval_minutes 분 sleep
   4. sleep 후 latest_fire 재확인 — 더 최근 fire 가 있으면 skip
-  5. mode 별 분기:
-     - notify: osascript 알림 + exit 0 (wake X)
-     - auto: stderr ping + exit 2 (Claude Code 가 chat 세션 wake)
-     - hybrid: 알림 + hybrid_wait 추가 sleep + 재확인 + exit 2
+  5. arm/예산 분기:
+     - arm=manual + set_budget_remaining==0 (not eligible):
+         notify.enabled=true  → 알림 1회 + exit 0 (wake X, 연쇄 fire X)
+         notify.enabled=false → no-op exit 0
+     - eligible (arm=always 또는 budget>0):
+         notify.enabled=true  → 알림 + grace_seconds sleep + 재확인 + exit 2
+         notify.enabled=false → 즉시 exit 2
+     - wake 시 manual 은 예산 차감 후 (consumed/total) ping,
+                always 는 (wake_count/max_refresh_count) ping.
 
 PRD 불변: 어떤 실패도 chat 동작 차단 X (best-effort).
 """
@@ -39,14 +44,14 @@ from lib.session_id import sanitize  # noqa: E402
 PING_PREFIX = "[cn:keepalive"
 
 
-def _build_ping(wake_count: int, max_count: int) -> str:
-    """동적 PING 메시지 — local 시각 + 'N/M' wake 카운트 포함.
+def _build_ping(nm: str) -> str:
+    """동적 PING 메시지 — local 시각 + 'N/M' 카운트 포함.
 
+    nm: 호출자가 조립한 "consumed/total" (manual) 또는 "count/max" (always).
     응답 형식도 'ok @HH:MM (N/M)' 으로 강제해서 chat history 만 봐도
     언제 몇 번째 wake 였는지 확인 가능.
     """
     hhmm = datetime.now().strftime("%H:%M")
-    nm = f"{wake_count}/{max_count}"
     return (
         f"{PING_PREFIX} {hhmm}, {nm}] "
         f"reply with exactly 'ok @{hhmm} ({nm})'. "
@@ -175,36 +180,38 @@ def _save_marker(marker: Marker, context: str) -> bool:
 
 
 def _do_wake(marker: Marker, sid_hash: str, config: Config) -> int:
-    """wake_count 증가 + last_wake_at 갱신 + stderr ping + exit 2.
+    """wake_count/예산 갱신 + save 후 stderr ping + exit 2.
 
+    manual(예산 소비) 이면 ping 은 (consumed/total), always 는 (count/max).
     save 실패 시 wake 자체는 진행 (cache 갱신 우선, count 누락 허용).
     """
     marker.wake_count += 1
     marker.last_wake_at = int(time.time())
+    if marker.set_budget_remaining > 0:
+        consumed = marker.set_budget_total - marker.set_budget_remaining + 1
+        marker.set_budget_remaining -= 1
+        nm = f"{consumed}/{marker.set_budget_total}"
+    else:
+        nm = f"{marker.wake_count}/{config.max_refresh_count}"
     _save_marker(marker, "wake")
-    log_info(f"[refresh] wake sid={sid_hash} count={marker.wake_count}")
-    print(_build_ping(marker.wake_count, config.max_refresh_count), file=sys.stderr)
+    log_info(f"[refresh] wake sid={sid_hash} count={marker.wake_count} nm={nm}")
+    print(_build_ping(nm), file=sys.stderr)
     return 2
 
 
-def _do_notify(marker: Marker, sid_hash: str, config: Config) -> int:
-    """notify mode — 알림 발송 시에만 count 증가.
+def _do_notify(marker: Marker, sid_hash: str, config: Config, message: str) -> int:
+    """notify 시에만 count 증가 — 사용자에게 실제 도달한 시도.
 
-    system_notification=false 면 알림도 안 가고 wake 도 안 하니 사실상 no-op.
+    notify.enabled=false 면 알림도 안 가고 wake 도 안 하니 사실상 no-op.
     count 도 증가시키지 않음 (count 의미: 사용자에게 실제로 도달한 시도).
     """
-    if not config.notify.system_notification:
-        log_info(f"[refresh] notify mode 인데 system_notification=false, no-op sid={sid_hash}")
+    if not config.notify.enabled:
+        log_info(f"[refresh] notify 대상인데 notify.enabled=false, no-op sid={sid_hash}")
         return 0
     marker.wake_count += 1
     marker.last_wake_at = int(time.time())
     _save_marker(marker, "notify")
-    _notify_session(
-        "cache 만료 임박, 직접 chat 으로 돌아오세요",
-        marker,
-        config,
-        marker.wake_count,
-    )
+    _notify_session(message, marker, config, marker.wake_count)
     log_info(f"[refresh] notify sid={sid_hash} count={marker.wake_count}")
     return 0
 
@@ -241,7 +248,7 @@ def main() -> int:
     if not _save_marker(marker, "fire"):
         return 0
 
-    if marker.wake_count >= config.max_refresh_count:
+    if config.wake.arm == "always" and marker.wake_count >= config.max_refresh_count:
         log_info(
             f"[refresh] max_refresh_count {config.max_refresh_count} 도달, skip "
             f"sid={sid_hash}"
@@ -277,41 +284,37 @@ def main() -> int:
         )
         return 0
 
-    # mode 별 분기
-    if config.mode == "notify":
-        return _do_notify(marker, sid_hash, config)
+    # arm/예산 분기 (spec §7)
+    eligible = config.wake.arm == "always" or marker.set_budget_remaining > 0
 
-    if config.mode == "hybrid":
-        if config.notify.system_notification:
-            # wake 가 일어나면 _do_wake 에서 wake_count++ 되므로 알림에는 +1 한 값을 표시
-            _notify_session(
-                f"{config.refresh.hybrid_wait_seconds}초 후 자동 wake — "
-                "직접 input 시 취소",
-                marker,
-                config,
-                marker.wake_count + 1,
-            )
-        time.sleep(config.refresh.hybrid_wait_seconds)
+    if not eligible:
+        # 알림만 — wake 없음 → 연쇄 fire 없음 → 자리비움당 알림 최대 1회
+        return _do_notify(
+            marker, sid_hash, config,
+            "cache 만료 임박 — /cn:set N 으로 연장 가능",
+        )
+
+    if config.notify.enabled:
+        # wake 가 일어나면 _do_wake 에서 count 가 오르므로 +1 한 값을 표시
+        _notify_session(
+            f"{config.wake.grace_seconds}초 후 자동 wake — 직접 input 시 취소",
+            marker, config, marker.wake_count + 1,
+        )
+        time.sleep(config.wake.grace_seconds)
         marker = Marker.load(sid_hash)
         if marker.latest_fire == 0:
-            log_info(
-                f"[refresh] hybrid wait 중 SessionEnd, wake 취소 sid={sid_hash}"
-            )
+            log_info(f"[refresh] grace 중 SessionEnd, wake 취소 sid={sid_hash}")
             return 0
         if marker.latest_fire > my_ts:
-            log_info(
-                "[refresh] hybrid wait 중 user input — wake 취소 sid="
-                f"{sid_hash}"
-            )
+            log_info(f"[refresh] grace 중 user input — wake 취소 sid={sid_hash}")
             return 0
         if marker.last_user_activity_at_ns > my_ts:
-            log_info(
-                "[refresh] hybrid wait 중 user activity — wake 취소 sid="
-                f"{sid_hash}"
-            )
+            log_info(f"[refresh] grace 중 user activity — wake 취소 sid={sid_hash}")
+            return 0
+        if config.wake.arm != "always" and marker.set_budget_remaining <= 0:
+            log_info(f"[refresh] grace 중 예산 소멸 — wake 취소 sid={sid_hash}")
             return 0
 
-    # auto 또는 hybrid 통과 → wake
     return _do_wake(marker, sid_hash, config)
 
 

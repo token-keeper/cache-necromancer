@@ -57,15 +57,15 @@ def session_stdin(monkeypatch):
     return sid
 
 
-def _write_config(cn_root, *, mode="auto", refresh_interval=50, max_refresh=10,
-                  hybrid_wait=60, system_notification=True):
+def _write_config(cn_root, *, arm="always", notify_enabled=True,
+                  refresh_interval=50, max_refresh=10, grace=60):
     cfg = cn_root / "config.toml"
     cfg.write_text(
-        f'[general]\nmode = "{mode}"\n'
+        "[general]\n"
         f"refresh_interval_minutes = {refresh_interval}\n"
         f"max_refresh_count = {max_refresh}\n"
-        f"[notify]\nsystem_notification = {str(system_notification).lower()}\n"
-        f"[refresh]\nhybrid_wait_seconds = {hybrid_wait}\n",
+        f"[notify]\nenabled = {str(notify_enabled).lower()}\n"
+        f'[wake]\narm = "{arm}"\ngrace_seconds = {grace}\n',
         encoding="utf-8",
     )
 
@@ -79,7 +79,7 @@ class TestModeAuto:
     def test_auto_exits_2_and_increments_wake_count(
         self, cn_root, session_env, fast_sleep, silent_notify, capsys
     ):
-        _write_config(cn_root, mode="auto")
+        _write_config(cn_root, arm="always", notify_enabled=False)
         rc = main()
         assert rc == 2
         # stderr 에 ping 메시지
@@ -99,7 +99,7 @@ class TestModeAuto:
         KST hardcode 제거 (v0.3.12) — local time 사용.
         """
         import re
-        _write_config(cn_root, mode="auto", max_refresh=10)
+        _write_config(cn_root, arm="always", notify_enabled=False, max_refresh=10)
         main()
         err = capsys.readouterr().err
         # 첫 wake 라 1/10
@@ -121,7 +121,7 @@ class TestModeAuto:
         from scripts.refresh import _build_ping
         # frozen UTC = 2026-05-23 03:15:00. naive .now() → '03:15' 그대로.
         with freeze_time("2026-05-23 03:15:00"):
-            ping = _build_ping(1, 10)
+            ping = _build_ping("1/10")
             assert "03:15" in ping
             assert "ok @03:15 (1/10)" in ping
             assert "KST" not in ping
@@ -131,7 +131,8 @@ class TestModeNotify:
     def test_notify_exits_0_and_increments_wake_count(
         self, cn_root, session_env, fast_sleep, silent_notify, capsys
     ):
-        _write_config(cn_root, mode="notify")
+        # 구 mode="notify" → arm="manual", notify_enabled=True (budget 0 → notify only)
+        _write_config(cn_root, arm="manual", notify_enabled=True)
         rc = main()
         assert rc == 0
         # stderr 에 ping 메시지 X (wake 안 했으니)
@@ -145,8 +146,9 @@ class TestModeNotify:
     def test_notify_skipped_when_system_notification_false(
         self, cn_root, session_env, fast_sleep, silent_notify
     ):
-        """system_notification=false 면 알림 X + count 도 증가 X (no-op)."""
-        _write_config(cn_root, mode="notify", system_notification=False)
+        """notify.enabled=false 면 알림 X + count 도 증가 X (no-op)."""
+        # 구 system_notification=False → notify_enabled=False
+        _write_config(cn_root, arm="manual", notify_enabled=False)
         main()
         assert silent_notify == []
         m = _load_marker_for_sid(session_env)
@@ -158,19 +160,20 @@ class TestModeHybrid:
     def test_hybrid_exits_2_after_wait_when_no_input(
         self, cn_root, session_env, fast_sleep, silent_notify, capsys
     ):
-        _write_config(cn_root, mode="hybrid")
+        # 구 mode="hybrid" → arm="always", notify_enabled=True
+        _write_config(cn_root, arm="always", notify_enabled=True)
         rc = main()
         assert rc == 2
         assert PING_PREFIX in capsys.readouterr().err
         m = _load_marker_for_sid(session_env)
         assert m.wake_count == 1
-        # hybrid → 알림 1회
+        # always+notify → 알림 1회
         assert len(silent_notify) == 1
 
     def test_hybrid_skipped_when_user_input_during_wait(
         self, cn_root, session_env, monkeypatch, silent_notify, capsys
     ):
-        _write_config(cn_root, mode="hybrid", refresh_interval=50, hybrid_wait=60)
+        _write_config(cn_root, arm="always", notify_enabled=True, refresh_interval=50, grace=60)
 
         # 첫 sleep (50분) 은 통과, 두 번째 sleep (60s hybrid wait) 중 latest_fire 갱신
         sleep_count = {"n": 0}
@@ -203,7 +206,7 @@ class TestNotifyMetadata:
     def test_notify_title_includes_project_basename(
         self, cn_root, session_env, fast_sleep, silent_notify
     ):
-        _write_config(cn_root, mode="notify", max_refresh=10)
+        _write_config(cn_root, arm="manual", notify_enabled=True, max_refresh=10)
         from lib.session_id import sanitize
         sid_hash = sanitize(session_env)
         m = Marker.load(sid_hash)
@@ -223,18 +226,20 @@ class TestNotifyMetadata:
     def test_notify_without_cwd_falls_back(
         self, cn_root, session_env, fast_sleep, silent_notify
     ):
-        """cwd 비어있으면 title 은 fallback, body prefix 없음."""
-        _write_config(cn_root, mode="notify")
+        """cwd 비어있으면 title 은 fallback, body 에 경로 prefix 없음."""
+        _write_config(cn_root, arm="manual", notify_enabled=True)
         main()
         call = silent_notify[0]
         assert call["title"] == "cache-necromancer"
-        assert "—" not in call["msg"]
+        # cwd 가 없으면 "<path> — <msg>" prefix 가 붙지 않음
+        # (메시지 자체에 em-dash 가 포함될 수 있으므로 ~ prefix 로 검사)
+        assert not call["msg"].startswith("~")
 
     def test_hybrid_notify_displays_pending_wake_count(
         self, cn_root, session_env, fast_sleep, silent_notify
     ):
-        """hybrid 는 wake 직전 알림이므로 N+1 (이번 알림이 곧 N+1번째 wake) 표시."""
-        _write_config(cn_root, mode="hybrid", max_refresh=5)
+        """always+notify 는 wake 직전 알림이므로 N+1 (이번 알림이 곧 N+1번째 wake) 표시."""
+        _write_config(cn_root, arm="always", notify_enabled=True, max_refresh=5)
         from lib.session_id import sanitize
         sid_hash = sanitize(session_env)
         m = Marker.load(sid_hash)
@@ -250,7 +255,7 @@ class TestSkipConditions:
     def test_max_refresh_count_blocks_wake(
         self, cn_root, session_env, fast_sleep, silent_notify, capsys
     ):
-        _write_config(cn_root, mode="auto", max_refresh=3)
+        _write_config(cn_root, arm="always", notify_enabled=False, max_refresh=3)
         # 미리 wake_count = 3 (max 도달)
         from lib.session_id import sanitize
         m = Marker.load(sanitize(session_env))
@@ -267,7 +272,7 @@ class TestSkipConditions:
     def test_superseded_by_newer_fire_skips_wake(
         self, cn_root, session_env, monkeypatch, silent_notify, capsys
     ):
-        _write_config(cn_root, mode="auto")
+        _write_config(cn_root, arm="always", notify_enabled=False)
         # sleep 동안 다른 hook fire → latest_fire 갱신
         def fake_sleep(secs):
             from lib.session_id import sanitize
@@ -290,7 +295,7 @@ class TestSkipConditions:
         가 my_ts 보다 늦어지면 wake 안 일어남. model 응답이 50분 넘게 진행되어
         새 Stop hook fire 가 안 들어와도 사용자 활동만으로 supersede 보장.
         """
-        _write_config(cn_root, mode="auto")
+        _write_config(cn_root, arm="always", notify_enabled=False)
 
         def fake_sleep(secs):
             from lib.session_id import sanitize
@@ -311,10 +316,10 @@ class TestSkipConditions:
     def test_hybrid_wait_superseded_by_user_activity_cancels_wake(
         self, cn_root, session_env, monkeypatch, silent_notify, capsys
     ):
-        """hybrid wait 중에 사용자가 prompt 를 쳐서 last_user_activity_at_ns
+        """grace wait 중에 사용자가 prompt 를 쳐서 last_user_activity_at_ns
         갱신되면 wake 취소. 알림 자체는 첫 sleep 후 이미 발송됨.
         """
-        _write_config(cn_root, mode="hybrid", refresh_interval=50, hybrid_wait=60)
+        _write_config(cn_root, arm="always", notify_enabled=True, refresh_interval=50, grace=60)
 
         sleep_count = {"n": 0}
 
@@ -347,7 +352,7 @@ class TestSkipConditions:
         (latest_fire=0) 를 반환 — supersede 체크가 0 > my_ts 로 False 라
         가드 없이는 wake 가 실행되고 좀비 마커가 재생성됨.
         """
-        _write_config(cn_root, mode="auto")
+        _write_config(cn_root, arm="always", notify_enabled=False)
         from lib.session_id import sanitize
         sid_hash = sanitize(session_env)
 
@@ -372,7 +377,7 @@ class TestSkipConditions:
         hybrid 첫 sleep 통과 후 notify 는 이미 발송됨. 두 번째 sleep
         (hybrid_wait) 중 SessionEnd → 좀비 wake 방지.
         """
-        _write_config(cn_root, mode="hybrid", refresh_interval=50, hybrid_wait=60)
+        _write_config(cn_root, arm="always", notify_enabled=True, refresh_interval=50, grace=60)
         from lib.session_id import sanitize
         sid_hash = sanitize(session_env)
 
@@ -404,7 +409,7 @@ class TestErrorPaths:
         self, cn_root, session_env, fast_sleep, silent_notify
     ):
         cfg = cn_root / "config.toml"
-        cfg.write_text('[general]\nmode = "invalid"\n', encoding="utf-8")
+        cfg.write_text('[wake]\narm = "invalid"\n', encoding="utf-8")
         rc = main()
         assert rc == 0  # 그냥 종료
 
@@ -430,7 +435,7 @@ class TestSessionIdResolution:
 
         이 fix 가 없으면 refresh.py 가 fire 안 됨 (env var 없음 → exit 0).
         """
-        _write_config(cn_root, mode="auto")
+        _write_config(cn_root, arm="always", notify_enabled=False)
         rc = main()
         assert rc == 2
         assert PING_PREFIX in capsys.readouterr().err
@@ -447,7 +452,7 @@ class TestSessionIdResolution:
         env_sid = "env-priority"
         monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", env_sid)
         monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": stdin_sid})))
-        _write_config(cn_root, mode="auto")
+        _write_config(cn_root, arm="always", notify_enabled=False)
         main()
         from lib.session_id import sanitize
         # stdin 의 marker 만 갱신됨
@@ -457,7 +462,7 @@ class TestSessionIdResolution:
     def test_marker_save_failure_aborts_silently(
         self, cn_root, session_env, fast_sleep, silent_notify, monkeypatch
     ):
-        _write_config(cn_root, mode="auto")
+        _write_config(cn_root, arm="always", notify_enabled=False)
         # marker.save 가 항상 OSError raise
         from lib.marker import Marker as M
         def bad_save(self):
@@ -470,7 +475,7 @@ class TestSessionIdResolution:
         self, cn_root, session_env, fast_sleep, silent_notify, monkeypatch, capsys
     ):
         """wake 직전 save 실패 — wake 자체는 진행 (cache 갱신 우선)."""
-        _write_config(cn_root, mode="auto")
+        _write_config(cn_root, arm="always", notify_enabled=False)
         from lib.marker import Marker as M
 
         original_save = M.save
@@ -608,3 +613,111 @@ class TestKillOlderBuddies:
         monkeypatch.setattr("scripts.refresh.subprocess.run", must_not_call)
         _kill_older_buddies()
         assert kill_capture == []
+
+
+class TestManualArm:
+    def test_unarmed_notify_enabled_sends_notification_only(
+        self, cn_root, session_env, fast_sleep, silent_notify, capsys
+    ):
+        _write_config(cn_root, arm="manual", notify_enabled=True)
+        rc = main()
+        assert rc == 0
+        assert len(silent_notify) == 1
+        assert "/cn:set" in silent_notify[0]["msg"]
+        assert PING_PREFIX not in capsys.readouterr().err
+
+    def test_unarmed_notify_disabled_is_noop(
+        self, cn_root, session_env, fast_sleep, silent_notify, capsys
+    ):
+        _write_config(cn_root, arm="manual", notify_enabled=False)
+        rc = main()
+        assert rc == 0
+        assert silent_notify == []
+        assert PING_PREFIX not in capsys.readouterr().err
+
+    def test_armed_wakes_and_decrements_budget(
+        self, cn_root, session_env, fast_sleep, silent_notify, capsys
+    ):
+        _write_config(cn_root, arm="manual", notify_enabled=False)
+        from lib.session_id import sanitize
+        m = Marker.load(sanitize(session_env))
+        m.set_budget_remaining = 2
+        m.set_budget_total = 2
+        m.save()
+        rc = main()
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "(1/2)" in err                  # consumed/total (codex F2)
+        m2 = _load_marker_for_sid(session_env)
+        assert m2.set_budget_remaining == 1    # ping 출력 전 저장됨
+
+    def test_budget_charged_during_sleep_is_consumed(
+        self, cn_root, session_env, silent_notify, monkeypatch, capsys
+    ):
+        """sleep 시작 시 예산 0 → sleep 중 /cn:set 충전 → wake (codex F1)."""
+        _write_config(cn_root, arm="manual", notify_enabled=False)
+        from lib.session_id import sanitize
+        sid_hash = sanitize(session_env)
+
+        def charge_during_sleep(seconds):
+            m = Marker.load(sid_hash)
+            m.set_budget_remaining = 1
+            m.set_budget_total = 1
+            m.save()
+
+        monkeypatch.setattr("scripts.refresh.time.sleep", charge_during_sleep)
+        rc = main()
+        assert rc == 2
+        assert "(1/1)" in capsys.readouterr().err
+
+    def test_last_budget_consumed_then_next_fire_notifies_only(
+        self, cn_root, session_env, fast_sleep, silent_notify, monkeypatch, capsys
+    ):
+        """예산 1 → wake 후 0 → 다음 fire 는 알림만 ("2번 fire되고 마는거임")."""
+        import io
+        _write_config(cn_root, arm="manual", notify_enabled=True)
+        from lib.session_id import sanitize
+        m = Marker.load(sanitize(session_env))
+        m.set_budget_remaining = 1
+        m.set_budget_total = 1
+        m.save()
+        assert main() == 2                      # wake (예산 소진)
+        capsys.readouterr()
+        monkeypatch.setattr("sys.stdin", io.StringIO(""))  # stdin 재주입 (env fallback)
+        assert main() == 0                      # 알림만
+        assert any("/cn:set" in c["msg"] for c in silent_notify)
+
+    def test_grace_recheck_cancels_when_budget_zeroed(
+        self, cn_root, session_env, silent_notify, monkeypatch, capsys
+    ):
+        """grace 대기 중 복귀(예산 0 처리) → wake 취소."""
+        _write_config(cn_root, arm="manual", notify_enabled=True, grace=60)
+        from lib.session_id import sanitize
+        sid_hash = sanitize(session_env)
+        m = Marker.load(sid_hash)
+        m.set_budget_remaining = 1
+        m.set_budget_total = 1
+        m.save()
+        calls = {"n": 0}
+
+        def sleep_then_zero(seconds):
+            calls["n"] += 1
+            if calls["n"] == 2:                 # 두 번째 sleep = grace 대기
+                m2 = Marker.load(sid_hash)
+                m2.set_budget_remaining = 0
+                m2.save()
+
+        monkeypatch.setattr("scripts.refresh.time.sleep", sleep_then_zero)
+        rc = main()
+        assert rc == 0
+        assert PING_PREFIX not in capsys.readouterr().err
+
+
+class TestAlwaysArmKeepsLegacyBehavior:
+    def test_always_ping_uses_wake_count_over_max(
+        self, cn_root, session_env, fast_sleep, silent_notify, capsys
+    ):
+        _write_config(cn_root, arm="always", notify_enabled=False, max_refresh=10)
+        rc = main()
+        assert rc == 2
+        assert "(1/10)" in capsys.readouterr().err
