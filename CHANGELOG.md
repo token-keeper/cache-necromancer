@@ -2,6 +2,16 @@
 
 이 프로젝트의 모든 주목할 만한 변경사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고, [Semantic Versioning](https://semver.org/lang/ko/) 을 준수합니다.
 
+## [0.5.1] — 2026-06-10
+
+### Fixed
+
+- **macOS 알림 (N/M) 분모 수정** (`scripts/refresh.py`): manual 모드의 wake 예고 알림이
+  `(wake_count+1/max_refresh_count)` 로 표시되던 것을 ping 과 동일하게
+  `(소비될 회차/set 충전량)` 으로 수정 — 예: `set 2` 면 `(1/2)`, `(2/2)`.
+  manual 미충전 알림(만료 임박)은 set 이 없으므로 분수 자체를 생략.
+- **CHANGELOG 0.5.0 항목의 사실 오류 정정** (실제 구현과 다른 파일/필드명 서술).
+
 ## [0.5.0] — 2026-06-10
 
 **알림 기본 + `/cn:set` 소생 — 토큰 지출 경로 명시화**
@@ -10,9 +20,9 @@
 
 ### Added
 
-- **`/cn:set N` 슬래시 명령** (`scripts/on_set_command.py`, `commands/cn:set.md`): 현재 세션에 wake 예산 충전 (N회 소생). `/cn:set 0` = 취소, `/cn:set` (무인자) = 현재 상태 표시. `arm=always` 중 호출 시 안내 메시지. 예산은 복귀(충전 후 실제 입력) 시 자동 소멸.
-- **`lib/budget.py`**: 세션별 wake 예산 관리 (set/consume/clear).
-- **`lib/marker.py`**: wake 예산 필드 추가 (`wake_budget`, `wake_budget_set_at`).
+- **`/cn:set N` 슬래시 명령** (`scripts/cn_set.py`, `commands/cn:set.md`, `scripts/on_status_command.py` 라우팅 — LLM turn 0회): 현재 세션에 wake 예산 충전 (N회 소생, `min(N, max_refresh_count)` 상한). `/cn:set 0` = 취소, `/cn:set` (무인자) = 현재 상태 표시. `arm=always` 중 호출 시 안내 메시지. 예산은 복귀(충전 후 **wake 가 1회 이상 일어난 뒤** 들어온 실제 입력) 시 자동 소멸 — set 직후 추가 프롬프트는 예산 유지.
+- **`lib/marker.py`**: wake 예산 필드 추가 (`set_budget_remaining`, `set_budget_total`, `set_charged_at_ns`).
+- **cn: 메타 명령 activity 제외** (`scripts/on_user_prompt.py`): `/cn:set`·`/cn:status`·`/cn:config` 는 user activity 로 취급하지 않음 — set 직후 pending timer 가 supersede 되지 않도록 보장.
 - **recap 2번째 줄**: 예산 충전 시 남은 wake 횟수 / 생존 시한 표시 (4개 언어).
 - **`/cn:status` 예산 표시**: arm 정책 + 남은 예산 + 생존 시한.
 

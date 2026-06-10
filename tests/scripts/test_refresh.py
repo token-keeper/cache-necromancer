@@ -217,8 +217,9 @@ class TestNotifyMetadata:
         assert len(silent_notify) == 1
         call = silent_notify[0]
         assert call["title"] == "cache-necromancer · my-project"
-        # subtitle: <sid8> · (1/10)
-        assert call["subtitle"].endswith(" · (1/10)")
+        # manual 미충전 알림 — set 이 없으므로 (N/M) 분수 생략, sid 만 표시
+        assert "/" not in call["subtitle"]
+        assert "(" not in call["subtitle"]
         # body: 단축경로 + 기존 메시지
         assert "~/work/my-project — " in call["msg"]
         assert "cache 만료 임박" in call["msg"]
@@ -249,6 +250,26 @@ class TestNotifyMetadata:
         main()
         assert len(silent_notify) == 1
         assert silent_notify[0]["subtitle"].endswith(" · (1/5)")
+
+    def test_manual_grace_notify_uses_set_budget_as_denominator(
+        self, cn_root, session_env, fast_sleep, silent_notify, capsys, monkeypatch
+    ):
+        """manual 의 wake 예고 알림은 (소비될 회차/충전량) — max_refresh_count 아님."""
+        import io
+        _write_config(cn_root, arm="manual", notify_enabled=True, max_refresh=5)
+        from lib.session_id import sanitize
+        m = Marker.load(sanitize(session_env))
+        m.set_budget_remaining = 2
+        m.set_budget_total = 2
+        m.save()
+
+        assert main() == 2                      # wake 1회차
+        assert silent_notify[0]["subtitle"].endswith(" · (1/2)")
+
+        monkeypatch.setattr("sys.stdin", io.StringIO(""))  # env fallback
+        assert main() == 2                      # wake 2회차
+        assert silent_notify[1]["subtitle"].endswith(" · (2/2)")
+        capsys.readouterr()
 
 
 class TestSkipConditions:

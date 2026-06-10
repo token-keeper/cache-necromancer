@@ -142,13 +142,15 @@ def _abbrev_home(path: str) -> str:
 
 
 def _notify_session(
-    message: str, marker: Marker, config: Config, count_for_display: int
+    message: str, marker: Marker, nm: str | None
 ) -> None:
     """세션 식별 정보를 채워 알림 발송.
 
     여러 세션이 동시에 실행 중일 때 어느 프로젝트의 알림인지 구분할 수 있게:
       - title:    cache-necromancer · <basename(cwd)>
-      - subtitle: <sid8> · (N/M)
+      - subtitle: <sid8> · (N/M)  — nm 은 호출자가 조립 (manual=set 예산 기준,
+                  always=max_refresh_count 기준). None 이면 분수 생략
+                  (manual 미충전 알림 — set 이 없으니 분모가 무의미).
       - body:     <단축경로> — <message>
     cwd 가 없으면 title/body 의 cwd 부분을 생략.
     """
@@ -159,10 +161,9 @@ def _notify_session(
     else:
         title = base_title
 
-    subtitle = (
-        f"{mask_sid(marker.sid_hash)} · "
-        f"({count_for_display}/{config.max_refresh_count})"
-    )
+    subtitle = mask_sid(marker.sid_hash)
+    if nm is not None:
+        subtitle += f" · ({nm})"
 
     abbrev = _abbrev_home(marker.cwd)
     body = f"{abbrev} — {message}" if abbrev else message
@@ -212,7 +213,8 @@ def _do_notify(marker: Marker, sid_hash: str, config: Config, message: str) -> i
     marker.wake_count += 1
     marker.last_wake_at = int(time.time())
     _save_marker(marker, "notify")
-    _notify_session(message, marker, config, marker.wake_count)
+    # manual 미충전 알림 — set 예산이 없으므로 (N/M) 분수 생략
+    _notify_session(message, marker, None)
     log_info(f"[refresh] notify sid={sid_hash} count={marker.wake_count}")
     return 0
 
@@ -296,10 +298,18 @@ def main() -> int:
         )
 
     if config.notify.enabled:
-        # wake 가 일어나면 _do_wake 에서 count 가 오르므로 +1 한 값을 표시
+        # 이번 알림이 예고하는 wake 의 (N/M) — ping 과 동일 기준으로 표시:
+        # manual 은 set 예산 (소비될 회차/충전량), always 는 wake_count/max
+        if config.wake.arm != "always" and marker.set_budget_remaining > 0:
+            pending = (
+                marker.set_budget_total - marker.set_budget_remaining + 1
+            )
+            nm = f"{pending}/{marker.set_budget_total}"
+        else:
+            nm = f"{marker.wake_count + 1}/{config.max_refresh_count}"
         _notify_session(
             f"{config.wake.grace_seconds}초 후 자동 wake — 직접 input 시 취소",
-            marker, config, marker.wake_count + 1,
+            marker, nm,
         )
         time.sleep(config.wake.grace_seconds)
         marker = Marker.load(sid_hash)
