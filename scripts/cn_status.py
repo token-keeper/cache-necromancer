@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """/cn:status backend (TECH_SPEC §8).
 
-v0.3.13: 박스 재구성 + i18n (ko/en/ja/zh).
-  - 상단 mode 줄 제거 → "상태" 박스 안으로
-  - 다른 세션: 라벨 통일 (next_fire / prompt / cwd 3줄)
-  - 설정 박스 → "상태" 박스로 rename. hook 등록 / deprecated config 제거
+v0.5.0: arm/예산 표시 + legacy config 경고.
+  - mode 행 → arm 행 (arm_label_i18n)
+  - settings 행에 notify on/off 추가
+  - 현재 세션: arm=manual 시 set 예산 행 추가
+  - legacy v0.4.x config 키 감지 시 경고 행 추가
 """
 import json
 import os
@@ -19,10 +20,11 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from lib.box_renderer import box_section, display_width, wrap_outer  # noqa: E402
-from lib.config import Config, load_config  # noqa: E402
+from lib.config import Config, detect_legacy_keys, load_config, parse_config_file  # noqa: E402
 from lib.i18n import (  # noqa: E402
-    mode_label_i18n,
+    arm_label_i18n,
     normalize_language,
+    set_label,
     status_label,
 )
 from lib.marker import Marker, marker_dir  # noqa: E402
@@ -114,12 +116,17 @@ def _row(label: str, value: str, pad: int) -> str:
 
 
 def _build_session_box(marker: Marker, config: Config, now: datetime, lang) -> list[str]:
-    """현재 세션 박스 (i18n)."""
+    """현재 세션 박스 (i18n). arm=manual 시 set 예산 행 추가."""
     masked = mask_sid(marker.sid_hash)
     L_sid = status_label(lang, "sid")
     L_count = status_label(lang, "repeat_count")
     L_next = status_label(lang, "next_fire")
-    pad = _compute_pad([L_sid, L_count, L_next])
+
+    # arm=manual 시 set 예산 행 포함 — pad 계산에 반영
+    show_budget = config.wake.arm == "manual"
+    L_budget = status_label(lang, "set_budget") if show_budget else None
+    all_labels = [L_sid, L_count, L_next] + ([L_budget] if L_budget else [])
+    pad = _compute_pad(all_labels)
 
     lines = [
         _row(L_sid, masked, pad),
@@ -136,6 +143,20 @@ def _build_session_box(marker: Marker, config: Config, now: datetime, lang) -> l
                 pad,
             )
         )
+
+    # set 예산 행 (arm=manual 전용)
+    if show_budget:
+        remaining = marker.set_budget_remaining
+        total = marker.set_budget_total
+        if remaining > 0:
+            # 예상 생존 시한: now + remaining × refresh_interval + cache_ttl
+            deadline = now + timedelta(
+                minutes=remaining * config.refresh_interval_minutes + config.cache_ttl_minutes
+            )
+            budget_val = f"🔥 {remaining}/{total} (~{deadline.strftime('%H:%M')})"
+        else:
+            budget_val = set_label(lang, "status_none")
+        lines.append(_row(L_budget, budget_val, pad))
 
     return box_section(status_label(lang, "current_session"), lines)
 
@@ -219,31 +240,43 @@ def _build_other_sessions_box(
     return wrap_outer(title, combined)
 
 
-def _build_status_box(config: Config, lang) -> list[str]:
-    """상태 박스 — mode / settings / plugin (v0.3.13: rename from 설정 상태)."""
-    L_mode = status_label(lang, "mode")
+def _build_status_box(config: Config, lang, legacy_keys: list[str]) -> list[str]:
+    """상태 박스 — arm / settings / plugin (v0.5.0: mode → arm, notify 상태 추가)."""
+    L_arm = status_label(lang, "arm")
     L_settings = status_label(lang, "settings")
     L_plugin = status_label(lang, "plugin")
-    pad = _compute_pad([L_mode, L_settings, L_plugin])
+    pad = _compute_pad([L_arm, L_settings, L_plugin])
 
-    mode_text = mode_label_i18n(lang, config.mode, config.refresh.hybrid_wait_seconds)
+    arm_text = arm_label_i18n(
+        lang, config.wake.arm, config.notify.enabled, config.wake.grace_seconds
+    )
+    notify_state = "on" if config.notify.enabled else "off"
     settings_text = (
-        f"refresh {config.refresh_interval_minutes}m · max {config.max_refresh_count}"
+        f"refresh {config.refresh_interval_minutes}m"
+        f" · max {config.max_refresh_count}"
+        f" · notify {notify_state}"
     )
     plugin_text = f"cache-necromancer v{_plugin_version()} (active)"
 
     lines = [
-        _row(L_mode, mode_text, pad),
+        _row(L_arm, arm_text, pad),
         _row(L_settings, settings_text, pad),
         _row(L_plugin, plugin_text, pad),
     ]
-    if config.mode == "notify":
-        lines.append(status_label(lang, "notify_warn"))
+    # legacy v0.4.x config 키 감지 시 경고 행 추가
+    if legacy_keys:
+        lines.append(
+            status_label(lang, "legacy_warn").format(keys=", ".join(legacy_keys))
+        )
     return box_section(status_label(lang, "status"), lines)
 
 
 def main() -> int:
     config_path = _resolve_root() / "config.toml"
+    # legacy 키 감지용 raw parse (load_config 와 별도 — side effect 없음)
+    raw_data, _err = parse_config_file(config_path)
+    legacy_keys = detect_legacy_keys(raw_data)
+
     try:
         config = load_config(config_path)
     except ValueError as e:
@@ -271,7 +304,7 @@ def main() -> int:
         body.append("")
     body.extend(_build_other_sessions_box(others, config, now, lang))
     body.append("")
-    body.extend(_build_status_box(config, lang))
+    body.extend(_build_status_box(config, lang, legacy_keys))
 
     print("\n".join(wrap_outer(status_label(lang, "title"), body)))
     return 0

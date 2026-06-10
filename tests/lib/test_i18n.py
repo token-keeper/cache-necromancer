@@ -1,4 +1,5 @@
 """Tests for lib/i18n.py (recap 메시지 4 언어 + fallback)."""
+import re
 import sys
 from pathlib import Path
 
@@ -10,11 +11,12 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from lib.i18n import (  # noqa: E402
     DEFAULT_LANGUAGE,
+    SET_LABELS,
     STATUS_LABELS,
     SUPPORTED_LANGUAGES,
     build_recap_message,
-    mode_label_i18n,
     normalize_language,
+    set_label,
     status_label,
 )
 
@@ -86,33 +88,15 @@ class TestStatusLabels:
         # 알 수 없는 키는 en fallback 도 없어 → key 그대로
         assert status_label("en", "totally-unknown-key") == "totally-unknown-key"
 
+    def test_mode_key_absent(self):
+        """v0.5.0: mode 키는 STATUS_LABELS 에서 제거됨."""
+        for lang in ("ko", "en", "ja", "zh"):
+            assert "mode" not in STATUS_LABELS[lang]
 
-# ---------- mode_label_i18n ----------
-
-class TestModeLabelI18n:
-    @pytest.mark.parametrize("lang,mode,fragment", [
-        ("ko", "notify", "알림만"),
-        ("en", "notify", "notify only"),
-        ("ja", "notify", "通知のみ"),
-        ("zh", "notify", "仅通知"),
-        ("ko", "auto", "자동 wake"),
-        ("en", "auto", "auto wake"),
-        ("ja", "auto", "自動 wake"),
-        ("zh", "auto", "自动 wake"),
-    ])
-    def test_basic_modes(self, lang, mode, fragment):
-        out = mode_label_i18n(lang, mode, 60)
-        assert fragment in out
-
-    @pytest.mark.parametrize("lang", ["ko", "en", "ja", "zh"])
-    def test_hybrid_includes_wait_seconds(self, lang):
-        out = mode_label_i18n(lang, "hybrid", 45)
-        assert "45" in out
-
-    def test_unknown_mode_renders_question(self):
-        out = mode_label_i18n("en", "weird", 60)
-        assert "weird" in out
-        assert "❓" in out
+    def test_notify_warn_key_absent(self):
+        """v0.5.0: notify_warn 키는 STATUS_LABELS 에서 제거됨."""
+        for lang in ("ko", "en", "ja", "zh"):
+            assert "notify_warn" not in STATUS_LABELS[lang]
 
 
 class TestSetRecapLine:
@@ -137,7 +121,6 @@ class TestArmLabel:
 
 class TestSetLabels:
     def test_known_keys_all_langs(self):
-        from lib.i18n import set_label
         keys = ("charged", "capped_note", "session_only", "first_turn_note",
                 "cancelled", "status_armed", "status_none", "always_noop",
                 "usage")
@@ -146,14 +129,36 @@ class TestSetLabels:
                 assert set_label(lang, k)
 
     def test_unknown_key_falls_back(self):
-        from lib.i18n import set_label
         assert set_label("ko", "no-such-key") == "no-such-key"
+
+    def test_set_labels_placeholder_consistency(self):
+        """각 키의 {placeholder} 집합이 4 언어 간에 동일해야 한다."""
+        placeholder_re = re.compile(r"\{(\w+)\}")
+        en_dict = SET_LABELS["en"]
+        for key in en_dict:
+            en_placeholders = set(placeholder_re.findall(en_dict[key]))
+            for lang in ("ko", "ja", "zh"):
+                lang_val = SET_LABELS[lang].get(key, "")
+                lang_placeholders = set(placeholder_re.findall(lang_val))
+                assert lang_placeholders == en_placeholders, (
+                    f"SET_LABELS[{lang!r}][{key!r}] placeholder 불일치: "
+                    f"en={en_placeholders}, {lang}={lang_placeholders}"
+                )
 
 
 class TestNewStatusLabels:
     def test_arm_set_budget_legacy_warn_all_langs(self):
-        from lib.i18n import status_label
         for lang in ("ko", "en", "ja", "zh"):
             assert status_label(lang, "arm")
             assert status_label(lang, "set_budget")
             assert "{keys}" in status_label(lang, "legacy_warn")
+
+
+class TestModeLabelI18nRemoved:
+    """v0.5.0: mode_label_i18n 은 lib/i18n.py 에서 삭제됨."""
+
+    def test_mode_label_i18n_not_exported(self):
+        import lib.i18n as i18n_mod
+        assert not hasattr(i18n_mod, "mode_label_i18n"), (
+            "mode_label_i18n 이 아직 i18n 모듈에 남아 있음 — 삭제 필요"
+        )

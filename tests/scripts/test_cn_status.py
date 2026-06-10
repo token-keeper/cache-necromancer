@@ -1,6 +1,6 @@
-"""Tests for scripts/cn_status.py (v0.3.13).
+"""Tests for scripts/cn_status.py (v0.5.0).
 
-박스 재구성 + i18n (ko/en/ja/zh) 검증.
+v0.5.0: arm/예산 표시 + legacy config 경고.
 """
 import io
 import sys
@@ -43,12 +43,13 @@ class TestDefaultEnglish:
         assert "다른 세션" not in out
         assert "상태" not in out
 
-    def test_status_box_contains_mode_and_plugin(self, cn_root, monkeypatch):
-        _write_config(cn_root, '[general]\nmode = "auto"\nlanguage = "en"\n')
+    def test_status_box_contains_arm_and_plugin(self, cn_root, monkeypatch):
+        # v0.5.0: mode → arm 행으로 교체
+        _write_config(cn_root, '[wake]\narm = "always"\n[general]\nlanguage = "en"\n')
         monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
         out = _run()
-        assert "mode:" in out
-        assert "auto" in out
+        assert "arm:" in out
+        assert "always" in out
         assert "plugin:" in out
         assert "cache-necromancer" in out
 
@@ -133,11 +134,7 @@ class TestOtherSessions:
         assert "—" in out
 
     def test_filters_stale_markers_past_next_fire(self, cn_root, monkeypatch):
-        """v0.3.13: 다음 발동 예상이 과거 (음수) 인 stale 세션은 표시 제외.
-
-        wake cycle 종료된 세션 (max_refresh_count 도달 / chat 종료) 의 노이즈
-        제거. cleanup_stale 7d 와 별개 — marker 파일은 유지하고 표시만 차단.
-        """
+        """v0.3.13: 다음 발동 예상이 과거 (음수) 인 stale 세션은 표시 제외."""
         # 과거 latest_fire — refresh_interval (50m) 후도 이미 한참 전
         stale_ns = int((time.time() - 10 * 3600) * 1_000_000_000)  # 10h ago
         Marker(
@@ -190,10 +187,11 @@ class TestOtherSessions:
 @pytest.mark.parametrize(
     "lang,labels",
     [
-        ("ko", ["세션 (현재)", "다른 세션", "상태", "폴더", "mode"]),
-        ("en", ["Session (current)", "Other sessions", "Status", "cwd", "mode"]),
-        ("ja", ["セッション (現在)", "他のセッション", "状態", "ディレクトリ", "mode"]),
-        ("zh", ["会话 (当前)", "其他会话", "状态", "目录", "mode"]),
+        # v0.5.0: "mode" → "arm" 라벨로 교체
+        ("ko", ["세션 (현재)", "다른 세션", "상태", "폴더", "arm"]),
+        ("en", ["Session (current)", "Other sessions", "Status", "cwd", "arm"]),
+        ("ja", ["セッション (現在)", "他のセッション", "状態", "ディレクトリ", "arm"]),
+        ("zh", ["会话 (当前)", "其他会话", "状态", "目录", "arm"]),
     ],
 )
 class TestI18n:
@@ -218,19 +216,119 @@ class TestI18n:
             assert label in out, f"lang={lang} 라벨 '{label}' 누락"
 
 
-# ---------- notify warning ----------
+# ---------- arm / 예산 표시 (v0.5.0) ----------
 
-class TestNotifyWarn:
-    def test_notify_mode_shows_warning_en(self, cn_root, monkeypatch):
-        _write_config(cn_root, '[general]\nmode = "notify"\nlanguage = "en"\n')
+class TestArmAndBudgetDisplay:
+    def test_status_box_shows_arm(self, cn_root, monkeypatch):
+        """config arm=manual → 출력에 arm 라벨과 manual 텍스트 포함."""
+        _write_config(cn_root, '[wake]\narm = "manual"\n[general]\nlanguage = "en"\n')
         monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
         out = _run()
-        assert "mode=notify" in out
-        assert "no cache refresh" in out
+        assert "arm:" in out
+        assert "manual" in out
 
-    def test_notify_mode_shows_warning_ko(self, cn_root, monkeypatch):
-        _write_config(cn_root, '[general]\nmode = "notify"\nlanguage = "ko"\n')
+    def test_settings_row_shows_notify_state(self, cn_root, monkeypatch):
+        """notify.enabled=true → settings 행에 'notify on' 포함."""
+        _write_config(
+            cn_root,
+            '[wake]\narm = "manual"\n[notify]\nenabled = true\n[general]\nlanguage = "en"\n',
+        )
         monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
         out = _run()
-        assert "mode=notify" in out
-        assert "cache 갱신 효과 없음" in out
+        assert "notify on" in out
+
+    def test_settings_row_shows_notify_off(self, cn_root, monkeypatch):
+        """notify.enabled=false → settings 행에 'notify off' 포함."""
+        _write_config(
+            cn_root,
+            '[wake]\narm = "manual"\n[notify]\nenabled = false\n[general]\nlanguage = "en"\n',
+        )
+        monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+        out = _run()
+        assert "notify off" in out
+
+    def test_session_box_shows_budget_when_charged(self, cn_root, monkeypatch):
+        """arm=manual, marker remaining=2, total=3 → '2/3' 포함."""
+        sid = "budget-sid"
+        sh = sanitize(sid)
+        now_ns = int(time.time() * 1_000_000_000)
+        Marker(
+            sid_hash=sh,
+            latest_fire=now_ns,
+            wake_count=1,
+            set_budget_remaining=2,
+            set_budget_total=3,
+        ).save()
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", sid)
+        _write_config(cn_root, '[wake]\narm = "manual"\n[general]\nlanguage = "en"\n')
+
+        out = _run()
+        assert "2/3" in out
+        assert "🔥" in out
+
+    def test_session_box_shows_none_when_no_budget(self, cn_root, monkeypatch):
+        """arm=manual, remaining=0 → status_none 문구 (set_label 'status_none') 표시."""
+        sid = "no-budget-sid"
+        sh = sanitize(sid)
+        Marker(
+            sid_hash=sh,
+            latest_fire=int(time.time() * 1_000_000_000),
+            wake_count=0,
+            set_budget_remaining=0,
+            set_budget_total=0,
+        ).save()
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", sid)
+        _write_config(cn_root, '[wake]\narm = "manual"\n[general]\nlanguage = "en"\n')
+
+        out = _run()
+        # set_label(en, "status_none") = "No set budget — charge with /cn:set N."
+        assert "/cn:set" in out
+
+    def test_no_budget_row_when_always(self, cn_root, monkeypatch):
+        """arm=always → set 예산 행 없음 (🔥 도 status_none 도 없음)."""
+        sid = "always-sid"
+        sh = sanitize(sid)
+        Marker(
+            sid_hash=sh,
+            latest_fire=int(time.time() * 1_000_000_000),
+            wake_count=1,
+            set_budget_remaining=5,
+            set_budget_total=5,
+        ).save()
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", sid)
+        _write_config(cn_root, '[wake]\narm = "always"\n[general]\nlanguage = "en"\n')
+
+        out = _run()
+        # always 모드 — budget 행 없음
+        # 주의: "🔥" 는 arm_label_i18n always 에도 없지만, set_budget 행이 없어야 함
+        # status_none 에는 "/cn:set" 가 포함되므로 그것으로 체크
+        assert "/cn:set" not in out
+        # set_budget 라벨 "set:" 행도 없어야 함 (always → no budget row)
+        # 단, "settings:" 행은 있으므로 "set:" substring 충돌 주의 → 전체 라벨 패턴
+        assert "No set budget" not in out
+
+
+# ---------- legacy config 경고 ----------
+
+class TestLegacyConfigWarning:
+    def test_legacy_config_warning(self, cn_root, monkeypatch):
+        """config.toml 에 mode = 'hybrid' → 출력에 'general.mode' 포함."""
+        _write_config(
+            cn_root,
+            '[general]\nmode = "hybrid"\nlanguage = "en"\n',
+        )
+        monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+        out = _run()
+        assert "general.mode" in out
+
+    def test_no_warning_with_new_keys(self, cn_root, monkeypatch):
+        """신 키 전용 config → legacy 경고 없음."""
+        _write_config(
+            cn_root,
+            '[wake]\narm = "manual"\n[notify]\nenabled = true\n[general]\nlanguage = "en"\n',
+        )
+        monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+        out = _run()
+        assert "general.mode" not in out
+        # legacy_warn 의 특징적 문구 없음
+        assert "v0.4.x" not in out
