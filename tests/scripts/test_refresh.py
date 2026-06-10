@@ -405,13 +405,18 @@ class TestErrorPaths:
         assert rc == 0
         assert capsys.readouterr().err == ""
 
-    def test_invalid_config_returns_0(
-        self, cn_root, session_env, fast_sleep, silent_notify
+    def test_config_value_error_returns_0(
+        self, cn_root, session_env, fast_sleep, silent_notify, capsys
     ):
+        """load_config 가 ValueError raise (grace_seconds 정수 변환 불가)
+        → refresh.py main() 의 except ValueError graceful-degradation 경로
+        (log + exit 0, ping X).
+        """
         cfg = cn_root / "config.toml"
-        cfg.write_text('[wake]\narm = "invalid"\n', encoding="utf-8")
+        cfg.write_text('[wake]\ngrace_seconds = "abc"\n', encoding="utf-8")
         rc = main()
         assert rc == 0  # 그냥 종료
+        assert PING_PREFIX not in capsys.readouterr().err
 
     def test_config_toml_auto_created_on_first_fire(
         self, cn_root, session_env, fast_sleep, silent_notify
