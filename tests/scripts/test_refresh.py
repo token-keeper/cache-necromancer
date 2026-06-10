@@ -694,6 +694,31 @@ class TestManualArm:
         assert main() == 0                      # 알림만
         assert any("/cn:set" in c["msg"] for c in silent_notify)
 
+    def test_two_wake_full_chain(
+        self, cn_root, session_env, fast_sleep, silent_notify, monkeypatch, capsys
+    ):
+        """spec §11 시나리오 2: 예산 2 충전 → wake (1/2) → wake (2/2) → 소진 후
+        다음 fire 는 wake 없음 (rc 0)."""
+        _write_config(cn_root, arm="manual", notify_enabled=False)
+        from lib.session_id import sanitize
+        m = Marker.load(sanitize(session_env))
+        m.set_budget_remaining = 2
+        m.set_budget_total = 2
+        m.save()
+
+        assert main() == 2                      # 1회차 wake
+        assert "(1/2)" in capsys.readouterr().err
+        assert _load_marker_for_sid(session_env).set_budget_remaining == 1
+
+        monkeypatch.setattr("sys.stdin", io.StringIO(""))  # stdin 재주입 (env fallback)
+        assert main() == 2                      # 2회차 wake
+        assert "(2/2)" in capsys.readouterr().err
+        assert _load_marker_for_sid(session_env).set_budget_remaining == 0
+
+        monkeypatch.setattr("sys.stdin", io.StringIO(""))
+        assert main() == 0                      # 예산 소진 → wake 없음
+        assert PING_PREFIX not in capsys.readouterr().err
+
     def test_grace_recheck_cancels_when_budget_zeroed(
         self, cn_root, session_env, silent_notify, monkeypatch, capsys
     ):

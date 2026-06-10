@@ -45,6 +45,14 @@ def _survive_time(config: Config, remaining: int) -> str:
     return at.strftime("%H:%M")
 
 
+def _no_live_timer(marker: Marker, config: Config) -> bool:
+    """pending refresh timer 부재 추정 — latest_fire 가 없거나 이미 소진(만료)됨."""
+    if marker.latest_fire == 0:
+        return True
+    interval_ns = config.refresh_interval_minutes * 60 * 1_000_000_000
+    return time.time_ns() > marker.latest_fire + interval_ns
+
+
 def main(argv: list[str]) -> int:
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
     if not sid:
@@ -78,7 +86,7 @@ def main(argv: list[str]) -> int:
             print(set_label(lang, "status_none"))
         return 0
 
-    if not arg.isdigit():                     # 음수/소수/문자 → usage
+    if not arg.isdecimal():                   # 음수/소수/문자/위첨자 → usage
         print(set_label(lang, "usage"))
         return 0
     n = int(arg)
@@ -108,7 +116,7 @@ def main(argv: list[str]) -> int:
         lines.append(set_label(lang, "capped_note").format(
             req=n, max=config.max_refresh_count))
     lines.append(set_label(lang, "session_only"))
-    if marker.latest_fire == 0:
+    if _no_live_timer(marker, config):
         lines.append(set_label(lang, "first_turn_note"))
     print("\n".join(lines))
     return 0

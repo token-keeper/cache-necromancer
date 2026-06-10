@@ -1,5 +1,6 @@
 """Tests for scripts/cn_set.py (spec §4)."""
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -93,7 +94,26 @@ class TestCharge:
         assert rc == 0
         assert "/cn:set" in capsys.readouterr().out   # status_none 안내
 
-    @pytest.mark.parametrize("bad", ["abc", "-1", "1.5"])
+    def test_stale_timer_shows_first_turn_note(self, cn_root, sid_env, capsys):
+        """notify-only fire 소진 후 — latest_fire 가 interval 만큼 지나 live timer
+        없음 → 충전해도 다음 진짜 입력 전까지 wake 없음 경고."""
+        _write_config(cn_root, interval=50)
+        m = Marker.load(sid_env)
+        m.latest_fire = time.time_ns() - (50 * 60 + 60) * 1_000_000_000  # interval + 1분 과거
+        m.save()
+        main(["2"])
+        assert "⚠️" in capsys.readouterr().out
+
+    def test_recent_fire_no_first_turn_note(self, cn_root, sid_env, capsys):
+        """latest_fire 가 최근 (pending timer 살아있음 추정) → 경고 없음."""
+        _write_config(cn_root, interval=50)
+        m = Marker.load(sid_env)
+        m.latest_fire = time.time_ns() - 60 * 1_000_000_000  # 1분 전
+        m.save()
+        main(["2"])
+        assert "⚠️" not in capsys.readouterr().out
+
+    @pytest.mark.parametrize("bad", ["abc", "-1", "1.5", "²"])
     def test_invalid_arg_shows_usage(self, cn_root, sid_env, capsys, bad):
         _write_config(cn_root)
         rc = main([bad])
