@@ -1,12 +1,5 @@
 """CLAUDE_PLUGIN_OPTION_MODE 는 v0.5.0 부터 무시된다 (codex 리뷰 F3)."""
-import sys
-from pathlib import Path
-
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
-
-from lib.config import ensure_config_file, load_config  # noqa: E402
+from lib.config import ensure_config_file, load_config
 
 
 def test_env_mode_is_ignored_on_create(tmp_path, monkeypatch):

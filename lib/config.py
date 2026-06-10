@@ -77,7 +77,12 @@ class Config:
     # ── 임시 호환 property (Task 9 에서 제거) ──
     @property
     def mode(self) -> str:
-        """scripts 호환용 역매핑: wake.arm + notify.enabled → legacy mode 문자열."""
+        """scripts 호환용 역매핑: wake.arm + notify.enabled → legacy mode 문자열.
+
+        엣지: arm=manual + enabled=False 는 v0.4.x 에 없던 신규 상태 —
+        "notify" 를 반환하지만 _do_notify 의 no-op 경로로 runtime 동작은 정확.
+        Task 9 에서 제거 예정.
+        """
         if self.wake.arm == "always":
             return "hybrid" if self.notify.enabled else "auto"
         return "notify"
@@ -206,7 +211,11 @@ def load_config(path: Path) -> Config:
     """TOML 파일에서 Config 로드. 없거나 syntax error 시 기본값.
 
     v0.5.0: mode enum 대신 2축(notify/wake). legacy 키는 자동 매핑.
-    invalid mode 는 ValueError 대신 stderr 경고 후 기본값 사용.
+    invalid mode/arm 은 stderr 경고 후 기본값 사용.
+
+    Raises:
+        ValueError: grace_seconds 가 정수 변환 불가한 값일 때 (예: "abc")
+            전파. 호출자 처리 — refresh.py/on_recap.py 가 catch.
     """
     if path.exists():
         try:
