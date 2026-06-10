@@ -113,3 +113,47 @@ class TestModeLabelI18n:
         out = mode_label_i18n("en", "weird", 60)
         assert "weird" in out
         assert "❓" in out
+
+
+class TestSetRecapLine:
+    def test_ko(self):
+        from lib.i18n import build_set_recap_line
+        s = build_set_recap_line("ko", 2, 21, 40)
+        assert "2" in s and "21시 40분" in s and s.startswith("🔥")
+
+    def test_all_languages_nonempty(self):
+        from lib.i18n import build_set_recap_line
+        for lang in ("ko", "en", "ja", "zh"):
+            assert build_set_recap_line(lang, 1, 9, 5)
+
+
+class TestArmLabel:
+    def test_manual_and_always_all_langs(self):
+        from lib.i18n import arm_label_i18n
+        for lang in ("ko", "en", "ja", "zh"):
+            assert "manual" in arm_label_i18n(lang, "manual", True, 60)
+            assert "always" in arm_label_i18n(lang, "always", False, 60)
+
+
+class TestSetLabels:
+    def test_known_keys_all_langs(self):
+        from lib.i18n import set_label
+        keys = ("charged", "capped_note", "session_only", "first_turn_note",
+                "cancelled", "status_armed", "status_none", "always_noop",
+                "usage")
+        for lang in ("ko", "en", "ja", "zh"):
+            for k in keys:
+                assert set_label(lang, k)
+
+    def test_unknown_key_falls_back(self):
+        from lib.i18n import set_label
+        assert set_label("ko", "no-such-key") == "no-such-key"
+
+
+class TestNewStatusLabels:
+    def test_arm_set_budget_legacy_warn_all_langs(self):
+        from lib.i18n import status_label
+        for lang in ("ko", "en", "ja", "zh"):
+            assert status_label(lang, "arm")
+            assert status_label(lang, "set_budget")
+            assert "{keys}" in status_label(lang, "legacy_warn")
