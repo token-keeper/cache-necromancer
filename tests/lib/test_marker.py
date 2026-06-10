@@ -305,3 +305,33 @@ class TestCleanupStale:
         (d / "fresh.json").write_text("{}", encoding="utf-8")
         deleted = cleanup_stale()
         assert deleted == 0
+
+
+class TestSetBudgetFields:
+    def test_new_fields_default_zero(self, cn_root):
+        m = Marker(sid_hash="abc123")
+        assert m.set_budget_remaining == 0
+        assert m.set_budget_total == 0
+        assert m.set_charged_at_ns == 0
+
+    def test_budget_fields_roundtrip(self, cn_root):
+        m = Marker(sid_hash="abc123", set_budget_remaining=2,
+                   set_budget_total=3, set_charged_at_ns=12345)
+        m.save()
+        loaded = Marker.load("abc123")
+        assert loaded.set_budget_remaining == 2
+        assert loaded.set_budget_total == 3
+        assert loaded.set_charged_at_ns == 12345
+
+    def test_load_old_marker_without_budget_fields(self, cn_root):
+        """구버전 marker 파일 (예산 필드 없음) → 기본값 0."""
+        marker_dir().mkdir(parents=True, exist_ok=True)
+        marker_path("oldsid").write_text(
+            json.dumps({"latest_fire": 7}),
+            encoding="utf-8",
+        )
+        loaded = Marker.load("oldsid")
+        assert loaded.latest_fire == 7
+        assert loaded.set_budget_remaining == 0
+        assert loaded.set_budget_total == 0
+        assert loaded.set_charged_at_ns == 0

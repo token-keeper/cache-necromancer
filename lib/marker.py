@@ -47,6 +47,9 @@ class Marker:
         진짜 input 일 때만 갱신. refresh.py 의 supersede 체크에서
         latest_fire 와 OR 로 묶임 — model 응답이 50분 넘게 진행되는 동안
         사용자가 활발히 활동하고 있는 경우에도 wake 가 안 일어나도록 보장.
+      - set_budget_remaining: 남은 wake 예산 (/cn:set 충전, wake 시 차감)
+      - set_budget_total: 직전 충전량 — ping (N/M) 의 M
+      - set_charged_at_ns: 마지막 충전 시각 (ns) — 복귀 판정 기준
     """
     sid_hash: str
     latest_fire: int = 0
@@ -56,6 +59,9 @@ class Marker:
     last_prompt: str = ""
     cwd: str = ""
     last_user_activity_at_ns: int = 0
+    set_budget_remaining: int = 0
+    set_budget_total: int = 0
+    set_charged_at_ns: int = 0
 
     @classmethod
     def load(cls, sid_hash: str) -> "Marker":
@@ -78,6 +84,9 @@ class Marker:
                 last_user_activity_at_ns=int(
                     data.get("last_user_activity_at_ns", 0)
                 ),
+                set_budget_remaining=int(data.get("set_budget_remaining", 0)),
+                set_budget_total=int(data.get("set_budget_total", 0)),
+                set_charged_at_ns=int(data.get("set_charged_at_ns", 0)),
             )
         except (json.JSONDecodeError, OSError, ValueError, TypeError):
             return cls(sid_hash=sid_hash, session_started_at=int(time.time()))
@@ -100,6 +109,9 @@ class Marker:
             "last_prompt": self.last_prompt,
             "cwd": self.cwd,
             "last_user_activity_at_ns": self.last_user_activity_at_ns,
+            "set_budget_remaining": self.set_budget_remaining,
+            "set_budget_total": self.set_budget_total,
+            "set_charged_at_ns": self.set_charged_at_ns,
         }
         tmp_path: str | None = None
         try:
