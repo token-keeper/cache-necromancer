@@ -402,6 +402,71 @@ class TestPolicyEdgeCases:
         assert loaded.last_prompt == "원래"
 
 
+def _run_with_stdin(monkeypatch, payload: dict) -> int:
+    import io
+    import json as _json
+    from scripts.on_user_prompt import main
+    monkeypatch.setattr("sys.stdin", io.StringIO(_json.dumps(payload)))
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    return main()
+
+
+class TestMetaCommandExemption:
+    """cn: 메타 명령은 activity 갱신 X (codex F1 가드 — spec §6)."""
+
+    @pytest.mark.parametrize("prompt", [
+        "/cn:set 2", "/cn:set", "/cn:status", "/cn:config",
+        "/cache-necromancer:cn:set 2", "/cache-necromancer:cn:status",
+    ])
+    def test_meta_command_does_not_touch_marker(self, cn_root, monkeypatch, prompt):
+        sid = "meta-sid"
+        sid_hash = sanitize(sid)
+        m = Marker(sid_hash=sid_hash, wake_count=3,
+                   last_user_activity_at_ns=111, set_budget_remaining=2,
+                   set_budget_total=2, set_charged_at_ns=100)
+        m.save()
+        _run_with_stdin(monkeypatch, {"session_id": sid, "prompt": prompt})
+        m2 = Marker.load(sid_hash)
+        assert m2.wake_count == 3
+        assert m2.last_user_activity_at_ns == 111
+        assert m2.set_budget_remaining == 2
+
+
+class TestBudgetZeroOnReturn:
+    """복귀 판정: 충전 후 wake ≥1회 이후의 진짜 prompt (spec §6 / Q15)."""
+
+    def _marker(self, sid_hash, *, charged_at_ns, last_wake_at):
+        return Marker(sid_hash=sid_hash, set_budget_remaining=1,
+                      set_budget_total=2, set_charged_at_ns=charged_at_ns,
+                      last_wake_at=last_wake_at)
+
+    def test_real_prompt_after_wake_zeroes_budget(self, cn_root, monkeypatch):
+        sid = "return-sid"
+        sid_hash = sanitize(sid)
+        # 충전(t=100s) 후 wake(t=200s) 가 일어난 상태
+        self._marker(sid_hash, charged_at_ns=100 * 10**9, last_wake_at=200).save()
+        _run_with_stdin(monkeypatch, {"session_id": sid, "prompt": "다녀왔어"})
+        assert Marker.load(sid_hash).set_budget_remaining == 0
+
+    def test_real_prompt_before_any_wake_keeps_budget(self, cn_root, monkeypatch):
+        sid = "stay-sid"
+        sid_hash = sanitize(sid)
+        # 충전(t=200s) 후 아직 wake 없음 (last_wake_at 은 충전 전 값)
+        self._marker(sid_hash, charged_at_ns=200 * 10**9, last_wake_at=100).save()
+        _run_with_stdin(monkeypatch, {"session_id": sid, "prompt": "하나만 더"})
+        assert Marker.load(sid_hash).set_budget_remaining == 1
+
+    def test_ping_does_not_zero_budget(self, cn_root, monkeypatch):
+        sid = "ping-sid"
+        sid_hash = sanitize(sid)
+        self._marker(sid_hash, charged_at_ns=100 * 10**9, last_wake_at=200).save()
+        _run_with_stdin(monkeypatch, {
+            "session_id": sid,
+            "prompt": "<task-notification>[cn:keepalive 12:00, 1/2] ...",
+        })
+        assert Marker.load(sid_hash).set_budget_remaining == 1
+
+
 class TestEdgeCases:
     def test_no_session_id_returns_silently(self, cn_root, monkeypatch):
         _set_stdin(monkeypatch, {})

@@ -5,6 +5,9 @@
   1. marker.wake_count = 0 reset (max_refresh_count 는 "한 번 자리비움" 상한)
   2. marker.last_prompt = truncate(stdin payload 의 prompt, 40자)
      /cn:status 에서 다른 세션 식별용. PRD §8 예외 (single-user alpha 가정).
+  3. cn: 메타 명령 (/cn:set·status·config 등) 은 activity 갱신 대상 아님 — 완전 skip.
+  4. 복귀 판정: 진짜 user input 이고 set_budget_remaining > 0 이며 충전 이후
+     wake 가 1회 이상 발생했으면 set_budget_remaining = 0 으로 소멸.
 
 자기간섭 방지: refresh.py 의 PING 및 Claude Code 의 background
 task-notification 도 user prompt 로 hook 에 도달함. system event 인
@@ -13,6 +16,7 @@ prompt 는 reset/last_prompt 갱신 skip — 진짜 user input 만 reset 한다.
 판별 기준 (실제 stdin 형식 디버그 확인):
   - `<task-notification>` 으로 시작 → background event (PING wrapper 포함)
   - PING_PREFIX (`[cn:keepalive`) 가 prompt 안에 substring 으로 존재 → wrapped PING
+  - `_META_COMMAND_PREFIXES` 로 시작 → cn: 메타 명령 (activity 갱신 skip)
 
 PRD 불변: 어떤 실패도 chat 동작 차단 X (best-effort, exit 0).
 """
@@ -36,6 +40,11 @@ PROMPT_MAX_CHARS = 40
 # refresh.py 의 PING_PREFIX 와 동일 — 자기간섭 방지용 식별자.
 # 둘 다 동시 변경 필요 (다음 lib 이동 시 통합 예정).
 PING_PREFIX = "[cn:keepalive"
+
+# cn: 메타 명령 (/cn:set·status·config) 은 "자리로 돌아옴" 신호가 아니다.
+# activity 갱신·복귀 판정에서 제외 — 제외하지 않으면 set 직후 pending refresh 가
+# supersede 되어 충전된 예산을 소비할 timer 가 사라진다 (spec §6, codex F1).
+_META_COMMAND_PREFIXES = ("/cn:", "/cache-necromancer:cn:")
 
 
 def _load_stdin_json() -> dict:
@@ -107,6 +116,9 @@ def main() -> int:
     if raw_prompt.startswith("<task-notification>") or PING_PREFIX in raw_prompt:
         return 0
 
+    if raw_prompt.strip().startswith(_META_COMMAND_PREFIXES):
+        return 0
+
     prompt_truncated = _truncate_prompt(raw_prompt)
     cwd_value = _sanitize_cwd(str(stdin.get("cwd", "")))
 
@@ -118,6 +130,11 @@ def main() -> int:
         # model 응답이 50분 넘게 진행되는 동안 사용자가 활발히 prompt 를 치고
         # 있어도 wake 가 안 일어나도록 보장.
         marker.last_user_activity_at_ns = time.time_ns()
+        # 복귀 판정 (spec §6): 충전 후 wake 가 1회 이상 일어난 뒤의 진짜 prompt.
+        # set 직후 아직 wake 없으면 (떠나기 전) 예산 유지 — "하나만 더" 함정 방지.
+        if (marker.set_budget_remaining > 0
+                and marker.last_wake_at * 1_000_000_000 > marker.set_charged_at_ns):
+            marker.set_budget_remaining = 0
         if prompt_truncated:
             marker.last_prompt = prompt_truncated
         if cwd_value:
