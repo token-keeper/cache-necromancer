@@ -100,3 +100,17 @@ class TestCharge:
         assert rc == 0
         assert "/cn:set" in capsys.readouterr().out
         assert Marker.load(sid_env).set_budget_remaining == 0
+
+    def test_save_oserror_no_success_message(self, cn_root, sid_env, capsys, monkeypatch):
+        """save 실패 (disk full 등) — traceback 없이 경고만, 성공 메시지 출력 금지."""
+        _write_config(cn_root)
+
+        def bad_save(self):
+            raise OSError("simulated")
+
+        monkeypatch.setattr(Marker, "save", bad_save)
+        rc = main(["2"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "⚠️" in out
+        assert "🔥" not in out

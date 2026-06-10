@@ -17,6 +17,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from lib.config import Config, ensure_config_file, load_config  # noqa: E402
 from lib.i18n import normalize_language, set_label  # noqa: E402
+from lib.logger import log_warn  # noqa: E402
 from lib.marker import Marker  # noqa: E402
 from lib.session_id import sanitize  # noqa: E402
 
@@ -24,6 +25,17 @@ from lib.session_id import sanitize  # noqa: E402
 def _resolve_root() -> Path:
     root = os.environ.get("CN_ROOT")
     return Path(root) if root else Path.home() / ".cache-necromancer"
+
+
+def _save_or_fail(marker: Marker) -> bool:
+    """save 실패 시 경고 출력 + False (성공 메시지 출력 금지 — 미반영 상태)."""
+    try:
+        marker.save()
+        return True
+    except OSError as e:
+        log_warn(f"[cn_set] marker save 실패: {type(e).__name__}: {e}")
+        print("⚠️  marker 저장 실패 — set 이 적용되지 않았습니다. 다시 시도하세요.")
+        return False
 
 
 def _survive_time(config: Config, remaining: int) -> str:
@@ -78,7 +90,8 @@ def main(argv: list[str]) -> int:
     if n == 0:
         marker.set_budget_remaining = 0
         marker.set_budget_total = 0
-        marker.save()
+        if not _save_or_fail(marker):
+            return 0
         print(set_label(lang, "cancelled"))
         return 0
 
@@ -86,7 +99,8 @@ def main(argv: list[str]) -> int:
     marker.set_budget_remaining = charged
     marker.set_budget_total = charged
     marker.set_charged_at_ns = time.time_ns()
-    marker.save()
+    if not _save_or_fail(marker):
+        return 0
 
     lines = [set_label(lang, "charged").format(
         n=charged, time=_survive_time(config, charged))]
