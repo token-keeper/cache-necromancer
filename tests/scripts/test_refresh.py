@@ -659,7 +659,9 @@ class TestManualArm:
     def test_budget_charged_during_sleep_is_consumed(
         self, cn_root, session_env, silent_notify, monkeypatch, capsys
     ):
-        """sleep 시작 시 예산 0 → sleep 중 /cn:set 충전 → wake (codex F1)."""
+        """sleep 시작 시 예산 0 (테스트가 미설정 — 초기값) → sleep 중 /cn:set
+        충전 → wake (codex F1). sleep patch 가 /cn:set 충전을 시뮬레이션.
+        """
         _write_config(cn_root, arm="manual", notify_enabled=False)
         from lib.session_id import sanitize
         sid_hash = sanitize(session_env)

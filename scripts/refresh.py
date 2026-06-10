@@ -187,7 +187,8 @@ def _do_wake(marker: Marker, sid_hash: str, config: Config) -> int:
     """
     marker.wake_count += 1
     marker.last_wake_at = int(time.time())
-    if marker.set_budget_remaining > 0:
+    # always 모드는 잔존 예산을 소비/표시하지 않음 (manual→always 전환 잔재 보호)
+    if config.wake.arm != "always" and marker.set_budget_remaining > 0:
         consumed = marker.set_budget_total - marker.set_budget_remaining + 1
         marker.set_budget_remaining -= 1
         nm = f"{consumed}/{marker.set_budget_total}"
