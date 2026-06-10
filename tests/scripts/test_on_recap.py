@@ -267,3 +267,61 @@ def test_systemmessage_is_valid_json(session_stdin, temp_root, capsys):
     parsed = json.loads(raw)
     assert "systemMessage" in parsed
 
+
+# ---- set 예산 잔량 2줄째 (spec §8) ----
+
+class TestSetBudgetSecondLine:
+    """set_budget_remaining > 0 이면 recap 2줄째에 최대 생존 시한 표시."""
+
+    def _charge(self, cn_root, sid: str, remaining: int, total: int) -> None:
+        """marker 파일에 set 예산 기록 (테스트 픽스처 헬퍼)."""
+        from lib.marker import Marker
+        from lib.session_id import sanitize
+        m = Marker.load(sanitize(sid))
+        m.set_budget_remaining = remaining
+        m.set_budget_total = total
+        m.save()
+
+    def _run(self, monkeypatch, cn_root, sid: str) -> None:
+        """stdin 에 session_id 주입 후 main() 실행."""
+        import io
+        monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": sid})))
+        # config.toml 이 없으면 auto-create (defaults: interval=50, ttl=60, language=en)
+        from scripts.on_recap import main
+        main()
+
+    @freeze_time("2026-06-10 19:00:00")
+    def test_two_lines_when_budget_remaining(self, cn_root, monkeypatch, capsys):
+        """set_budget_remaining=2, interval=50, ttl=60 → 생존 시한 21:40 (2줄)."""
+        sid = "recap-sid"
+        self._charge(cn_root, sid, remaining=2, total=2)
+        # config: interval=50, ttl=60, language=en (default)
+        (cn_root / "config.toml").write_text(
+            '[general]\nmode = "auto"\nrefresh_interval_minutes = 50\n'
+            'cache_ttl_minutes = 60\nlanguage = "en"\n',
+            encoding="utf-8",
+        )
+        self._run(monkeypatch, cn_root, sid)
+        out = json.loads(capsys.readouterr().out)
+        lines = out["systemMessage"].split("\n")
+        # 2줄 구성 검증
+        assert len(lines) == 2
+        assert lines[0].startswith("🪦")
+        # 생존 시한 = 19:00 + 2×50m + 60m = 21:40
+        assert lines[1].startswith("🔥")
+        assert "21:40" in lines[1]
+
+    @freeze_time("2026-06-10 19:00:00")
+    def test_one_line_when_no_budget(self, cn_root, monkeypatch, capsys):
+        """set_budget_remaining=0 → 기존 1줄만 출력."""
+        sid = "recap-sid2"
+        # marker 에 예산 없음 (0이 기본값이므로 파일 생성 불필요)
+        (cn_root / "config.toml").write_text(
+            '[general]\nmode = "auto"\ncache_ttl_minutes = 60\nlanguage = "en"\n',
+            encoding="utf-8",
+        )
+        self._run(monkeypatch, cn_root, sid)
+        out = json.loads(capsys.readouterr().out)
+        assert "\n" not in out["systemMessage"]
+
