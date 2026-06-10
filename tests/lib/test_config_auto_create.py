@@ -9,13 +9,16 @@ def test_creates_default_when_missing(tmp_path):
     assert path.exists()
     content = path.read_text()
     assert "[general]" in content
-    assert "mode" in content
+    assert "mode" not in content          # v0.5.0: legacy 키 미시드
+    assert 'arm = "manual"' in content    # 신규 설치 기본
+    assert "enabled = true" in content    # notify 기본 on
+    assert "grace_seconds = 60" in content
     assert "refresh_interval_minutes = 50" in content
     assert "cache_ttl_minutes = 60" in content
     assert "max_refresh_count = 10" in content
     assert 'language = "en"' in content
     assert "[notify]" in content
-    assert "[refresh]" in content
+    assert "[wake]" in content
     # v0.3.0: [advanced] 섹션 없음
     assert "[advanced]" not in content
 
@@ -28,28 +31,14 @@ def test_does_not_overwrite_existing(tmp_path):
     assert path.read_text() == "# my custom config\nmode = \"auto\"\n"
 
 
-def test_uses_env_mode_in_default_template(tmp_path, monkeypatch):
-    """첫 생성 시 환경변수 mode 값을 템플릿에 반영."""
+def test_env_mode_is_ignored_on_create(tmp_path, monkeypatch):
+    """v0.5.0: CLAUDE_PLUGIN_OPTION_MODE 는 무시 — 신규 설치 항상 manual."""
     monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_MODE", "notify")
     path = tmp_path / "config.toml"
     ensure_config_file(path)
     content = path.read_text()
-    assert 'mode = "notify"' in content
-
-
-def test_default_template_when_env_missing(tmp_path, monkeypatch):
-    monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_MODE", raising=False)
-    path = tmp_path / "config.toml"
-    ensure_config_file(path)
-    assert 'mode = "hybrid"' in path.read_text()
-
-
-def test_invalid_env_mode_falls_back_to_default(tmp_path, monkeypatch):
-    """잘못된 환경변수 값은 템플릿 작성 시 무시 (load_config 가 별도로 raise)."""
-    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_MODE", "garbage")
-    path = tmp_path / "config.toml"
-    ensure_config_file(path)
-    assert 'mode = "hybrid"' in path.read_text()
+    assert "mode" not in content          # legacy 키를 시드하지 않음
+    assert 'arm = "manual"' in content    # 신규 설치 기본 = manual
 
 
 def test_created_file_has_0600_permission(tmp_path):

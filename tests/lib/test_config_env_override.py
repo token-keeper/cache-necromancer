@@ -1,29 +1,20 @@
-"""Verify CLAUDE_PLUGIN_OPTION_MODE does NOT override config.toml at runtime.
+"""CLAUDE_PLUGIN_OPTION_MODE 는 v0.5.0 부터 무시된다 (codex 리뷰 F3)."""
+import sys
+from pathlib import Path
 
-PLAN decision D3 (revised): env var is only consulted at first-time template
-creation by ``ensure_config_file``. ``load_config`` reads file + default only.
-"""
-from lib.config import load_config
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
-
-def test_env_var_does_not_override_default(monkeypatch, tmp_path):
-    """Env var set, file missing → default hybrid (env ignored at runtime)."""
-    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_MODE", "notify")
-    c = load_config(tmp_path / "missing.toml")
-    assert c.mode == "hybrid"
+from lib.config import ensure_config_file, load_config  # noqa: E402
 
 
-def test_env_var_does_not_override_file(monkeypatch, tmp_path):
-    """Env var set, file has different mode → file wins."""
-    p = tmp_path / "c.toml"
-    p.write_text('[general]\nmode = "auto"\n')
-    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_MODE", "notify")
-    c = load_config(p)
-    assert c.mode == "auto"
-
-
-def test_invalid_env_var_does_not_raise(monkeypatch, tmp_path):
-    """Garbage env value does not cause load_config to raise (env is ignored)."""
-    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_MODE", "garbage")
-    c = load_config(tmp_path / "missing.toml")
-    assert c.mode == "hybrid"
+def test_env_mode_is_ignored_on_create(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_MODE", "hybrid")
+    p = tmp_path / "config.toml"
+    ensure_config_file(p)
+    text = p.read_text()
+    assert "mode" not in text          # legacy 키를 시드하지 않음
+    assert 'arm = "manual"' in text    # 신규 설치 기본 = manual
+    cfg = load_config(p)
+    assert cfg.wake.arm == "manual"

@@ -418,7 +418,8 @@ class TestErrorPaths:
         assert cfg.exists()
         content = cfg.read_text()
         assert "[general]" in content
-        assert "mode" in content
+        # v0.5.0: legacy mode 키 대신 [wake] arm 으로 교체
+        assert "arm" in content
 
 
 class TestSessionIdResolution:

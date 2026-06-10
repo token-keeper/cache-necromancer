@@ -1,53 +1,106 @@
-"""TOML config 로드 (v0.3.0).
+"""TOML config 로드 (v0.5.0 — 2축: notify + wake).
 
-기본값은 dataclass field 에 명시. 누락된 키는 기본값 유지.
+v0.5.0 부터 mode enum (notify/auto/hybrid) 대신 두 독립 축으로 동작:
+  - [notify] enabled: 만료 임박 알림 on/off
+  - [wake] arm ("manual"|"always"), grace_seconds: 소생 정책
+
+v0.4.x 이하 legacy 키 (general.mode, notify.system_notification,
+refresh.hybrid_wait_seconds) 는 로드 시 자동 매핑되므로 기존 설정 파일 그대로 동작.
+신 키가 있으면 legacy 보다 우선.
+
 v0.2.x 의 폐기 옵션 (terminal_bell, imminent_threshold_minutes,
 refresh.prompt, refresh.fire_timeout_seconds, [advanced] 전체) 은
 detect 시 stderr 경고만 출력하고 무시.
+
+임시 호환 property (Task 9 에서 제거):
+  - Config.mode: wake.arm + notify.enabled → legacy mode 문자열 역매핑
+  - Config.refresh: RefreshConfig(hybrid_wait_seconds=wake.grace_seconds)
+  - NotifyConfig.system_notification: notify.enabled alias
 """
 import os
 import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
 
-VALID_MODES: tuple[str, ...] = ("notify", "auto", "hybrid")
+VALID_ARMS: tuple[str, ...] = ("manual", "always")
+_LEGACY_MODES: tuple[str, ...] = ("notify", "auto", "hybrid")
 
-_KNOWN_REFRESH_KEYS = {"hybrid_wait_seconds"}
-_KNOWN_NOTIFY_KEYS = {"system_notification"}
+# v0.4.x 이하 legacy 키 — 로드 시 매핑, /cn:status 경고용
+_LEGACY_GENERAL = {"mode"}
+_LEGACY_NOTIFY = {"system_notification"}
+_LEGACY_REFRESH = {"hybrid_wait_seconds"}
+
 _DEPRECATED_REFRESH = {"prompt", "fire_timeout_seconds"}
 _DEPRECATED_NOTIFY = {"terminal_bell", "imminent_threshold_minutes"}
 
 
 @dataclass(frozen=True)
-class RefreshConfig:
-    hybrid_wait_seconds: int = 60
+class WakeConfig:
+    """소생 정책 설정."""
+
+    arm: str = "manual"
+    grace_seconds: int = 60
 
 
 @dataclass(frozen=True)
 class NotifyConfig:
-    system_notification: bool = True
+    """알림 설정."""
+
+    enabled: bool = True
+
+    # ── 임시 호환 property (Task 9 에서 제거) ──
+    @property
+    def system_notification(self) -> bool:
+        """scripts/refresh.py 호환용 alias → self.enabled."""
+        return self.enabled
+
+
+@dataclass(frozen=True)
+class RefreshConfig:
+    """임시 호환 dataclass (Task 9 제거): config.refresh.hybrid_wait_seconds."""
+
+    hybrid_wait_seconds: int = 60
 
 
 @dataclass(frozen=True)
 class Config:
-    mode: Literal["notify", "auto", "hybrid"] = "hybrid"
+    """플러그인 전역 설정."""
+
     refresh_interval_minutes: int = 50  # v0.2.x 55 → 50 (1h cache + 안전 마진)
-    cache_ttl_minutes: int = 60  # Anthropic prompt cache TTL (1h ext cache 기본)
+    cache_ttl_minutes: int = 60         # Anthropic prompt cache TTL (1h ext cache 기본)
     max_refresh_count: int = 10
-    language: str = "en"  # ko | en | ja | zh (validate 는 lib.i18n.normalize_language)
-    refresh: RefreshConfig = field(default_factory=RefreshConfig)
+    language: str = "en"               # ko | en | ja | zh
+    wake: WakeConfig = field(default_factory=WakeConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
 
+    # ── 임시 호환 property (Task 9 에서 제거) ──
+    @property
+    def mode(self) -> str:
+        """scripts 호환용 역매핑: wake.arm + notify.enabled → legacy mode 문자열."""
+        if self.wake.arm == "always":
+            return "hybrid" if self.notify.enabled else "auto"
+        return "notify"
 
-def _env_mode_override() -> str | None:
-    """Claude Code userConfig 가 주입하는 환경변수.
+    @property
+    def refresh(self) -> RefreshConfig:
+        """scripts 호환용: config.refresh.hybrid_wait_seconds → wake.grace_seconds."""
+        return RefreshConfig(hybrid_wait_seconds=self.wake.grace_seconds)
 
-    빈 문자열은 무시 (= override 없음). 잘못된 값은 호출자가 검증.
-    """
-    v = os.environ.get("CLAUDE_PLUGIN_OPTION_MODE")
-    return v if v else None
+
+def detect_legacy_keys(data: dict) -> list[str]:
+    """v0.4.x 이하 legacy 키 목록 반환 (매핑은 되지만 /cn:status 에서 경고)."""
+    found: list[str] = []
+    for key in data.get("general", {}):
+        if key in _LEGACY_GENERAL:
+            found.append(f"general.{key}")
+    for key in data.get("notify", {}):
+        if key in _LEGACY_NOTIFY:
+            found.append(f"notify.{key}")
+    for key in data.get("refresh", {}):
+        if key in _LEGACY_REFRESH:
+            found.append(f"refresh.{key}")
+    return found
 
 
 def detect_deprecated_keys(data: dict) -> list[str]:
@@ -80,6 +133,58 @@ def _warn_deprecated(data: dict) -> None:
         )
 
 
+def _resolve_axes(data: dict) -> tuple[WakeConfig, NotifyConfig]:
+    """신 키 우선, 없으면 legacy 매핑 (spec §3.4), 그것도 없으면 기본값.
+
+    legacy 매핑 규칙:
+      - mode=hybrid  → arm=always, enabled=True  (system_notification 반영)
+      - mode=auto    → arm=always, enabled=False  (알림 없이 즉시 wake)
+      - mode=notify  → arm=manual, enabled=True   (system_notification 반영)
+      - hybrid_wait_seconds → grace_seconds
+      - system_notification (hybrid/notify 에서만) → enabled
+    """
+    general = data.get("general", {})
+    wake_data = data.get("wake", {})
+    notify_data = data.get("notify", {})
+
+    # legacy mode 해석
+    legacy_arm: str | None = None
+    legacy_enabled: bool | None = None
+    mode = general.get("mode")
+    if mode is not None:
+        if mode in _LEGACY_MODES:
+            legacy_arm = "always" if mode in ("hybrid", "auto") else "manual"
+            # 구 auto 는 system_notification 과 무관하게 알림 없이 즉시 wake
+            legacy_enabled = mode != "auto"
+        else:
+            print(
+                f"[cn:warn] invalid legacy mode: {mode!r} — 무시 (기본값 사용)",
+                file=sys.stderr,
+            )
+    # system_notification: auto 에서는 이미 False 로 고정 — 덮어쓰지 않음
+    if legacy_enabled is not False and "system_notification" in notify_data:
+        legacy_enabled = bool(notify_data["system_notification"])
+    legacy_grace = data.get("refresh", {}).get("hybrid_wait_seconds")
+
+    # 신 키 우선
+    arm = wake_data.get("arm", legacy_arm if legacy_arm is not None else "manual")
+    if arm not in VALID_ARMS:
+        print(
+            f"[cn:warn] invalid wake.arm: {arm!r} — fallback to 'manual'",
+            file=sys.stderr,
+        )
+        arm = "manual"
+    grace = wake_data.get(
+        "grace_seconds", legacy_grace if legacy_grace is not None else 60
+    )
+    enabled = notify_data.get(
+        "enabled", legacy_enabled if legacy_enabled is not None else True
+    )
+    return WakeConfig(arm=arm, grace_seconds=int(grace)), NotifyConfig(
+        enabled=bool(enabled)
+    )
+
+
 def parse_config_file(path: Path) -> tuple[dict, str | None]:
     """TOML 파일 raw parse. (data, error_msg) 반환. 파일 없으면 ({}, None).
 
@@ -100,8 +205,8 @@ def parse_config_file(path: Path) -> tuple[dict, str | None]:
 def load_config(path: Path) -> Config:
     """TOML 파일에서 Config 로드. 없거나 syntax error 시 기본값.
 
-    Raises:
-        ValueError: ``mode`` 가 유효하지 않은 경우.
+    v0.5.0: mode enum 대신 2축(notify/wake). legacy 키는 자동 매핑.
+    invalid mode 는 ValueError 대신 stderr 경고 후 기본값 사용.
     """
     if path.exists():
         try:
@@ -119,62 +224,46 @@ def load_config(path: Path) -> Config:
     _warn_deprecated(data)
 
     general = data.get("general", {})
-    mode = general.get("mode", "hybrid")
-    if mode not in VALID_MODES:
-        raise ValueError(
-            f"invalid mode: {mode}. Must be one of {VALID_MODES}"
-        )
-
-    # 알려진 옵션만 추출 (폐기 옵션은 무시)
-    refresh_data = {
-        k: v for k, v in data.get("refresh", {}).items() if k in _KNOWN_REFRESH_KEYS
-    }
-    notify_data = {
-        k: v for k, v in data.get("notify", {}).items() if k in _KNOWN_NOTIFY_KEYS
-    }
-
+    wake, notify = _resolve_axes(data)
     return Config(
-        mode=mode,
         refresh_interval_minutes=general.get("refresh_interval_minutes", 50),
         cache_ttl_minutes=general.get("cache_ttl_minutes", 60),
         max_refresh_count=general.get("max_refresh_count", 10),
         language=general.get("language", "en"),
-        refresh=RefreshConfig(**refresh_data),
-        notify=NotifyConfig(**notify_data),
+        wake=wake,
+        notify=notify,
     )
 
 
-_DEFAULT_TEMPLATE = """# cache-necromancer 설정 (v0.3.0)
+_DEFAULT_TEMPLATE = """# cache-necromancer 설정 (v0.5.0)
 # 이 파일은 첫 hook fire 시 자동 생성됨.
 # 수정 후 새 chat 세션 필요 (Claude Code 는 settings hot-reload 안 함).
 
 [general]
-mode = "{mode}"                       # notify | auto | hybrid
-refresh_interval_minutes = 50         # cache TTL 만료 직전 wake 주기 (1h cache 기준)
-cache_ttl_minutes = 60                # Anthropic prompt cache TTL (recap 메시지 표시용)
-max_refresh_count = 10                # 한 세션 최대 wake/notify 횟수
-language = "en"                       # recap 메시지 언어: ko | en | ja | zh
+refresh_interval_minutes = 50         # cache TTL 만료 직전 알림/wake 까지의 sleep
+cache_ttl_minutes = 60                # Anthropic prompt cache TTL (recap 표시용)
+max_refresh_count = 10                # wake 상한 (always 연쇄 / set 1회 충전 상한)
+language = "en"                       # 메시지 언어: ko | en | ja | zh
 
 [notify]
-system_notification = true            # macOS osascript 알림
+enabled = true                        # 만료 임박 macOS 알림
 
-[refresh]
-hybrid_wait_seconds = 60              # hybrid 모드 알림 후 사용자 input 대기
+[wake]
+arm = "manual"                        # manual = /cn:set 시에만 소생 / always = 매 turn 자동
+grace_seconds = 60                    # 알림 후 wake 까지 대기 (notify.enabled=true 일 때)
 """
 
 
 def ensure_config_file(path: Path) -> None:
     """파일이 없으면 기본 템플릿 작성. 있으면 그대로 둔다 (사용자 편집 보존).
 
-    템플릿의 [general].mode 는 환경변수 ``CLAUDE_PLUGIN_OPTION_MODE`` 가
-    valid mode 일 때만 그 값으로, 아니면 ``hybrid`` 로 채운다.
+    v0.5.0: CLAUDE_PLUGIN_OPTION_MODE 시드 제거 — 신규 설치는 항상 manual 기본
+    (codex 리뷰 F3: legacy hybrid 시드 → arm=always 격상 사고 방지).
     """
     if path.exists():
         return
-    env_mode = _env_mode_override()
-    mode = env_mode if env_mode in VALID_MODES else "hybrid"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_DEFAULT_TEMPLATE.format(mode=mode), encoding="utf-8")
+    path.write_text(_DEFAULT_TEMPLATE, encoding="utf-8")
     try:
         os.chmod(path, 0o600)
     except OSError:

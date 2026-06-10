@@ -1,4 +1,4 @@
-"""Tests for lib.config (v0.3.0 — 옵션 5개 + deprecated detect)."""
+"""Tests for lib.config (v0.5.0 — 2축(notify/wake) + legacy 매핑)."""
 import pytest
 
 from lib.config import Config, load_config
@@ -7,7 +7,8 @@ from lib.config import Config, load_config
 def test_load_defaults_when_file_missing(tmp_path):
     """존재하지 않는 path → 기본값 Config."""
     c = load_config(tmp_path / "nonexistent.toml")
-    assert c.mode == "hybrid"
+    # v0.5.0: 기본 arm=manual → compat mode property = "notify"
+    assert c.mode == "notify"
     assert c.refresh_interval_minutes == 50  # v0.2.x 55 → 50
     assert c.cache_ttl_minutes == 60  # Anthropic 1h ext cache 기본
     assert c.max_refresh_count == 10
@@ -51,11 +52,14 @@ hybrid_wait_seconds = 90
     assert c.refresh.hybrid_wait_seconds == 90
 
 
-def test_invalid_mode_raises(tmp_path):
+def test_invalid_mode_warns_and_returns_default(tmp_path, capsys):
+    """v0.5.0: invalid mode → ValueError 아닌 stderr 경고 + 기본값 반환."""
     p = tmp_path / "c.toml"
     p.write_text('[general]\nmode = "invalid"\n')
-    with pytest.raises(ValueError, match="mode"):
-        load_config(p)
+    cfg = load_config(p)
+    assert cfg.wake.arm == "manual"
+    err = capsys.readouterr().err
+    assert "invalid" in err
 
 
 def test_empty_file_uses_defaults(tmp_path):
@@ -163,3 +167,115 @@ def test_config_cache_ttl_loaded_from_toml(tmp_path):
     p.write_text('[general]\nmode = "auto"\ncache_ttl_minutes = 5\n')
     c = load_config(p)
     assert c.cache_ttl_minutes == 5
+
+
+class TestWakeNotifyAxes:
+    def test_defaults_are_manual_notify_on(self, tmp_path):
+        cfg = load_config(tmp_path / "none.toml")
+        assert cfg.wake.arm == "manual"
+        assert cfg.wake.grace_seconds == 60
+        assert cfg.notify.enabled is True
+
+    def test_new_keys_loaded(self, tmp_path):
+        p = tmp_path / "c.toml"
+        p.write_text('[wake]\narm = "always"\ngrace_seconds = 30\n'
+                     "[notify]\nenabled = false\n")
+        cfg = load_config(p)
+        assert cfg.wake.arm == "always"
+        assert cfg.wake.grace_seconds == 30
+        assert cfg.notify.enabled is False
+
+    def test_invalid_arm_falls_back_to_manual(self, tmp_path, capsys):
+        p = tmp_path / "c.toml"
+        p.write_text('[wake]\narm = "banana"\n')
+        cfg = load_config(p)
+        assert cfg.wake.arm == "manual"
+        assert "banana" in capsys.readouterr().err
+
+
+class TestLegacyModeMapping:
+    def _load(self, tmp_path, body):
+        p = tmp_path / "c.toml"
+        p.write_text(body)
+        return load_config(p)
+
+    def test_hybrid_maps_to_always_notify_on(self, tmp_path):
+        cfg = self._load(tmp_path, '[general]\nmode = "hybrid"\n')
+        assert cfg.wake.arm == "always"
+        assert cfg.notify.enabled is True
+
+    def test_auto_maps_to_always_notify_off(self, tmp_path):
+        # 구 auto 는 system_notification=true 여도 알림 없이 즉시 wake 였음
+        cfg = self._load(
+            tmp_path,
+            '[general]\nmode = "auto"\n[notify]\nsystem_notification = true\n',
+        )
+        assert cfg.wake.arm == "always"
+        assert cfg.notify.enabled is False
+
+    def test_notify_maps_to_manual_notify_on(self, tmp_path):
+        cfg = self._load(tmp_path, '[general]\nmode = "notify"\n')
+        assert cfg.wake.arm == "manual"
+        assert cfg.notify.enabled is True
+
+    def test_system_notification_false_maps_to_disabled(self, tmp_path):
+        cfg = self._load(
+            tmp_path,
+            '[general]\nmode = "hybrid"\n[notify]\nsystem_notification = false\n',
+        )
+        assert cfg.notify.enabled is False
+
+    def test_hybrid_wait_seconds_maps_to_grace(self, tmp_path):
+        cfg = self._load(
+            tmp_path,
+            '[general]\nmode = "hybrid"\n[refresh]\nhybrid_wait_seconds = 90\n',
+        )
+        assert cfg.wake.grace_seconds == 90
+
+    def test_new_keys_win_over_legacy(self, tmp_path):
+        cfg = self._load(
+            tmp_path,
+            '[general]\nmode = "hybrid"\n[wake]\narm = "manual"\n',
+        )
+        assert cfg.wake.arm == "manual"
+
+    def test_invalid_legacy_mode_warns_and_uses_default(self, tmp_path, capsys):
+        cfg = self._load(tmp_path, '[general]\nmode = "banana"\n')
+        assert cfg.wake.arm == "manual"
+        assert "banana" in capsys.readouterr().err
+
+    def test_detect_legacy_keys(self):
+        from lib.config import detect_legacy_keys
+        data = {
+            "general": {"mode": "hybrid"},
+            "notify": {"system_notification": True},
+            "refresh": {"hybrid_wait_seconds": 60},
+        }
+        found = detect_legacy_keys(data)
+        assert "general.mode" in found
+        assert "notify.system_notification" in found
+        assert "refresh.hybrid_wait_seconds" in found
+        assert detect_legacy_keys({}) == []
+
+
+class TestTransitionalCompat:
+    """Task 9 에서 제거될 임시 호환 property."""
+
+    def test_mode_property_roundtrip(self, tmp_path):
+        p = tmp_path / "c.toml"
+        p.write_text('[general]\nmode = "auto"\n')
+        cfg = load_config(p)
+        assert cfg.mode == "auto"
+
+    def test_refresh_property_grace(self, tmp_path):
+        p = tmp_path / "c.toml"
+        p.write_text("[wake]\ngrace_seconds = 45\n")
+        cfg = load_config(p)
+        assert cfg.refresh.hybrid_wait_seconds == 45
+
+    def test_system_notification_compat_property(self, tmp_path):
+        """NotifyConfig.system_notification → self.enabled (Task 9 제거)."""
+        p = tmp_path / "c.toml"
+        p.write_text("[notify]\nenabled = false\n")
+        cfg = load_config(p)
+        assert cfg.notify.system_notification is False
