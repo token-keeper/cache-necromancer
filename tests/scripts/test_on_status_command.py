@@ -95,6 +95,11 @@ class TestRoute:
     def test_empty_returns_none(self):
         assert _route({}) is None
 
+    def test_other_command_name_with_poisoned_prompt_not_routed(self):
+        """command_name 이 있으면 그것만으로 판정 — prompt 에 /cn:status 가
+        들어가 있어도 fallback 으로 빠지면 안 됨."""
+        assert _route({"command_name": "other:cmd", "prompt": "/cn:status"}) is None
+
     def test_cn_settings_not_routed_to_cn_set(self):
         """토큰 일치 — '/cn:settings ...' 는 cn:set 으로 라우팅하면 안 됨."""
         assert _route({"prompt": "/cn:settings foo"}) is None
@@ -117,28 +122,6 @@ class TestRoute:
 # ──────────────────────────────────────────────
 # main() 통합 — subprocess 호출 검증
 # ──────────────────────────────────────────────
-
-def _run_main(stdin_data: dict, monkeypatch) -> tuple[int, str]:
-    """on_status_command.main() 을 stdin mock + subprocess mock 으로 실행."""
-    import io
-    from contextlib import redirect_stdout
-
-    import scripts.on_status_command as mod
-
-    fake_result = MagicMock()
-    fake_result.stdout = "ok"
-    fake_result.returncode = 0
-    fake_result.stderr = ""
-
-    buf = io.StringIO()
-    with patch.object(mod, "subprocess") as mock_sub, redirect_stdout(buf):
-        mock_sub.run.return_value = fake_result
-        mock_sub.TimeoutExpired = __import__("subprocess").TimeoutExpired
-        with patch("sys.stdin", io.StringIO(json.dumps(stdin_data))):
-            rc = mod.main()
-
-    return rc, buf.getvalue(), mock_sub
-
 
 def _run_main_capturing(stdin_data: dict, monkeypatch):
     """(rc, stdout_str, mock_subprocess) 반환."""
