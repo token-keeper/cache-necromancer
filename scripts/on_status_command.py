@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""UserPromptExpansion hook — `/cn:status` 슬래시 명령을 LLM turn 없이 처리.
+"""UserPromptExpansion hook — `/cn:status` / `/cn:set` 슬래시 명령을 LLM turn 없이 처리.
 
-사용자가 `/cn:status` (또는 `/cache-necromancer:cn:status`) 를 입력하면:
-  1. command_name 매칭으로 슬래시 명령 식별
-  2. cn_status.py 를 subprocess 로 호출 (session_id 환경변수 전파)
-  3. 출력 표를 reason 으로 반환 + decision="block"
+사용자가 `/cn:status` 또는 `/cn:set N` (또는 namespace 전체 형식) 을 입력하면:
+  1. command_name 또는 prompt 로 슬래시 명령 식별 (_route)
+  2. 해당 backend script 를 subprocess 로 호출 (session_id 환경변수 전파)
+  3. 출력을 reason 으로 반환 + decision="block"
   4. → Claude Code 가 reason 을 채팅창에 표시. bash dispatcher / LLM turn 모두 미발생.
 
-`/cn:status` 외 다른 입력은 통과 (sys.exit(0) without JSON).
+매칭되지 않는 입력은 통과 (sys.exit(0) without JSON).
 """
 import json
 import os
@@ -23,20 +23,49 @@ if str(_PROJECT_ROOT) not in sys.path:
 from lib.install_version import is_latest_install  # noqa: E402
 
 _CN_STATUS = _HERE / "cn_status.py"
+_CN_SET = _HERE / "cn_set.py"
 
-# 매칭 대상 — short + full namespace 모두 지원
-_TARGETS = {"/cn:status", "/cache-necromancer:cn:status"}
+_STATUS_NAMES = {"cn:status", "cache-necromancer:cn:status"}
+_SET_NAMES = {"cn:set", "cache-necromancer:cn:set"}
 
 
-def _matches(data: dict) -> bool:
+def _route(data: dict) -> "tuple[Path, list[str]] | None":
+    """매칭되는 (script, argv) 반환. 아니면 None.
+
+    command_name 이 있으면 그것만으로 명령 판정 (prompt prefix match 로
+    다른 slash command 가 우연히 매칭되는 것 방지).
+
+    cn:set 의 payload shape 는 두 가지를 모두 허용:
+      - command_name='cn:set', prompt='2'         (인자만)
+      - command_name='cn:set', prompt='/cn:set 2' (슬래시 포함)
+    """
     cmd = (data.get("command_name") or "").strip()
-    if cmd:
-        # command_name 이 있으면 그것만으로 판정 — prompt fallback 으로 빠지지 않음
-        # (다른 slash command 의 prompt 에 우연히 /cn:status 가 들어가는 경우 차단)
-        return cmd in {"cn:status", "cache-necromancer:cn:status"}
-    # command_name 비어있을 때만 prompt 문자열 fallback
     prompt = (data.get("prompt") or "").strip()
-    return prompt in _TARGETS
+
+    if cmd:
+        if cmd in _STATUS_NAMES:
+            return _CN_STATUS, []
+        if cmd in _SET_NAMES:
+            tokens = prompt.split()
+            if tokens and tokens[0].startswith("/"):
+                # "/cn:set 2" 형태 — 첫 토큰은 명령, 나머지가 인자
+                args = tokens[1:2]
+            else:
+                # "2" 형태 — 토큰 전체가 인자
+                args = tokens[:1]
+            return _CN_SET, args
+        return None
+
+    # command_name 없을 때만 prompt fallback
+    tokens = prompt.split()
+    if not tokens:
+        return None
+    head = tokens[0]
+    if head in {"/cn:status", "/cache-necromancer:cn:status"} and len(tokens) == 1:
+        return _CN_STATUS, []
+    if head in {"/cn:set", "/cache-necromancer:cn:set"}:
+        return _CN_SET, tokens[1:2]
+    return None
 
 
 def main() -> int:
@@ -47,18 +76,22 @@ def main() -> int:
     except (json.JSONDecodeError, ValueError):
         return 0
 
-    if not _matches(data):
+    routed = _route(data)
+    if routed is None:
         return 0
 
-    # session_id 를 subprocess 환경변수로 전파 → (this) 마커 정상 동작
+    script, args = routed
+
+    # session_id 를 subprocess 환경변수로 전파 → 마커 정상 동작
     env = os.environ.copy()
     sid = data.get("session_id")
     if sid:
         env["CLAUDE_CODE_SESSION_ID"] = sid
 
+    script_name = script.name
     try:
         result = subprocess.run(
-            ["python3", str(_CN_STATUS)],
+            ["python3", str(script), *args],
             capture_output=True,
             text=True,
             timeout=10,
@@ -70,9 +103,9 @@ def main() -> int:
             if result.stderr:
                 output += f"\n[stderr]\n{result.stderr}"
     except subprocess.TimeoutExpired:
-        output = "cn_status.py 타임아웃 (10초 초과)"
+        output = f"{script_name} 타임아웃 (10초 초과)"
     except Exception as e:
-        output = f"cn_status.py 실행 실패: {e}"
+        output = f"{script_name} 실행 실패: {e}"
 
     print(json.dumps({"decision": "block", "reason": output}))
     return 0
