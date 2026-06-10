@@ -71,7 +71,9 @@ cache-necromancer 의 `~/.cache-necromancer/config.toml` 을 인터랙티브로 
 # cache-necromancer 설정 — /cn:config 로 변경 가능
 [general]
 refresh_interval_minutes = <선택값>
+cache_ttl_minutes = 60
 max_refresh_count = <선택값>
+language = "en"
 
 [notify]
 enabled = <선택값>

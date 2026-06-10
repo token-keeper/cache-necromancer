@@ -71,7 +71,7 @@ Wake on/off is determined by **`arm` policy × budget**:
 - `arm = "manual"` (default): wake only when budget is charged via `/cn:set N`
 - `arm = "always"`: auto-arm every turn — forgetting protection, wake cost incurred
 
-**Budget lifecycle** (`arm = "manual"`): `/cn:set N` charges N wake credits → when you return and send a real prompt, the remaining budget is automatically cleared. Each session requires its own `/cn:set`.
+**Budget lifecycle** (`arm = "manual"`): `/cn:set N` charges N wake credits → only a real prompt that arrives **after at least one wake has fired since charging** counts as "returning" and clears the remaining budget. Prompts sent right after `/cn:set` (before any wake) keep the budget intact ("set, then one more thing" protection). Each session requires its own `/cn:set`.
 
 ### Config file example (v0.5.0)
 
@@ -94,13 +94,14 @@ v0.4.x legacy keys (`[general].mode`, `[notify].system_notification`, `[refresh]
 
 ## Recap Message
 
-Displayed in Claude Code recap area right after each turn ends:
+Displayed in Claude Code recap area right after each turn ends (with budget charged):
 
 ```
 Stop says: 🪦 Cache dies at 09:37.
+           🔥 2 wake(s) left — alive until 11:17 at most
 ```
 
-When budget is charged, a second line shows remaining wake count.
+With zero budget (or `arm = "always"`), only the first line is shown.
 
 4 languages: `ko` / `en` / `ja` / `zh`. Time = `now + cache_ttl_minutes`, user's local time.
 

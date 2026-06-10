@@ -71,7 +71,7 @@ wake on/off 는 **`arm` 정책 × 예산** 으로 결정:
 - `arm = "manual"` (기본): `/cn:set N` 으로 예산 충전 시에만 wake
 - `arm = "always"`: 매 turn 자동 arm — 깜빡 보호, wake 비용 발생
 
-**예산 lifecycle** (`arm = "manual"`): `/cn:set N` 으로 N회 wake 예산 충전 → 복귀 후 실제 입력이 들어오면 잔여 예산 자동 소멸. 다른 세션은 별도 `/cn:set` 필요.
+**예산 lifecycle** (`arm = "manual"`): `/cn:set N` 으로 N회 wake 예산 충전 → **충전 후 wake 가 1회 이상 일어난 뒤** 들어온 진짜 입력만 복귀로 간주해 잔여 예산 자동 소멸. set 직후 (아직 wake 없음) 추가 프롬프트는 예산을 유지한다 ("set 치고 하나만 더" 보호). 다른 세션은 별도 `/cn:set` 필요.
 
 ### 설정 파일 예시 (v0.5.0)
 
@@ -94,13 +94,14 @@ v0.4.x legacy 키 (`[general].mode`, `[notify].system_notification`, `[refresh].
 
 ## Recap 메시지
 
-매 turn 종료 직후 cache 만료 시각 표시:
+매 turn 종료 직후 cache 만료 시각 표시 (예산 있을 때):
 
 ```
 Stop says: 🪦 Cache dies at 09:37.
+           🔥 wake 2회 남음 — 최대 11:17까지 생존
 ```
 
-예산 충전 시 2번째 줄에 남은 wake 횟수 표시.
+예산 0 (또는 `arm = "always"`) 이면 1줄만 표시.
 
 `language` 4종: `ko` / `en` / `ja` / `zh`. 시각 = `now + cache_ttl_minutes`, 사용자 시스템 local time.
 
