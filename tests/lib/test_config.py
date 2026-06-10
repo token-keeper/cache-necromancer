@@ -7,13 +7,13 @@ from lib.config import Config, load_config
 def test_load_defaults_when_file_missing(tmp_path):
     """존재하지 않는 path → 기본값 Config."""
     c = load_config(tmp_path / "nonexistent.toml")
-    # v0.5.0: 기본 arm=manual → compat mode property = "notify"
-    assert c.mode == "notify"
+    # v0.5.0: 기본 arm=manual, notify on
+    assert c.wake.arm == "manual"
+    assert c.notify.enabled is True
     assert c.refresh_interval_minutes == 50  # v0.2.x 55 → 50
     assert c.cache_ttl_minutes == 60  # Anthropic 1h ext cache 기본
     assert c.max_refresh_count == 10
-    assert c.refresh.hybrid_wait_seconds == 60
-    assert c.notify.system_notification is True
+    assert c.wake.grace_seconds == 60
 
 
 def test_load_partial_overrides_keeps_defaults(tmp_path):
@@ -22,10 +22,12 @@ def test_load_partial_overrides_keeps_defaults(tmp_path):
         '[general]\nmode = "auto"\nmax_refresh_count = 20\n'
     )
     c = load_config(p)
-    assert c.mode == "auto"
+    # legacy mode=auto → arm=always, notify=off
+    assert c.wake.arm == "always"
+    assert c.notify.enabled is False
     assert c.max_refresh_count == 20
     assert c.refresh_interval_minutes == 50  # default
-    assert c.refresh.hybrid_wait_seconds == 60  # default
+    assert c.wake.grace_seconds == 60  # default
 
 
 def test_load_full_v030_config(tmp_path):
@@ -45,11 +47,12 @@ hybrid_wait_seconds = 90
 """
     )
     c = load_config(p)
-    assert c.mode == "notify"
+    # legacy mode=notify → arm=manual; system_notification=false → enabled=false
+    assert c.wake.arm == "manual"
+    assert c.notify.enabled is False
     assert c.refresh_interval_minutes == 30
     assert c.max_refresh_count == 5
-    assert c.notify.system_notification is False
-    assert c.refresh.hybrid_wait_seconds == 90
+    assert c.wake.grace_seconds == 90
 
 
 def test_invalid_mode_warns_and_returns_default(tmp_path, capsys):
@@ -102,12 +105,12 @@ daemon_poll_max_seconds = 30
 """
     )
     c = load_config(p)
-    # 호환 옵션은 정상 로드
-    assert c.mode == "auto"
-    assert c.refresh.hybrid_wait_seconds == 70
-    assert c.notify.system_notification is False
-    # 폐기 옵션 무시 — RefreshConfig/NotifyConfig 가 받지 않음
-    assert not hasattr(c.refresh, "prompt")
+    # 호환 옵션은 정상 로드 (legacy mode=auto → arm=always, notify=off)
+    assert c.wake.arm == "always"
+    assert c.notify.enabled is False
+    assert c.wake.grace_seconds == 70
+    # 폐기 옵션 무시 — WakeConfig/NotifyConfig 가 받지 않음
+    assert not hasattr(c.wake, "prompt")
     assert not hasattr(c.notify, "terminal_bell")
     # stderr 경고
     err = capsys.readouterr().err
@@ -258,24 +261,3 @@ class TestLegacyModeMapping:
         assert detect_legacy_keys({}) == []
 
 
-class TestTransitionalCompat:
-    """Task 9 에서 제거될 임시 호환 property."""
-
-    def test_mode_property_roundtrip(self, tmp_path):
-        p = tmp_path / "c.toml"
-        p.write_text('[general]\nmode = "auto"\n')
-        cfg = load_config(p)
-        assert cfg.mode == "auto"
-
-    def test_refresh_property_grace(self, tmp_path):
-        p = tmp_path / "c.toml"
-        p.write_text("[wake]\ngrace_seconds = 45\n")
-        cfg = load_config(p)
-        assert cfg.refresh.hybrid_wait_seconds == 45
-
-    def test_system_notification_compat_property(self, tmp_path):
-        """NotifyConfig.system_notification → self.enabled (Task 9 제거)."""
-        p = tmp_path / "c.toml"
-        p.write_text("[notify]\nenabled = false\n")
-        cfg = load_config(p)
-        assert cfg.notify.system_notification is False

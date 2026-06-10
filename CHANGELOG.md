@@ -2,6 +2,52 @@
 
 이 프로젝트의 모든 주목할 만한 변경사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고, [Semantic Versioning](https://semver.org/lang/ko/) 을 준수합니다.
 
+## [0.5.0] — 2026-06-10
+
+**알림 기본 + `/cn:set` 소생 — 토큰 지출 경로 명시화**
+
+제품 방향 전환: "캐시가 죽기 전에 알려준다. 살리는 건 사용자가 `set` 했을 때만."
+
+### Added
+
+- **`/cn:set N` 슬래시 명령** (`scripts/on_set_command.py`, `commands/cn:set.md`): 현재 세션에 wake 예산 충전 (N회 소생). `/cn:set 0` = 취소, `/cn:set` (무인자) = 현재 상태 표시. `arm=always` 중 호출 시 안내 메시지. 예산은 복귀(충전 후 실제 입력) 시 자동 소멸.
+- **`lib/budget.py`**: 세션별 wake 예산 관리 (set/consume/clear).
+- **`lib/marker.py`**: wake 예산 필드 추가 (`wake_budget`, `wake_budget_set_at`).
+- **recap 2번째 줄**: 예산 충전 시 남은 wake 횟수 / 생존 시한 표시 (4개 언어).
+- **`/cn:status` 예산 표시**: arm 정책 + 남은 예산 + 생존 시한.
+
+### Changed
+
+- **config 구조 개편** (`lib/config.py`): `mode` enum (notify/auto/hybrid) 폐기 → 2축:
+  - `[notify] enabled` — 만료 임박 알림 on/off (구 `system_notification`)
+  - `[wake] arm` (`"manual"` 기본 / `"always"`) + `grace_seconds` (구 `hybrid_wait_seconds`)
+  - `manual` = `/cn:set` 충전 시에만 wake, `always` = 매 turn 자동 arm (기존 hybrid/auto 동작 opt-in 유지).
+- **기본값 변경**: 신규 설치 `arm = "manual"` — 알림만, 자동 wake 없음 (기존 사용자는 legacy 매핑으로 기존 동작 유지).
+- **`plugin.json` `userConfig.mode` 제거**: config.toml + `/cn:config` 단일 설정 창구로 일원화.
+- **`config.toml.example`** / **`commands/cn:config.md`**: v0.5.0 템플릿 + 신 키 기준 Q&A.
+- **`hooks/hooks.json` description**: v0.5.0 반영.
+- **임시 호환 property 제거** (`Config.mode`, `Config.refresh`, `NotifyConfig.system_notification`).
+
+### Migration
+
+v0.4.x 이하 legacy 키 자동 매핑 (로드 시 신 키 우선):
+
+| 구 키 | 신 해석 |
+|---|---|
+| `mode = "hybrid"` | `arm="always"` + `notify.enabled=true` |
+| `mode = "auto"` | `arm="always"` + `notify.enabled=false` |
+| `mode = "notify"` | `arm="manual"` + `notify.enabled=true` |
+| `[notify] system_notification` | `notify.enabled` |
+| `[refresh] hybrid_wait_seconds` | `wake.grace_seconds` |
+
+기존 hybrid/auto 사용자는 자동 매핑으로 동작 유지 — 신규 설치만 `manual` 기본.
+
+### Tests
+
+302 pytest 통과.
+
+---
+
 ## [0.4.2] — 2026-05-26
 
 **옛날 버전 refresh.py sleep 잔존 process 자동 정리**

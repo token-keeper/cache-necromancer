@@ -11,11 +11,6 @@ refresh.hybrid_wait_seconds) 는 로드 시 자동 매핑되므로 기존 설정
 v0.2.x 의 폐기 옵션 (terminal_bell, imminent_threshold_minutes,
 refresh.prompt, refresh.fire_timeout_seconds, [advanced] 전체) 은
 detect 시 stderr 경고만 출력하고 무시.
-
-임시 호환 property (Task 9 에서 제거):
-  - Config.mode: wake.arm + notify.enabled → legacy mode 문자열 역매핑
-  - Config.refresh: RefreshConfig(hybrid_wait_seconds=wake.grace_seconds)
-  - NotifyConfig.system_notification: notify.enabled alias
 """
 import os
 import sys
@@ -49,19 +44,6 @@ class NotifyConfig:
 
     enabled: bool = True
 
-    # ── 임시 호환 property (Task 9 에서 제거) ──
-    @property
-    def system_notification(self) -> bool:
-        """scripts/refresh.py 호환용 alias → self.enabled."""
-        return self.enabled
-
-
-@dataclass(frozen=True)
-class RefreshConfig:
-    """임시 호환 dataclass (Task 9 제거): config.refresh.hybrid_wait_seconds."""
-
-    hybrid_wait_seconds: int = 60
-
 
 @dataclass(frozen=True)
 class Config:
@@ -73,24 +55,6 @@ class Config:
     language: str = "en"               # ko | en | ja | zh
     wake: WakeConfig = field(default_factory=WakeConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
-
-    # ── 임시 호환 property (Task 9 에서 제거) ──
-    @property
-    def mode(self) -> str:
-        """scripts 호환용 역매핑: wake.arm + notify.enabled → legacy mode 문자열.
-
-        엣지: arm=manual + enabled=False 는 v0.4.x 에 없던 신규 상태 —
-        "notify" 를 반환하지만 _do_notify 의 no-op 경로로 runtime 동작은 정확.
-        Task 9 에서 제거 예정.
-        """
-        if self.wake.arm == "always":
-            return "hybrid" if self.notify.enabled else "auto"
-        return "notify"
-
-    @property
-    def refresh(self) -> RefreshConfig:
-        """scripts 호환용: config.refresh.hybrid_wait_seconds → wake.grace_seconds."""
-        return RefreshConfig(hybrid_wait_seconds=self.wake.grace_seconds)
 
 
 def detect_legacy_keys(data: dict) -> list[str]:

@@ -1,7 +1,7 @@
 [project]
 name = "cache-necromancer"
-version = "0.4.2"
-description = "Auto-refresh Claude Code prompt cache TTL via Stop hook + asyncRewake"
+version = "0.5.0"
+description = "Cache death notifier + on-demand revive (/cn:set) via Stop hook + asyncRewake"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [{name = "brody424"}]

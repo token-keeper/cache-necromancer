@@ -2,7 +2,7 @@
 
 ![cache-necromancer banner](docs/assets/banner.png)
 
-> **A Claude Code plugin that automatically revives the prompt cache right before its 1-hour TTL expires.**
+> **A Claude Code plugin that alerts you before your 1-hour prompt cache expires — and only revives it when you explicitly run `/cn:set`.**
 
 ![status](https://img.shields.io/badge/status-alpha-orange) ![license](https://img.shields.io/badge/license-MIT-blue) ![platform](https://img.shields.io/badge/platform-macOS-lightgrey)
 
@@ -24,6 +24,8 @@ Claude Code prompt cache TTL = **1 hour**.
 
 > Meeting / lunch / step away for 50 min → come back → cost bomb.
 
+v0.5.0 default behavior: **notify only** (zero token cost). When you step away, use `/cn:set N` to explicitly charge a wake budget — it revives the cache exactly that many times.
+
 ## Install
 
 ```bash
@@ -37,44 +39,58 @@ Takes effect from **a new chat session** (Claude Code doesn't hot-reload setting
 
 | Command | Description |
 |---|---|
-| `/cn:config` | Change mode |
+| `/cn:set N` | Charge wake budget — allow N wakes (0=cancel, no arg=status) |
+| `/cn:config` | Change settings (arm/notify/interval/max_count) |
 | `/cn:status` | Session state + next scheduled fire (no API cost) |
 
 `/cn:status` output:
 
 ![/cn:status output](docs/assets/cn-status-en.png)
 
-When a wake fires, transcript shows:
+When a wake fires (budget present), transcript shows:
 
 ```
 [cn:keepalive 16:42, 3/10] reply with exactly 'ok @16:42 (3/10)'. ...
 ok @16:42 (3/10)
 ```
 
-## Modes
+## How It Works
 
 `~/.cache-necromancer/config.toml` (auto-created on first hook fire):
 
-| mode | Behavior |
-|------|----------|
-| `notify` | macOS notification after 50 min (no wake) |
-| `auto` | Auto-wake after 50 min |
-| `hybrid` (default) | Notify → wake if no input within 60s |
+### Two-axis Configuration
+
+| `notify.enabled` | wake | = legacy mode |
+|---|---|---|
+| true | off | `notify` (default) |
+| false | on | `auto` (immediate wake) |
+| true | on | `hybrid` (notify → wait grace_seconds → wake) |
+| false | off | Silent — no notify, no wake |
+
+Wake on/off is determined by **`arm` policy × budget**:
+- `arm = "manual"` (default): wake only when budget is charged via `/cn:set N`
+- `arm = "always"`: auto-arm every turn — forgetting protection, wake cost incurred
+
+**Budget lifecycle** (`arm = "manual"`): `/cn:set N` charges N wake credits → when you return and send a real prompt, the remaining budget is automatically cleared. Each session requires its own `/cn:set`.
+
+### Config file example (v0.5.0)
 
 ```toml
 [general]
-mode = "hybrid"
-refresh_interval_minutes = 50         # wake interval
-cache_ttl_minutes = 60                # used for recap message timestamp
-max_refresh_count = 10                # max wakes per session
+refresh_interval_minutes = 50         # sleep before notify/wake (before cache TTL expires)
+cache_ttl_minutes = 60                # Anthropic prompt cache TTL (used for recap timestamp)
+max_refresh_count = 10                # wake cap (always chain / set single-charge cap)
 language = "en"                       # ko | en | ja | zh
 
 [notify]
-system_notification = true
+enabled = true                        # macOS notification near expiry
 
-[refresh]
-hybrid_wait_seconds = 60
+[wake]
+arm = "manual"                        # manual = wake only after /cn:set / always = auto every turn
+grace_seconds = 60                    # delay between notify and wake (when notify.enabled=true)
 ```
+
+v0.4.x legacy keys (`[general].mode`, `[notify].system_notification`, `[refresh].hybrid_wait_seconds`) are auto-mapped on load, so existing config files continue to work.
 
 ## Recap Message
 
@@ -84,13 +100,15 @@ Displayed in Claude Code recap area right after each turn ends:
 Stop says: 🪦 Cache dies at 09:37.
 ```
 
+When budget is charged, a second line shows remaining wake count.
+
 4 languages: `ko` / `en` / `ja` / `zh`. Time = `now + cache_ttl_minutes`, user's local time.
 
-## How It Works
+## Mechanics
 
 After each turn, a `Stop` hook + `asyncRewake` starts a background sleep.
 
-If there's no user input for 50 minutes, the chat session **wakes itself** — short ping turn → model replies `ok` (1 token).
+If there's no user input for `refresh_interval_minutes` and **budget is available**, the chat session **wakes itself** — short ping turn → model replies `ok` (1 token).
 
 Because wake happens inside the chat process, the system prompt + tools stay byte-exact → **cache prefix 100% hit**.
 
@@ -110,7 +128,7 @@ sequenceDiagram
     C->>H: Stop event
     H-->>H: background sleep 50m
 
-    Note over U,H: no user input for 50 minutes
+    Note over U,H: no user input for 50 minutes (budget present)
 
     H->>C: ping
     C->>M: minimal turn (cache_read)

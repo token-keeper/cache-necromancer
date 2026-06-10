@@ -1,38 +1,16 @@
-# cache-necromancer 설정 예시.
-# 이 파일을 ~/.cache-necromancer/config.toml 로 복사 후 수정해서 사용.
+# cache-necromancer 설정 (v0.5.0)
+# 이 파일은 첫 hook fire 시 자동 생성됨.
+# 수정 후 새 chat 세션 필요 (Claude Code 는 settings hot-reload 안 함).
 
 [general]
-# notify  = 알림만 (자동 fire 안 함)
-# auto    = 자동 fire
-# hybrid  = 알림 후 N초 대기, 사용자 입력 없으면 자동 fire
-mode = "hybrid"
-
-# 캐시 TTL 1시간 직전 갱신. Anthropic 캐시 정책 변경 시 조정.
-refresh_interval_minutes = 55
-
-# 자동 갱신 횟수 한도. 사용자가 안 돌아오면 fire 비용만 누적되므로 안전장치.
-max_refresh_count = 10
-
-[refresh]
-prompt = "."
-hybrid_wait_seconds = 60
-fire_timeout_seconds = 120
+refresh_interval_minutes = 50         # cache TTL 만료 직전 알림/wake 까지의 sleep
+cache_ttl_minutes = 60                # Anthropic prompt cache TTL (recap 표시용)
+max_refresh_count = 10                # wake 상한 (always 연쇄 / set 1회 충전 상한)
+language = "en"                       # 메시지 언어: ko | en | ja | zh
 
 [notify]
-terminal_bell = true
-system_notification = true
-imminent_threshold_minutes = 5
+enabled = true                        # 만료 임박 macOS 알림
 
-[advanced]
-daemon_poll_max_seconds = 60
-session_ttl_hours = 24
-daemon_idle_shutdown_minutes = 60
-clock_drift_threshold_seconds = 30
-clock_drift_postpone_minutes = 5
-fire_stop_watchdog_seconds = 120
-consecutive_fire_failures_disable = 5
-cache_cold_max_retries = 2
-backoff_base_seconds = 30.0
-backoff_cap_seconds = 1800.0
-interactive_input_quiet_seconds = 30
-state_lock_deadline_seconds = 4.0
+[wake]
+arm = "manual"                        # manual = /cn:set 시에만 소생 / always = 매 turn 자동
+grace_seconds = 60                    # 알림 후 wake 까지 대기 (notify.enabled=true 일 때)

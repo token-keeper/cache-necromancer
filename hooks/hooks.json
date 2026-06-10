@@ -1,5 +1,5 @@
 {
-  "description": "v0.3.0 — asyncRewake hook 기반 cache TTL 갱신",
+  "description": "v0.5.0 — 알림 기본 + /cn:set 소생 (asyncRewake, Stop hook 기반 cache TTL 갱신)",
   "hooks": {
     "Stop": [
       {
