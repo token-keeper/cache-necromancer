@@ -2,6 +2,18 @@
 
 이 프로젝트의 모든 주목할 만한 변경사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고, [Semantic Versioning](https://semver.org/lang/ko/) 을 준수합니다.
 
+## [0.5.2] — 2026-06-11
+
+### Fixed
+
+- **self-gate 오발동 — 다운로드만 된 새 버전이 활성 버전의 hook 을 침묵시키던 버그**
+  (`lib/install_version.py`): `is_latest_install()` 판정 기준을 "install cache 내
+  최대 버전 디렉터리"에서 **`installed_plugins.json` 의 활성 `installPath`** 로 변경.
+  기존 기준에서는 `/reload-plugins` 가 새 버전을 cache 에 다운로드만 해놓으면
+  (활성 pointer 는 그대로) 활성 버전의 모든 hook 이 스스로 침묵해 recap·알림이
+  실종됐다 (v0.5.0 활성 + v0.5.1 다운로드 상태에서 실제 발생). json 을 못 읽거나
+  이 plugin 의 entry 가 없으면 기존 최대 버전 비교로 fallback.
+
 ## [0.5.1] — 2026-06-10
 
 ### Fixed

@@ -1,6 +1,6 @@
 [project]
 name = "cache-necromancer"
-version = "0.5.1"
+version = "0.5.2"
 description = "Cache death notifier + on-demand revive (/cn:set) via Stop hook + asyncRewake"
 requires-python = ">=3.11"
 license = {text = "MIT"}
