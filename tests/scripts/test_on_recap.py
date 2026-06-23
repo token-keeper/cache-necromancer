@@ -394,7 +394,8 @@ def test_box_style_normal_turn_wraps_message(temp_root, monkeypatch):
     out = io.StringIO(); monkeypatch.setattr(_sys, "stdout", out)
     main()
     msg = json.loads(out.getvalue())["systemMessage"]
-    assert msg.startswith("╭") and "🪦 Cache dies at 10:50." in msg
+    # "Stop says: " prefix 와 안 붙도록 선두 개행 → 박스가 제 줄에서 시작.
+    assert msg.startswith("\n╭") and "🪦 Cache dies at 10:50." in msg
 
 
 @freeze_time("2026-05-23 10:00:00")

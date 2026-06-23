@@ -142,7 +142,10 @@ def _main_impl() -> int:
         )
 
     if config.display.recap_style == "box":
-        message = render_box(lines)
+        # Claude Code 가 systemMessage 첫 줄에 "Stop says: " prefix 를 붙여
+        # top border 만 우측으로 밀려 body 줄과 어긋난다. 선두 개행으로
+        # 박스를 제 줄에서 시작시켜 정렬을 맞춘다.
+        message = "\n" + render_box(lines)
     else:
         message = "\n".join(lines)
 
