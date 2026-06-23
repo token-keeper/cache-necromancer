@@ -366,6 +366,19 @@ def test_detect_wake_turn_count_fallback_when_no_nm(tmp_path):
     assert detect_wake_turn(path) == (True, 1)
 
 
+def test_detect_wake_turn_real_ping_form(tmp_path):
+    """실제 refresh.py _build_ping 가 만드는 형태 — '@HH:MM, N/M' + 응답 지시의 '(N/M)'
+    둘 다 포함. regex 가 첫 'N/M'(콤마 뒤)에서 N 을 뽑고 시각(콜론)엔 오매칭 없어야."""
+    from scripts.on_recap import detect_wake_turn
+    path = _write_transcript(tmp_path, [
+        {"type": "user", "isMeta": True, "message": {"role": "user",
+         "content": "Stop hook feedback:\n[python3 \"refresh.py\"]: "
+                    "[cn:keepalive 17:44, 3/5] reply with exactly "
+                    "'ok @17:44 (3/5)'. No tools, no analysis."}},
+    ])
+    assert detect_wake_turn(path) == (True, 3)
+
+
 @freeze_time("2026-05-23 10:00:00")
 def test_box_style_normal_turn_wraps_message(temp_root, monkeypatch):
     import io

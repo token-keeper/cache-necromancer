@@ -15,6 +15,8 @@ from lib.i18n import (  # noqa: E402
     STATUS_LABELS,
     SUPPORTED_LANGUAGES,
     build_recap_message,
+    build_revived_message,
+    build_skull,
     normalize_language,
     set_label,
     status_label,
@@ -165,10 +167,6 @@ class TestModeLabelI18nRemoved:
 
 
 # Tests for build_skull and build_revived_message
-import pytest
-from lib.i18n import build_skull, build_revived_message
-
-
 @pytest.mark.parametrize("n,expected", [
     (1, "☠️"),
     (3, "☠️☠️☠️"),
