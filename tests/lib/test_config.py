@@ -261,3 +261,26 @@ class TestLegacyModeMapping:
         assert detect_legacy_keys({}) == []
 
 
+def test_display_default_is_compact(tmp_path):
+    from lib.config import load_config
+    cfg = load_config(tmp_path / "none.toml")  # 파일 없음 → 기본값
+    assert cfg.display.recap_style == "compact"
+
+
+def test_display_box_parsed(tmp_path):
+    from lib.config import load_config
+    p = tmp_path / "config.toml"
+    p.write_text('[display]\nrecap_style = "box"\n', encoding="utf-8")
+    cfg = load_config(p)
+    assert cfg.display.recap_style == "box"
+
+
+def test_display_invalid_falls_back_to_compact(tmp_path, capsys):
+    from lib.config import load_config
+    p = tmp_path / "config.toml"
+    p.write_text('[display]\nrecap_style = "huge"\n', encoding="utf-8")
+    cfg = load_config(p)
+    assert cfg.display.recap_style == "compact"
+    assert "recap_style" in capsys.readouterr().err
+
+

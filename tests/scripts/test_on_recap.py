@@ -325,3 +325,95 @@ class TestSetBudgetSecondLine:
         out = json.loads(capsys.readouterr().out)
         assert "\n" not in out["systemMessage"]
 
+
+def _write_transcript(tmp_path, entries):
+    p = tmp_path / "transcript.jsonl"
+    p.write_text("\n".join(json.dumps(e, ensure_ascii=False) for e in entries), encoding="utf-8")
+    return str(p)
+
+
+def test_detect_wake_turn_true_with_count(tmp_path):
+    from scripts.on_recap import detect_wake_turn
+    path = _write_transcript(tmp_path, [
+        {"type": "user", "isMeta": False, "message": {"role": "user", "content": "real prompt"}},
+        {"type": "assistant", "message": {"role": "assistant", "content": "..."}},
+        {"type": "user", "isMeta": True, "message": {"role": "user",
+         "content": "Stop hook feedback:\n[refresh.py]: [cn:keepalive @17:44, 3/5] reply ..."}},
+    ])
+    assert detect_wake_turn(path) == (True, 3)
+
+
+def test_detect_wake_turn_false_for_real_prompt(tmp_path):
+    from scripts.on_recap import detect_wake_turn
+    path = _write_transcript(tmp_path, [
+        {"type": "user", "isMeta": False, "message": {"role": "user", "content": "hello"}},
+    ])
+    assert detect_wake_turn(path) == (False, 0)
+
+
+def test_detect_wake_turn_missing_file_returns_false():
+    from scripts.on_recap import detect_wake_turn
+    assert detect_wake_turn("/nonexistent/x.jsonl") == (False, 0)
+    assert detect_wake_turn("") == (False, 0)
+
+
+def test_detect_wake_turn_count_fallback_when_no_nm(tmp_path):
+    from scripts.on_recap import detect_wake_turn
+    path = _write_transcript(tmp_path, [
+        {"type": "user", "isMeta": True, "message": {"role": "user",
+         "content": "Stop hook feedback:\n[cn:keepalive broken ping"}},
+    ])
+    assert detect_wake_turn(path) == (True, 1)
+
+
+def test_detect_wake_turn_real_ping_form(tmp_path):
+    """실제 refresh.py _build_ping 가 만드는 형태 — '@HH:MM, N/M' + 응답 지시의 '(N/M)'
+    둘 다 포함. regex 가 첫 'N/M'(콤마 뒤)에서 N 을 뽑고 시각(콜론)엔 오매칭 없어야."""
+    from scripts.on_recap import detect_wake_turn
+    path = _write_transcript(tmp_path, [
+        {"type": "user", "isMeta": True, "message": {"role": "user",
+         "content": "Stop hook feedback:\n[python3 \"refresh.py\"]: "
+                    "[cn:keepalive 17:44, 3/5] reply with exactly "
+                    "'ok @17:44 (3/5)'. No tools, no analysis."}},
+    ])
+    assert detect_wake_turn(path) == (True, 3)
+
+
+@freeze_time("2026-05-23 10:00:00")
+def test_box_style_normal_turn_wraps_message(temp_root, monkeypatch):
+    import io
+    (temp_root / "config.toml").write_text(
+        '[general]\nlanguage = "en"\ncache_ttl_minutes = 50\n[display]\nrecap_style = "box"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": "box-sid"})))
+    monkeypatch.setattr("scripts.on_recap.is_latest_install", lambda: True)
+    from scripts.on_recap import main
+    import sys as _sys
+    out = io.StringIO(); monkeypatch.setattr(_sys, "stdout", out)
+    main()
+    msg = json.loads(out.getvalue())["systemMessage"]
+    assert msg.startswith("╭") and "🪦 Cache dies at 10:50." in msg
+
+
+@freeze_time("2026-05-23 10:00:00")
+def test_compact_wake_turn_shows_skull(temp_root, monkeypatch):
+    import io
+    (temp_root / "config.toml").write_text(
+        '[general]\nlanguage = "en"\ncache_ttl_minutes = 50\n', encoding="utf-8")
+    tpath = _write_transcript(temp_root, [
+        {"type": "user", "isMeta": True, "message": {"role": "user",
+         "content": "Stop hook feedback:\n[cn:keepalive @10:50, 2/5] reply ..."}},
+    ])
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(
+        {"session_id": "wake-sid", "transcript_path": tpath})))
+    monkeypatch.setattr("scripts.on_recap.is_latest_install", lambda: True)
+    from scripts.on_recap import main
+    import sys as _sys
+    out = io.StringIO(); monkeypatch.setattr(_sys, "stdout", out)
+    main()
+    msg = json.loads(out.getvalue())["systemMessage"]
+    assert msg == "☠️☠️ Revived 2× — dies again at 10:50"
+

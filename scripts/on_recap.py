@@ -10,6 +10,7 @@ PRD 불변: 어떤 실패도 chat 동작 차단 X (silent fail).
 """
 import json
 import os
+import re
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -19,8 +20,14 @@ _PROJECT_ROOT = _HERE.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from lib.box_render import render_box  # noqa: E402
 from lib.config import ensure_config_file, load_config  # noqa: E402
-from lib.i18n import build_recap_message, build_set_recap_line, normalize_language  # noqa: E402
+from lib.i18n import (  # noqa: E402
+    build_recap_message,
+    build_revived_message,
+    build_set_recap_line,
+    normalize_language,
+)
 from lib.install_version import is_latest_install  # noqa: E402
 from lib.logger import log_warn  # noqa: E402
 from lib.marker import Marker  # noqa: E402
@@ -32,23 +39,68 @@ def _resolve_root() -> Path:
     return Path(root) if root else Path.home() / ".cache-necromancer"
 
 
-def _resolve_session_id() -> str:
+def _read_hook_input() -> dict:
+    """Stop hook stdin payload(JSON) 1회 read. 실패 시 빈 dict."""
     try:
         raw = sys.stdin.read()
         if raw.strip():
-            data = json.loads(raw)
-            sid = data.get("session_id", "")
-            if sid:
-                return sid
+            return json.loads(raw)
     except (json.JSONDecodeError, OSError):
         pass
+    return {}
+
+
+def _resolve_session_id(payload: dict) -> str:
+    sid = payload.get("session_id", "")
+    if sid:
+        return sid
     return os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+
+
+_KEEPALIVE_NM = re.compile(r"[\s,](\d+)/\d+")
+
+
+def detect_wake_turn(transcript_path: str) -> tuple[bool, int]:
+    """transcript tail 의 최신 user 엔트리가 cn keepalive 면 (True, N).
+
+    N = ping 의 (N/M) 에서 파싱(없으면 1). 실패/미존재 시 (False, 0).
+    """
+    if not transcript_path:
+        return (False, 0)
+    try:
+        size = os.path.getsize(transcript_path)
+        with open(transcript_path, "rb") as f:
+            f.seek(max(0, size - 65536))
+            data = f.read()
+    except OSError:
+        return (False, 0)
+    last_user: dict | None = None
+    for raw in data.splitlines():
+        line = raw.decode("utf-8", "replace").strip()
+        if not line:
+            continue
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(e, dict) and e.get("type") == "user":
+            last_user = e
+    if last_user is None or not last_user.get("isMeta"):
+        return (False, 0)
+    msg = last_user.get("message") or {}
+    content = msg.get("content")
+    text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+    if "[cn:keepalive" not in text:
+        return (False, 0)
+    m = _KEEPALIVE_NM.search(text)
+    return (True, int(m.group(1)) if m else 1)
 
 
 def _main_impl() -> int:
     if not is_latest_install():
         return 0
-    sid = _resolve_session_id()
+    payload = _read_hook_input()
+    sid = _resolve_session_id(payload)
     if not sid:
         return 0
     try:
@@ -70,17 +122,29 @@ def _main_impl() -> int:
     lang = normalize_language(config.language)
     now = datetime.now()
     death_at = now + timedelta(minutes=ttl)
-    message = build_recap_message(lang, death_at.hour, death_at.minute)
 
-    # 2줄째 — set 예산 잔량 (spec §8). 예산 > 0 일 때만 표시.
+    wake, revive_n = detect_wake_turn(payload.get("transcript_path", ""))
+    if wake:
+        line1 = build_revived_message(lang, revive_n, death_at.hour, death_at.minute)
+    else:
+        line1 = build_recap_message(lang, death_at.hour, death_at.minute)
+    lines = [line1]
+
     marker = Marker.load(sid_hash)
     if marker.set_budget_remaining > 0:
         survive_at = now + timedelta(
             minutes=marker.set_budget_remaining * config.refresh_interval_minutes + ttl
         )
-        message += "\n" + build_set_recap_line(
-            lang, marker.set_budget_remaining, survive_at.hour, survive_at.minute
+        lines.append(
+            build_set_recap_line(
+                lang, marker.set_budget_remaining, survive_at.hour, survive_at.minute
+            )
         )
+
+    if config.display.recap_style == "box":
+        message = render_box(lines)
+    else:
+        message = "\n".join(lines)
 
     print(json.dumps({"systemMessage": message}, ensure_ascii=False))
     return 0

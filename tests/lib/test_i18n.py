@@ -15,6 +15,8 @@ from lib.i18n import (  # noqa: E402
     STATUS_LABELS,
     SUPPORTED_LANGUAGES,
     build_recap_message,
+    build_revived_message,
+    build_skull,
     normalize_language,
     set_label,
     status_label,
@@ -162,3 +164,30 @@ class TestModeLabelI18nRemoved:
         assert not hasattr(i18n_mod, "mode_label_i18n"), (
             "mode_label_i18n 이 아직 i18n 모듈에 남아 있음 — 삭제 필요"
         )
+
+
+# Tests for build_skull and build_revived_message
+@pytest.mark.parametrize("n,expected", [
+    (1, "☠️"),
+    (3, "☠️☠️☠️"),
+    (5, "☠️☠️☠️☠️☠️"),
+    (6, "☠️×6"),
+    (10, "☠️×10"),
+])
+def test_build_skull(n, expected):
+    assert build_skull(n) == expected
+
+
+@pytest.mark.parametrize("lang,expected", [
+    ("ko", "☠️☠️☠️ 3번째 소생 — 17시 44분에 또 죽어요"),
+    ("en", "☠️☠️☠️ Revived 3× — dies again at 17:44"),
+    ("ja", "☠️☠️☠️ 3回目の蘇生 — 17時44分にまた死にます"),
+    ("zh", "☠️☠️☠️ 第3次复活 — 17点44分再次死亡"),
+])
+def test_build_revived_message(lang, expected):
+    assert build_revived_message(lang, 3, 17, 44) == expected
+
+
+def test_build_revived_message_capped_skull():
+    msg = build_revived_message("en", 7, 0, 5)
+    assert msg == "☠️×7 Revived 7× — dies again at 00:05"

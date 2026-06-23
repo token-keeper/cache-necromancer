@@ -53,6 +53,26 @@ def build_set_recap_line(lang: Language, remaining: int, hh: int, mm: int) -> st
     return f"🔥 {remaining} wake(s) left — alive until {time_str} at most"
 
 
+def build_skull(n: int) -> str:
+    """소생 횟수 → 해골 문자열. N≤5 는 해골 N개, 초과는 폭 보호로 '☠️×N'."""
+    return "☠️" * n if n <= 5 else f"☠️×{n}"
+
+
+def build_revived_message(lang: Language, n: int, hh: int, mm: int) -> str:
+    """wake turn recap 1줄째 — 소생 횟수(해골) + 새 만료 시각. 죽음 라인을 대체."""
+    skull = build_skull(n)
+    time_str = _format_time(lang, hh, mm)
+    if lang == "ko":
+        return f"{skull} {n}번째 소생 — {time_str}에 또 죽어요"
+    if lang == "en":
+        return f"{skull} Revived {n}× — dies again at {time_str}"
+    if lang == "ja":
+        return f"{skull} {n}回目の蘇生 — {time_str}にまた死にます"
+    if lang == "zh":
+        return f"{skull} 第{n}次复活 — {time_str}再次死亡"
+    return f"{skull} Revived {n}× — dies again at {time_str}"
+
+
 def normalize_language(value: object) -> Language:
     if isinstance(value, str) and value in SUPPORTED_LANGUAGES:
         return value  # type: ignore[return-value]

@@ -2,6 +2,13 @@
 
 이 프로젝트의 모든 주목할 만한 변경사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고, [Semantic Versioning](https://semver.org/lang/ko/) 을 준수합니다.
 
+## 0.6.0
+
+### Added
+- recap 박스 모드 — `[display] recap_style = "box"` 로 만료 표시를 박스로 크게 (기본 `compact`).
+- 자동 갱신 turn 에서 소생 횟수를 ☠️ 로 표시 (N≤5 해골, 초과 `☠️×N`). ko/en/ja/zh.
+- `lib/box_render.py` — 이모지·CJK·variation selector 보정 폭계산 박스 렌더러.
+
 ## [0.5.2] — 2026-06-11
 
 ### Fixed
