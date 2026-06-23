@@ -14,3 +14,6 @@ enabled = true                        # 만료 임박 macOS 알림
 [wake]
 arm = "manual"                        # manual = /cn:set 시에만 소생 / always = 매 turn 자동
 grace_seconds = 60                    # 알림 후 wake 까지 대기 (notify.enabled=true 일 때)
+
+[display]
+recap_style = "compact"               # compact = 한 줄 / box = 박스로 크게
