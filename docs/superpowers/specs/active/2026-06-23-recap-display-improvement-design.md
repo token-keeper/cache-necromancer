@@ -106,10 +106,12 @@ def build_skull(n: int) -> str:
 
 | lang | 문구 (예: n=3, 17:44) |
 |---|---|
-| ko | `{skull}  3번째 소생 — 17시 44분에 또 죽어요` |
-| en | `{skull}  Revived 3× — dies again at 17:44` |
-| ja | `{skull}  3回目の蘇生 — 17時44分にまた死にます` |
-| zh | `{skull}  第3次复活 — 17点44分再次死亡` |
+| ko | `{skull} 3번째 소생 — 17시 44분에 또 죽어요` |
+| en | `{skull} Revived 3× — dies again at 17:44` |
+| ja | `{skull} 3回目の蘇生 — 17時44分にまた死にます` |
+| zh | `{skull} 第3次复活 — 17点44分再次死亡` |
+
+> 해골 뒤 공백은 1칸 (기존 `build_recap_message` 의 `🪦 Cache dies` 와 동일 스타일). regex 는 ping 의 `, N/M` 형태(`[cn:keepalive HH:MM, N/M]`)를 `[\s,](\d+)/\d+` 로 파싱.
 
 set 예산 2줄째(`build_set_recap_line`)는 wake turn 에서도 동일 규칙(잔량>0)으로 뒤에 붙는다.
 
