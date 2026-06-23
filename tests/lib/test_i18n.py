@@ -181,10 +181,10 @@ def test_build_skull(n, expected):
 
 
 @pytest.mark.parametrize("lang,expected", [
-    ("ko", "☠️☠️☠️  3번째 소생 — 17시 44분에 또 죽어요"),
-    ("en", "☠️☠️☠️  Revived 3× — dies again at 17:44"),
-    ("ja", "☠️☠️☠️  3回目の蘇生 — 17時44分にまた死にます"),
-    ("zh", "☠️☠️☠️  第3次复活 — 17点44分再次死亡"),
+    ("ko", "☠️☠️☠️ 3번째 소생 — 17시 44분에 또 죽어요"),
+    ("en", "☠️☠️☠️ Revived 3× — dies again at 17:44"),
+    ("ja", "☠️☠️☠️ 3回目の蘇生 — 17時44分にまた死にます"),
+    ("zh", "☠️☠️☠️ 第3次复活 — 17点44分再次死亡"),
 ])
 def test_build_revived_message(lang, expected):
     assert build_revived_message(lang, 3, 17, 44) == expected
@@ -192,4 +192,4 @@ def test_build_revived_message(lang, expected):
 
 def test_build_revived_message_capped_skull():
     msg = build_revived_message("en", 7, 0, 5)
-    assert msg == "☠️×7  Revived 7× — dies again at 00:05"
+    assert msg == "☠️×7 Revived 7× — dies again at 00:05"

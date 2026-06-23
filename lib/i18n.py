@@ -63,14 +63,14 @@ def build_revived_message(lang: Language, n: int, hh: int, mm: int) -> str:
     skull = build_skull(n)
     time_str = _format_time(lang, hh, mm)
     if lang == "ko":
-        return f"{skull}  {n}번째 소생 — {time_str}에 또 죽어요"
+        return f"{skull} {n}번째 소생 — {time_str}에 또 죽어요"
     if lang == "en":
-        return f"{skull}  Revived {n}× — dies again at {time_str}"
+        return f"{skull} Revived {n}× — dies again at {time_str}"
     if lang == "ja":
-        return f"{skull}  {n}回目の蘇生 — {time_str}にまた死にます"
+        return f"{skull} {n}回目の蘇生 — {time_str}にまた死にます"
     if lang == "zh":
-        return f"{skull}  第{n}次复活 — {time_str}再次死亡"
-    return f"{skull}  Revived {n}× — dies again at {time_str}"
+        return f"{skull} 第{n}次复活 — {time_str}再次死亡"
+    return f"{skull} Revived {n}× — dies again at {time_str}"
 
 
 def normalize_language(value: object) -> Language:
