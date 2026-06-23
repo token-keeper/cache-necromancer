@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 VALID_ARMS: tuple[str, ...] = ("manual", "always")
+VALID_RECAP_STYLES: tuple[str, ...] = ("compact", "box")
 _LEGACY_MODES: tuple[str, ...] = ("notify", "auto", "hybrid")
 
 # v0.4.x 이하 legacy 키 — 로드 시 매핑, /cn:status 경고용
@@ -46,6 +47,13 @@ class NotifyConfig:
 
 
 @dataclass(frozen=True)
+class DisplayConfig:
+    """recap 표시 설정."""
+
+    recap_style: str = "compact"  # compact = 한 줄 / box = 박스
+
+
+@dataclass(frozen=True)
 class Config:
     """플러그인 전역 설정."""
 
@@ -55,6 +63,7 @@ class Config:
     language: str = "en"               # ko | en | ja | zh
     wake: WakeConfig = field(default_factory=WakeConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
+    display: DisplayConfig = field(default_factory=DisplayConfig)
 
 
 def detect_legacy_keys(data: dict) -> list[str]:
@@ -198,6 +207,16 @@ def load_config(path: Path) -> Config:
 
     general = data.get("general", {})
     wake, notify = _resolve_axes(data)
+    display_data = data.get("display", {})
+    recap_style = display_data.get("recap_style", "compact")
+    if recap_style not in VALID_RECAP_STYLES:
+        print(
+            f"[cn:warn] invalid display.recap_style: {recap_style!r} — "
+            "fallback to 'compact'",
+            file=sys.stderr,
+        )
+        recap_style = "compact"
+    display = DisplayConfig(recap_style=recap_style)
     return Config(
         refresh_interval_minutes=general.get("refresh_interval_minutes", 50),
         cache_ttl_minutes=general.get("cache_ttl_minutes", 60),
@@ -205,6 +224,7 @@ def load_config(path: Path) -> Config:
         language=general.get("language", "en"),
         wake=wake,
         notify=notify,
+        display=display,
     )
 
 
@@ -224,6 +244,9 @@ enabled = true                        # 만료 임박 macOS 알림
 [wake]
 arm = "manual"                        # manual = /cn:set 시에만 소생 / always = 매 turn 자동
 grace_seconds = 60                    # 알림 후 wake 까지 대기 (notify.enabled=true 일 때)
+
+[display]
+recap_style = "compact"               # compact = 한 줄 / box = 박스로 크게
 """
 
 
