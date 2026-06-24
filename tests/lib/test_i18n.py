@@ -117,7 +117,7 @@ class TestLivesRecapLine:
     def test_ko_small_shows_skull_count(self):
         from lib.i18n import build_lives_recap_line
         s = build_lives_recap_line("ko", 5, 15, 30)
-        assert "☠️☠️☠️☠️☠️" in s
+        assert "☠️ ☠️ ☠️ ☠️ ☠️" in s
         assert "15시 30분" in s
 
     def test_large_count_compressed(self):
@@ -187,8 +187,8 @@ class TestModeLabelI18nRemoved:
 # Tests for build_skull and build_revived_message
 @pytest.mark.parametrize("n,expected", [
     (1, "☠️"),
-    (3, "☠️☠️☠️"),
-    (5, "☠️☠️☠️☠️☠️"),
+    (3, "☠️ ☠️ ☠️"),
+    (5, "☠️ ☠️ ☠️ ☠️ ☠️"),
     (6, "☠️×6"),
     (10, "☠️×10"),
 ])
@@ -197,10 +197,10 @@ def test_build_skull(n, expected):
 
 
 @pytest.mark.parametrize("lang,expected", [
-    ("ko", "☠️☠️☠️ 3번째 소생 — 17시 44분에 또 죽어요"),
-    ("en", "☠️☠️☠️ Revived 3× — dies again at 17:44"),
-    ("ja", "☠️☠️☠️ 3回目の蘇生 — 17時44分にまた死にます"),
-    ("zh", "☠️☠️☠️ 第3次复活 — 17点44分再次死亡"),
+    ("ko", "☠️ ☠️ ☠️ 3번째 소생 — 17시 44분에 또 죽어요"),
+    ("en", "☠️ ☠️ ☠️ Revived 3× — dies again at 17:44"),
+    ("ja", "☠️ ☠️ ☠️ 3回目の蘇生 — 17時44分にまた死にます"),
+    ("zh", "☠️ ☠️ ☠️ 第3次复活 — 17点44分再次死亡"),
 ])
 def test_build_revived_message(lang, expected):
     assert build_revived_message(lang, 3, 17, 44) == expected

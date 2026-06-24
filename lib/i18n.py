@@ -54,8 +54,8 @@ def build_set_recap_line(lang: Language, remaining: int, hh: int, mm: int) -> st
 
 
 def build_skull(n: int) -> str:
-    """소생 횟수 → 해골 문자열. N≤5 는 해골 N개, 초과는 폭 보호로 '☠️×N'."""
-    return "☠️" * n if n <= 5 else f"☠️×{n}"
+    """소생 횟수 → 해골 문자열. N≤5 는 해골 N개(공백 구분), 초과는 폭 보호로 '☠️×N'."""
+    return " ".join(["☠️"] * n) if n <= 5 else f"☠️×{n}"
 
 
 def build_lives_recap_line(lang: Language, lives: int, hh: int, mm: int) -> str:
