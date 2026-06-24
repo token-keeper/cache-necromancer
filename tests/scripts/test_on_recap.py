@@ -90,7 +90,7 @@ def test_main_top_level_exception_silent_fail(session_stdin, capsys, monkeypatch
 @freeze_time("2026-05-23 10:00:00")
 def test_recap_message_ko(session_stdin, temp_root, capsys):
     (temp_root / "config.toml").write_text(
-        '[general]\nmode = "auto"\ncache_ttl_minutes = 50\nlanguage = "ko"\n',
+        '[general]\ncache_ttl_minutes = 50\nlanguage = "ko"\n',
         encoding="utf-8",
     )
     from scripts.on_recap import main
@@ -103,7 +103,7 @@ def test_recap_message_ko(session_stdin, temp_root, capsys):
 @freeze_time("2026-05-23 10:00:00")
 def test_recap_message_en(session_stdin, temp_root, capsys):
     (temp_root / "config.toml").write_text(
-        '[general]\nmode = "auto"\ncache_ttl_minutes = 50\nlanguage = "en"\n',
+        '[general]\ncache_ttl_minutes = 50\nlanguage = "en"\n',
         encoding="utf-8",
     )
     from scripts.on_recap import main
@@ -115,7 +115,7 @@ def test_recap_message_en(session_stdin, temp_root, capsys):
 @freeze_time("2026-05-23 10:00:00")
 def test_recap_message_ja(session_stdin, temp_root, capsys):
     (temp_root / "config.toml").write_text(
-        '[general]\nmode = "auto"\ncache_ttl_minutes = 50\nlanguage = "ja"\n',
+        '[general]\ncache_ttl_minutes = 50\nlanguage = "ja"\n',
         encoding="utf-8",
     )
     from scripts.on_recap import main
@@ -127,7 +127,7 @@ def test_recap_message_ja(session_stdin, temp_root, capsys):
 @freeze_time("2026-05-23 10:00:00")
 def test_recap_message_zh(session_stdin, temp_root, capsys):
     (temp_root / "config.toml").write_text(
-        '[general]\nmode = "auto"\ncache_ttl_minutes = 50\nlanguage = "zh"\n',
+        '[general]\ncache_ttl_minutes = 50\nlanguage = "zh"\n',
         encoding="utf-8",
     )
     from scripts.on_recap import main
@@ -142,7 +142,7 @@ def test_recap_message_zh(session_stdin, temp_root, capsys):
 def test_midnight_rollover_en(session_stdin, temp_root, capsys):
     """fire=23:55, ttl=30 → 00:25"""
     (temp_root / "config.toml").write_text(
-        '[general]\nmode = "auto"\ncache_ttl_minutes = 30\nlanguage = "en"\n',
+        '[general]\ncache_ttl_minutes = 30\nlanguage = "en"\n',
         encoding="utf-8",
     )
     from scripts.on_recap import main
@@ -154,7 +154,7 @@ def test_midnight_rollover_en(session_stdin, temp_root, capsys):
 @freeze_time("2026-05-23 23:55:00")
 def test_midnight_rollover_ko(session_stdin, temp_root, capsys):
     (temp_root / "config.toml").write_text(
-        '[general]\nmode = "auto"\ncache_ttl_minutes = 30\nlanguage = "ko"\n',
+        '[general]\ncache_ttl_minutes = 30\nlanguage = "ko"\n',
         encoding="utf-8",
     )
     from scripts.on_recap import main
@@ -172,7 +172,7 @@ def test_recap_uses_cache_ttl_not_refresh_interval(session_stdin, temp_root, cap
     fire=08:37, refresh_interval=50 (무시), cache_ttl=60 → 09:37 표시.
     """
     (temp_root / "config.toml").write_text(
-        '[general]\nmode = "auto"\n'
+        '[general]\n'
         'refresh_interval_minutes = 50\n'
         'cache_ttl_minutes = 60\n'
         'language = "ko"\n',
@@ -188,7 +188,7 @@ def test_recap_uses_cache_ttl_not_refresh_interval(session_stdin, temp_root, cap
 def test_recap_default_ttl_is_60_min(session_stdin, temp_root, capsys):
     """config 에 cache_ttl 미지정 시 default=60 → 11:00 표시."""
     (temp_root / "config.toml").write_text(
-        '[general]\nmode = "auto"\nlanguage = "en"\n',
+        '[general]\nlanguage = "en"\n',
         encoding="utf-8",
     )
     from scripts.on_recap import main
@@ -203,7 +203,7 @@ def test_recap_default_ttl_is_60_min(session_stdin, temp_root, capsys):
 def test_recap_default_language_en(session_stdin, temp_root, capsys):
     """config 에 language 없으면 'en'."""
     (temp_root / "config.toml").write_text(
-        '[general]\nmode = "auto"\ncache_ttl_minutes = 50\n',
+        '[general]\ncache_ttl_minutes = 50\n',
         encoding="utf-8",
     )
     from scripts.on_recap import main
@@ -215,7 +215,7 @@ def test_recap_default_language_en(session_stdin, temp_root, capsys):
 @freeze_time("2026-05-23 10:00:00")
 def test_recap_invalid_language_falls_back_to_en(session_stdin, temp_root, capsys):
     (temp_root / "config.toml").write_text(
-        '[general]\nmode = "auto"\ncache_ttl_minutes = 50\nlanguage = "xx"\n',
+        '[general]\ncache_ttl_minutes = 50\nlanguage = "xx"\n',
         encoding="utf-8",
     )
     from scripts.on_recap import main
@@ -229,7 +229,7 @@ def test_recap_invalid_language_falls_back_to_en(session_stdin, temp_root, capsy
 @pytest.mark.parametrize("ttl", [0, -1, -100])
 def test_invalid_ttl_silent_fail(session_stdin, temp_root, capsys, ttl):
     (temp_root / "config.toml").write_text(
-        f'[general]\nmode = "auto"\ncache_ttl_minutes = {ttl}\n'
+        f'[general]\ncache_ttl_minutes = {ttl}\n'
         'language = "en"\n',
         encoding="utf-8",
     )
@@ -257,7 +257,7 @@ def test_config_invalid_toml_falls_back_to_default(
 def test_systemmessage_is_valid_json(session_stdin, temp_root, capsys):
     """stdout 이 valid JSON + systemMessage key 존재 + emoji raw 출력."""
     (temp_root / "config.toml").write_text(
-        '[general]\nmode = "auto"\ncache_ttl_minutes = 50\nlanguage = "ko"\n',
+        '[general]\ncache_ttl_minutes = 50\nlanguage = "ko"\n',
         encoding="utf-8",
     )
     from scripts.on_recap import main
@@ -298,7 +298,7 @@ class TestSetBudgetSecondLine:
         self._charge(cn_root, sid, remaining=2, total=2)
         # config: interval=50, ttl=60, language=en (default)
         (cn_root / "config.toml").write_text(
-            '[general]\nmode = "auto"\nrefresh_interval_minutes = 50\n'
+            '[general]\nrefresh_interval_minutes = 50\n'
             'cache_ttl_minutes = 60\nlanguage = "en"\n',
             encoding="utf-8",
         )
@@ -318,7 +318,7 @@ class TestSetBudgetSecondLine:
         sid = "recap-sid2"
         # marker 에 예산 없음 (0이 기본값이므로 파일 생성 불필요)
         (cn_root / "config.toml").write_text(
-            '[general]\nmode = "auto"\ncache_ttl_minutes = 60\nlanguage = "en"\n',
+            '[general]\ncache_ttl_minutes = 60\nlanguage = "en"\n',
             encoding="utf-8",
         )
         self._run(monkeypatch, cn_root, sid)
@@ -396,6 +396,47 @@ def test_box_style_normal_turn_wraps_message(temp_root, monkeypatch):
     msg = json.loads(out.getvalue())["systemMessage"]
     # "Stop says: " prefix 와 안 붙도록 선두 개행 → 박스가 제 줄에서 시작.
     assert msg.startswith("\n╭") and "🪦 Cache dies at 10:50." in msg
+
+
+@freeze_time("2026-05-23 10:00:00")
+def test_always_mode_shows_lives_line(temp_root, monkeypatch):
+    import io
+    (temp_root / "config.toml").write_text(
+        '[general]\nlanguage = "ko"\ncache_ttl_minutes = 50\n'
+        'max_refresh_count = 5\nrefresh_interval_minutes = 30\n'
+        '[wake]\narm = "always"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": "always-sid"})))
+    monkeypatch.setattr("scripts.on_recap.is_latest_install", lambda: True)
+    from scripts.on_recap import main
+    import sys as _sys
+    out = io.StringIO(); monkeypatch.setattr(_sys, "stdout", out)
+    main()
+    msg = json.loads(out.getvalue())["systemMessage"]
+    # wake_count=0 → 목숨 5 = ☠️×5, 생존 = 10:00 + 5*30 + 50min = 13:20
+    assert "☠️☠️☠️☠️☠️" in msg
+    assert "살림" in msg and "13시 20분" in msg
+
+
+@freeze_time("2026-05-23 10:00:00")
+def test_manual_mode_no_lives_line(temp_root, monkeypatch):
+    import io
+    (temp_root / "config.toml").write_text(
+        '[general]\nlanguage = "ko"\ncache_ttl_minutes = 50\n[wake]\narm = "manual"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": "manual-sid"})))
+    monkeypatch.setattr("scripts.on_recap.is_latest_install", lambda: True)
+    from scripts.on_recap import main
+    import sys as _sys
+    out = io.StringIO(); monkeypatch.setattr(_sys, "stdout", out)
+    main()
+    msg = json.loads(out.getvalue())["systemMessage"]
+    # manual + set 충전 없음 → 목숨 라인 없음 (만료 라인만)
+    assert "살림" not in msg and "☠️" not in msg
 
 
 @freeze_time("2026-05-23 10:00:00")
