@@ -15,6 +15,7 @@ from scripts.on_status_command import _route  # noqa: E402
 
 _CN_STATUS = _PROJECT_ROOT / "scripts" / "cn_status.py"
 _CN_SET = _PROJECT_ROOT / "scripts" / "cn_set.py"
+_CN_CONFIG = _PROJECT_ROOT / "scripts" / "cn_config.py"
 
 
 # ──────────────────────────────────────────────
@@ -83,6 +84,23 @@ class TestRoute:
         script, args = _route({"prompt": "/cache-necromancer:cn:set 5"})
         assert script == _CN_SET
         assert args == ["5"]
+
+    # ── cn:config (런처 안내) ──
+
+    def test_command_name_cn_config(self):
+        script, args = _route({"command_name": "cn:config", "prompt": ""})
+        assert script == _CN_CONFIG
+        assert args == ["--hint"]
+
+    def test_command_name_full_cn_config(self):
+        script, args = _route({"command_name": "cache-necromancer:cn:config"})
+        assert script == _CN_CONFIG
+        assert args == ["--hint"]
+
+    def test_prompt_slash_cn_config(self):
+        script, args = _route({"prompt": "/cn:config"})
+        assert script == _CN_CONFIG
+        assert args == ["--hint"]
 
     # ── 비매칭 ──
 

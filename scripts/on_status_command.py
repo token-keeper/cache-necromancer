@@ -24,9 +24,11 @@ from lib.install_version import is_latest_install  # noqa: E402
 
 _CN_STATUS = _HERE / "cn_status.py"
 _CN_SET = _HERE / "cn_set.py"
+_CN_CONFIG = _HERE / "cn_config.py"
 
 _STATUS_NAMES = {"cn:status", "cache-necromancer:cn:status"}
 _SET_NAMES = {"cn:set", "cache-necromancer:cn:set"}
+_CONFIG_NAMES = {"cn:config", "cache-necromancer:cn:config"}
 
 
 def _route(data: dict) -> "tuple[Path, list[str]] | None":
@@ -45,6 +47,9 @@ def _route(data: dict) -> "tuple[Path, list[str]] | None":
     if cmd:
         if cmd in _STATUS_NAMES:
             return _CN_STATUS, []
+        if cmd in _CONFIG_NAMES:
+            # TUI 는 stdin 이 필요해 hook subprocess 에선 못 띄움 → 런처 안내만(turn 0)
+            return _CN_CONFIG, ["--hint"]
         if cmd in _SET_NAMES:
             tokens = prompt.split()
             if tokens and tokens[0].startswith("/"):
@@ -63,6 +68,8 @@ def _route(data: dict) -> "tuple[Path, list[str]] | None":
     head = tokens[0]
     if head in {"/cn:status", "/cache-necromancer:cn:status"} and len(tokens) == 1:
         return _CN_STATUS, []
+    if head in {"/cn:config", "/cache-necromancer:cn:config"}:
+        return _CN_CONFIG, ["--hint"]
     if head in {"/cn:set", "/cache-necromancer:cn:set"}:
         return _CN_SET, tokens[1:2]
     return None
