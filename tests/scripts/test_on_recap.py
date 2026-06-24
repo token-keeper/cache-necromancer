@@ -415,8 +415,8 @@ def test_always_mode_shows_lives_line(temp_root, monkeypatch):
     out = io.StringIO(); monkeypatch.setattr(_sys, "stdout", out)
     main()
     msg = json.loads(out.getvalue())["systemMessage"]
-    # wake_count=0 → 목숨 5 = ☠️×5, 생존 = 10:00 + 5*30 + 50min = 13:20
-    assert "☠️☠️☠️☠️☠️" in msg
+    # wake_count=0 → 목숨 5 = 해골 5개(공백 구분), 생존 = 10:00 + 5*30 + 50min = 13:20
+    assert "☠️ ☠️ ☠️ ☠️ ☠️" in msg
     assert "살림" in msg and "13시 20분" in msg
 
 
@@ -500,5 +500,5 @@ def test_compact_wake_turn_shows_skull(temp_root, monkeypatch):
     out = io.StringIO(); monkeypatch.setattr(_sys, "stdout", out)
     main()
     msg = json.loads(out.getvalue())["systemMessage"]
-    assert msg == "☠️☠️ Revived 2× — dies again at 10:50"
+    assert msg == "☠️ ☠️ Revived 2× — dies again at 10:50"
 
