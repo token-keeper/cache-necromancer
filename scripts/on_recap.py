@@ -155,7 +155,9 @@ def _main_impl() -> int:
         # Claude Code 가 systemMessage 첫 줄에 "Stop says: " prefix 를 붙여
         # top border 만 우측으로 밀려 body 줄과 어긋난다. 선두 개행으로
         # 박스를 제 줄에서 시작시켜 정렬을 맞춘다.
-        message = "\n" + render_box(lines)
+        # 2줄(만료 + 목숨/set)이면 가독성 위해 가운데 빈 줄을 끼운다.
+        box_lines = lines if len(lines) == 1 else [lines[0], "", *lines[1:]]
+        message = "\n" + render_box(box_lines)
     else:
         message = "\n".join(lines)
 

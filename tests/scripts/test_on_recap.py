@@ -421,6 +421,49 @@ def test_always_mode_shows_lives_line(temp_root, monkeypatch):
 
 
 @freeze_time("2026-05-23 10:00:00")
+def test_box_two_lines_has_blank_spacer(temp_root, monkeypatch):
+    import io
+    (temp_root / "config.toml").write_text(
+        '[general]\nlanguage = "ko"\ncache_ttl_minutes = 50\n'
+        'max_refresh_count = 5\nrefresh_interval_minutes = 30\n'
+        '[wake]\narm = "always"\n[display]\nrecap_style = "box"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": "spacer-sid"})))
+    monkeypatch.setattr("scripts.on_recap.is_latest_install", lambda: True)
+    from scripts.on_recap import main
+    import sys as _sys
+    out = io.StringIO(); monkeypatch.setattr(_sys, "stdout", out)
+    main()
+    msg = json.loads(out.getvalue())["systemMessage"]
+    box_lines = [ln for ln in msg.split("\n") if ln.startswith("│")]
+    assert len(box_lines) == 3  # 만료 + 빈줄 + 목숨
+    assert box_lines[1].strip("│ ") == ""  # 가운데는 빈 줄
+
+
+@freeze_time("2026-05-23 10:00:00")
+def test_box_single_line_no_spacer(temp_root, monkeypatch):
+    import io
+    # manual + set 없음 → 1줄만 → 빈 줄 삽입 안 함
+    (temp_root / "config.toml").write_text(
+        '[general]\nlanguage = "ko"\ncache_ttl_minutes = 50\n'
+        '[wake]\narm = "manual"\n[display]\nrecap_style = "box"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": "single-sid"})))
+    monkeypatch.setattr("scripts.on_recap.is_latest_install", lambda: True)
+    from scripts.on_recap import main
+    import sys as _sys
+    out = io.StringIO(); monkeypatch.setattr(_sys, "stdout", out)
+    main()
+    msg = json.loads(out.getvalue())["systemMessage"]
+    box_lines = [ln for ln in msg.split("\n") if ln.startswith("│")]
+    assert len(box_lines) == 1  # 만료만, 빈 줄 없음
+
+
+@freeze_time("2026-05-23 10:00:00")
 def test_manual_mode_no_lives_line(temp_root, monkeypatch):
     import io
     (temp_root / "config.toml").write_text(
