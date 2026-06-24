@@ -1,0 +1,226 @@
+<!-- html-publish:cache-necromancer/cn-config-tui-design -->
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>cache-necromancer · /cn:config 터미널 TUI 전환 (v0.7.0)</title>
+<style>
+  :root{
+    --bg:#0f1115; --card:#1a1d23; --ink:#e6e8ec; --muted:#9aa3af;
+    --line:#2a2f37; --accent:#fbbf24; --accent-soft:#3a2e12;
+    --good:#4ade80; --good-soft:#13291c; --bad:#f87171; --bad-soft:#39191a;
+    --blue:#60a5fa; --blue-soft:#162840;
+    --chip:#23272e;
+  }
+  *{box-sizing:border-box}
+  html{font-size:15px}
+  body{margin:0; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    line-height:1.6; -webkit-text-size-adjust:100%}
+  .wrap{max-width:720px; margin:0 auto; padding:26px 18px 80px}
+  h1{font-size:1.35rem; line-height:1.3; margin:0 0 6px}
+  .sub{color:var(--muted); font-size:.9rem; margin:0 0 24px}
+  h2{font-size:1.05rem; margin:34px 0 11px; padding-top:16px; border-top:1px solid var(--line)}
+  p{margin:12px 0}
+  .card{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:18px; margin:16px 0}
+  .lead{font-size:1.02rem}
+  .tag{display:inline-block; font-size:.78rem; font-weight:600; padding:2px 10px; border-radius:999px; background:var(--accent-soft); color:var(--accent); margin-bottom:8px}
+  .tag.ok{background:var(--good-soft); color:var(--good)}
+  .muted{color:var(--muted)} .small{font-size:.88rem} b{font-weight:650}
+  code{background:var(--chip); padding:1px 6px; border-radius:5px; font-size:.88em}
+  pre{background:var(--chip); border-radius:10px; padding:14px; margin:14px 0; overflow-x:auto; font-family:ui-monospace,Menlo,monospace; font-size:.8rem; line-height:1.5}
+  pre code{background:none; padding:0}
+  ul{margin:12px 0; padding-left:20px} li{margin:6px 0}
+
+  table{width:100%; border-collapse:collapse; margin:14px 0; font-size:.92rem}
+  th,td{text-align:left; padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:top}
+  th{color:var(--muted); font-weight:600; font-size:.82rem}
+  td.num{font-variant-numeric:tabular-nums; white-space:nowrap}
+  .ok{color:var(--good); font-weight:600} .no{color:var(--bad); font-weight:600}
+  .note{background:var(--accent-soft); border-radius:12px; padding:14px 16px; margin:16px 0}
+  .warn{background:var(--bad-soft); border-radius:12px; padding:14px 16px; margin:16px 0}
+  .good-box{background:var(--good-soft); border-radius:12px; padding:14px 16px; margin:16px 0}
+
+  .step{display:flex; gap:12px; margin:11px 0}
+  .step .n{flex:none; width:26px; height:26px; border-radius:50%; background:var(--accent); color:#15110a; display:flex; align-items:center; justify-content:center; font-size:.85rem; font-weight:700}
+  .cmp{display:flex; gap:12px; flex-wrap:wrap; margin:14px 0}
+  .cmp .col{flex:1; min-width:240px; border-radius:12px; padding:14px}
+  .cmp .bad-col{background:var(--bad-soft)} .cmp .good-col{background:var(--good-soft)}
+  .cmp h4{margin:0 0 8px; font-size:.92rem}
+  .fig{margin:18px 0; text-align:center}
+  .fig svg{max-width:100%; height:auto}
+  .cap{font-size:.82rem; color:var(--muted); margin-top:6px}
+  .urlbox{font-family:ui-monospace,Menlo,monospace; font-size:.82rem; background:var(--chip); border-radius:8px; padding:10px 12px; word-break:break-all; margin:10px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>⚙️ <code>/cn:config</code> → 터미널 TUI 전환</h1>
+  <p class="sub">cache-necromancer v0.7.0 설계 · 2026-06-24 · grill-me 8문답으로 구체화</p>
+
+  <div class="card lead">
+    <span class="tag">한 줄 결론</span><br>
+    설정 변경을 <b>Claude 와의 대화</b>에서 <b>터미널 TUI</b> 로 옮긴다.
+    목표는 <b>LLM turn 0 + context 0</b> — 설정 작업이 대화 맥락(context window)을 전혀 차지하지 않게.
+  </div>
+
+  <h2>🧠 먼저, 핵심 개념: turn ≠ context</h2>
+  <p>이 기획 전체가 이 한 가지에서 출발했다. 헷갈리기 쉬운데, 둘은 <b>완전히 다른 것</b>이다.</p>
+  <table>
+    <tr><th>개념</th><th>뜻</th></tr>
+    <tr><td><b>LLM turn</b></td><td>모델(Claude)이 추론을 <b>한 번 도는 것</b></td></tr>
+    <tr><td><b>context 점유</b></td><td>그 입력·출력이 대화 기록(transcript)에 남아, <b>이후 모든 턴의 입력 토큰</b>에 누적되는 것</td></tr>
+  </table>
+  <div class="note">👉 <b>turn 이 0 이어도 context 는 먹을 수 있다.</b><br>모델이 안 돌아도, 명령과 그 결과가 대화 기록에 남으면 — 이후 모든 턴이 그 토큰을 계속 짊어진다.</div>
+
+  <h2>😩 통증 — 지금 <code>/cn:config</code> 는 왜 무거운가</h2>
+  <p><code>/cn:config</code> 는 사실 <b>인터랙티브 LLM 명령</b>이다:</p>
+  <pre><code>allowed-tools: AskUserQuestion, Read, Edit, Write</code></pre>
+  <p>설정 하나 바꾸는데 이런 일이 벌어진다:</p>
+  <div class="step"><span class="n">1</span><span>Claude(모델)가 <code>config.toml</code> 을 <b>Read</b></span></div>
+  <div class="step"><span class="n">2</span><span><b>AskUserQuestion</b> 으로 질문 4개를 던지고 — 사용자 선택을 받음 <span class="muted">(대화 왕복)</span></span></div>
+  <div class="step"><span class="n">3</span><span>답을 받아 <b>Edit</b> 으로 저장</span></div>
+  <p>매 단계가 <b>모델을 거친다</b> → 느리고, 질문·답변·도구호출이 전부 transcript 에 쌓여 <b>context 를 먹는다</b>.</p>
+
+  <table>
+    <tr><th>명령</th><th>LLM turn</th><th>context</th><th>비고</th></tr>
+    <tr><td><code>/cn:set</code></td><td class="ok">0</td><td>약간</td><td>hook 처리 (모델 안 거침). <code>suppressOutput</code> 으로 0 가능 — 별도 과제</td></tr>
+    <tr><td><code>/cn:config</code></td><td class="no">多</td><td class="no">多</td><td><b>AskUserQuestion 대화 → 이번 설계가 겨냥하는 진짜 통증</b></td></tr>
+  </table>
+  <p class="small muted">즉 <code>/cn:set</code> 은 이미 빠르다. 무거운 건 <code>/cn:config</code> 의 <b>인터랙티브 대화</b>다.</p>
+
+  <h2>💡 해법 — TUI 가 config 를 직접 편집</h2>
+  <p>설정을 <b>터미널 TUI</b>(<code>cn_config.py</code>)가 담당한다. Claude(모델)를 <b>전혀 거치지 않는다.</b></p>
+
+  <div class="cmp">
+    <div class="col bad-col">
+      <h4>❌ Before — LLM 대화</h4>
+      <p class="small">사용자 → 모델 Read → 질문4개 왕복 → 모델 Edit</p>
+      <p class="small"><b>turn 多 · context 多 · 느림</b></p>
+    </div>
+    <div class="col good-col">
+      <h4>✅ After — 터미널 TUI</h4>
+      <p class="small">사용자 → 터미널서 <code>cn_config.py</code> → config.toml 직접 저장</p>
+      <p class="small"><b>turn 0 · context 0 · 즉시</b></p>
+    </div>
+  </div>
+  <p class="small muted">통증의 근원은 "인터랙티브" 가 아니라 "LLM 대화" 였다. 그래서 <b>고르는 UX 는 그대로 두고, 모델만 들어낸다.</b></p>
+
+  <div class="fig">
+    <svg viewBox="0 0 680 300" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,sans-serif" font-size="13">
+      <!-- Before row -->
+      <text x="14" y="30" fill="#f87171" font-weight="700" font-size="14">BEFORE</text>
+      <rect x="14" y="42" width="120" height="44" rx="8" fill="#39191a" stroke="#f87171"/>
+      <text x="74" y="69" fill="#e6e8ec" text-anchor="middle">/cn:config</text>
+      <rect x="170" y="42" width="150" height="44" rx="8" fill="#39191a" stroke="#f87171"/>
+      <text x="245" y="62" fill="#e6e8ec" text-anchor="middle">Claude (모델)</text>
+      <text x="245" y="78" fill="#f87171" text-anchor="middle" font-size="11">추론 ·turn 소비</text>
+      <rect x="356" y="42" width="160" height="44" rx="8" fill="#39191a" stroke="#f87171"/>
+      <text x="436" y="62" fill="#e6e8ec" text-anchor="middle">AskUserQuestion ×4</text>
+      <text x="436" y="78" fill="#f87171" text-anchor="middle" font-size="11">대화 → context 누적</text>
+      <rect x="552" y="42" width="114" height="44" rx="8" fill="#1a1d23" stroke="#6b7286"/>
+      <text x="609" y="69" fill="#e6e8ec" text-anchor="middle">config.toml</text>
+      <line x1="134" y1="64" x2="168" y2="64" stroke="#6b7286" stroke-width="1.5" marker-end="url(#ar)"/>
+      <line x1="320" y1="64" x2="354" y2="64" stroke="#6b7286" stroke-width="1.5" marker-end="url(#ar)"/>
+      <line x1="516" y1="64" x2="550" y2="64" stroke="#6b7286" stroke-width="1.5" marker-end="url(#ar)"/>
+
+      <!-- After row -->
+      <text x="14" y="160" fill="#4ade80" font-weight="700" font-size="14">AFTER</text>
+      <rect x="14" y="172" width="120" height="44" rx="8" fill="#13291c" stroke="#4ade80"/>
+      <text x="74" y="192" fill="#e6e8ec" text-anchor="middle">/cn:config</text>
+      <text x="74" y="208" fill="#4ade80" text-anchor="middle" font-size="11">hook ·turn 0</text>
+      <rect x="170" y="172" width="180" height="44" rx="8" fill="#162840" stroke="#60a5fa"/>
+      <text x="260" y="192" fill="#e6e8ec" text-anchor="middle">새 터미널</text>
+      <text x="260" y="208" fill="#93c5fd" text-anchor="middle" font-size="11">cn_config.py (TUI)</text>
+      <rect x="386" y="172" width="160" height="44" rx="8" fill="#1a1d23" stroke="#6b7286"/>
+      <text x="466" y="199" fill="#e6e8ec" text-anchor="middle">config.toml</text>
+      <line x1="134" y1="194" x2="168" y2="194" stroke="#6b7286" stroke-width="1.5" marker-end="url(#ar)"/>
+      <line x1="350" y1="194" x2="384" y2="194" stroke="#6b7286" stroke-width="1.5" marker-end="url(#ar)"/>
+      <text x="250" y="250" fill="#4ade80" font-size="12" font-weight="600">모델을 한 번도 안 거침 → turn 0 · context 0</text>
+
+      <defs>
+        <marker id="ar" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L6,3 L0,6 Z" fill="#6b7286"/>
+        </marker>
+      </defs>
+    </svg>
+    <div class="cap">설정 경로에서 모델(Claude)을 완전히 빼낸다</div>
+  </div>
+
+  <h2>🗺️ 설계 결정 (grill-me 8문답)</h2>
+  <table>
+    <tr><th>#</th><th>질문</th><th>결정</th><th>이유</th></tr>
+    <tr><td>Q1</td><td>핵심 통증?</td><td>속도(1차)</td><td>"설정이 느리다" 가 출발점</td></tr>
+    <tr><td>Q2</td><td>turn 0 ≠ context 0?</td><td>맞다</td><td>block 출력도 transcript 에 남아 토큰 소비</td></tr>
+    <tr><td>Q3</td><td>우회 형태?</td><td><b>터미널 TUI</b></td><td>인터랙티브 유지 + LLM 대화만 제거. 웹서버(무거움)·단발명령(불친절) 사이</td></tr>
+    <tr><td>Q4</td><td>범위?</td><td>cn 전용</td><td>YAGNI. 단 이식 문서화</td></tr>
+    <tr><td>Q5</td><td>라이브러리?</td><td><b>stdlib 번호메뉴</b></td><td>cn 의 "의존성 0" 정체성 유지 → 이식 최적</td></tr>
+    <tr><td>Q6</td><td>호출 / 기존 명령?</td><td>hook 런처안내(turn 0), LLM판 폐기</td><td>발견성 유지 + 대화 제거</td></tr>
+    <tr><td>Q7</td><td>항목 범위?</td><td>사용자 설정 키 전부</td><td>TUI 는 context 안 먹으니 항목 늘려도 비용 0</td></tr>
+    <tr><td>Q8</td><td>이식 구조?</td><td>단일파일 + SCHEMA 분리</td><td>복붙 이식 최적</td></tr>
+  </table>
+
+  <h2>📺 TUI 화면 (예시)</h2>
+  <p>순수 stdlib 번호 메뉴. 현재값은 <code>✓</code> 로 표시, Enter 면 유지.</p>
+  <pre><code>╭─ cache-necromancer 설정 ─────────────────╮
+
+[1/7] wake.arm — 소생 방식
+   1) manual   ✓ (현재)   /cn:set 충전분만 소생
+   2) always              매 turn 자동 arm
+   선택 (Enter=유지): _
+
+[5/7] display.recap_style — 만료표시
+   1) box     ✓ (현재)   박스
+   2) compact            한 줄
+   선택 (Enter=유지): _
+
+╰──────────────────────────────────────────╯
+변경: wake.arm  manual → always
+저장됨 → 다음 Stop hook 부터 적용.</code></pre>
+  <p class="small muted">노출 항목: <code>wake.arm</code> · <code>notify.enabled</code> · <code>refresh_interval_minutes</code> · <code>max_refresh_count</code> · <code>display.recap_style</code> · <code>language</code> · <code>cache_ttl_minutes</code>. (<code>grace_seconds</code> 는 advanced — 제외)</p>
+
+  <h2>🧩 이식 가이드 — 다른 플러그인으로</h2>
+  <p>이 TUI 의 설정 항목은 <b>데이터(SCHEMA)로 선언</b>한다. 엔진은 그 데이터만 보고 메뉴를 그린다.</p>
+  <pre><code>SCHEMA = [
+    {"key": ["wake", "arm"], "label": "소생 방식",
+     "type": "choice",
+     "options": [("manual", "..."), ("always", "...")]},
+    {"key": ["notify", "enabled"], "label": "알림", "type": "bool"},
+    # ...
+]</code></pre>
+  <div class="good-box">
+    <b>이식은 2가지만 바꾸면 끝:</b>
+    <div class="step"><span class="n">1</span><span><code>cn_config.py</code> 파일 복사</span></div>
+    <div class="step"><span class="n">2</span><span><code>SCHEMA</code> 배열을 그 플러그인 설정으로 교체 + config 경로 1줄 수정</span></div>
+    <p class="small" style="margin:8px 0 0">엔진(렌더·선택·라인보존 쓰기)은 <b>그대로</b>. 의존성 0(stdlib)이라 복붙 즉시 동작.</p>
+  </div>
+  <table>
+    <tr><th>범용 — 그대로</th><th>특화 — 교체</th></tr>
+    <tr><td>렌더 엔진 · 선택 루프 · 라인보존 쓰기 · 값 정규화</td><td>SCHEMA 배열 · config 파일 경로</td></tr>
+  </table>
+
+  <h2>🚧 비범위 (이번 PR 제외)</h2>
+  <table>
+    <tr><th>항목</th><th>사유</th></tr>
+    <tr><td><code>/cn:set</code> 의 <code>suppressOutput</code></td><td>별개 통증(관심사 다름) → <b>별도 PR</b></td></tr>
+    <tr><td>범용 멀티플러그인 허브</td><td>YAGNI. cn 으로 패턴 검증 후</td></tr>
+    <tr><td><code>!</code> 한방 대화형 호출</td><td>TTY 가능여부 검증 후 비파괴적 확장</td></tr>
+    <tr><td>화살표 네비(curses/questionary)</td><td>번호메뉴 먼저 써보고 별로면</td></tr>
+  </table>
+
+  <h2>🔭 검증 필요 (아직 미확정)</h2>
+  <ul>
+    <li>Claude 의 <code>!</code> shell escape 가 <b>대화형 stdin</b> 을 주는가 — 안 주면 새 터미널 전용 확정 (현 설계 그대로 동작)</li>
+    <li>번호메뉴 UX 체감 — 별로면 Q5 의 2/3(curses/questionary) 재검토</li>
+  </ul>
+
+  <div class="card">
+    <span class="tag ok">버전</span> <b>0.7.0 (minor)</b><br>
+    <span class="small muted">설정 UX 의 구조적 변경(<code>/cn:config</code> 동작 방식 전환)이라 patch 가 아닌 minor.</span>
+  </div>
+
+</div>
+</body>
+</html>
