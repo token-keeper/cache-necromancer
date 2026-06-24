@@ -23,6 +23,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from lib.box_render import render_box  # noqa: E402
 from lib.config import ensure_config_file, load_config  # noqa: E402
 from lib.i18n import (  # noqa: E402
+    build_lives_recap_line,
     build_recap_message,
     build_revived_message,
     build_set_recap_line,
@@ -131,7 +132,16 @@ def _main_impl() -> int:
     lines = [line1]
 
     marker = Marker.load(sid_hash)
-    if marker.set_budget_remaining > 0:
+    if config.wake.arm == "always":
+        # always: 남은 목숨(max - wake_count) + idle 시 최대 생존 시한
+        lives = max(0, config.max_refresh_count - marker.wake_count)
+        survive_at = now + timedelta(
+            minutes=lives * config.refresh_interval_minutes + ttl
+        )
+        lines.append(
+            build_lives_recap_line(lang, lives, survive_at.hour, survive_at.minute)
+        )
+    elif marker.set_budget_remaining > 0:
         survive_at = now + timedelta(
             minutes=marker.set_budget_remaining * config.refresh_interval_minutes + ttl
         )

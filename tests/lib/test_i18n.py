@@ -113,6 +113,24 @@ class TestSetRecapLine:
             assert build_set_recap_line(lang, 1, 9, 5)
 
 
+class TestLivesRecapLine:
+    def test_ko_small_shows_skull_count(self):
+        from lib.i18n import build_lives_recap_line
+        s = build_lives_recap_line("ko", 5, 15, 30)
+        assert "☠️☠️☠️☠️☠️" in s
+        assert "15시 30분" in s
+
+    def test_large_count_compressed(self):
+        from lib.i18n import build_lives_recap_line
+        s = build_lives_recap_line("ko", 10, 15, 0)
+        assert "☠️×10" in s  # 6 이상은 build_skull 압축
+
+    def test_all_languages_nonempty(self):
+        from lib.i18n import build_lives_recap_line
+        for lang in ("ko", "en", "ja", "zh"):
+            assert build_lives_recap_line(lang, 3, 9, 5)
+
+
 class TestArmLabel:
     def test_manual_and_always_all_langs(self):
         from lib.i18n import arm_label_i18n

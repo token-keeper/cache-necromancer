@@ -58,6 +58,25 @@ def build_skull(n: int) -> str:
     return "☠️" * n if n <= 5 else f"☠️×{n}"
 
 
+def build_lives_recap_line(lang: Language, lives: int, hh: int, mm: int) -> str:
+    """recap 2줄째 (always 모드) — 남은 목숨(해골) + 최대 생존 시한.
+
+    lives = max_refresh_count - wake_count. build_skull 로 ≤5 개수 / >5 압축.
+    manual+set 의 build_set_recap_line(🔥) 과 대칭 (always 는 ☠️ 목숨).
+    """
+    skull = build_skull(lives)
+    time_str = _format_time(lang, hh, mm)
+    if lang == "ko":
+        return f"{skull} 최대 {time_str}까지 살림"
+    if lang == "en":
+        return f"{skull} kept alive until {time_str} at most"
+    if lang == "ja":
+        return f"{skull} 最大{time_str}まで延命"
+    if lang == "zh":
+        return f"{skull} 最长存活至{time_str}"
+    return f"{skull} kept alive until {time_str} at most"
+
+
 def build_revived_message(lang: Language, n: int, hh: int, mm: int) -> str:
     """wake turn recap 1줄째 — 소생 횟수(해골) + 새 만료 시각. 죽음 라인을 대체."""
     skull = build_skull(n)
