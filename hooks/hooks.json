@@ -1,5 +1,5 @@
 {
-  "description": "v0.5.0 — 알림 기본 + /cn:set 소생 (asyncRewake, Stop hook 기반 cache TTL 갱신)",
+  "description": "v0.8.0 — 알림 기본 + /cn:set 소생 + clear/compact 시 소생 억제 (asyncRewake, Stop hook 기반 cache TTL 갱신)",
   "hooks": {
     "Stop": [
       {
@@ -28,6 +28,18 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/on_user_prompt.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/on_session_start.py\"",
             "timeout": 5
           }
         ]

@@ -5,7 +5,9 @@ Claude Code 의 Stop hook 에 등록되어 background 에서 실행됨:
   1. marker 의 latest_fire 갱신 (timestamp 비교용)
   2. arm=="always" 일 때만 진입부 max_refresh_count 체크 (skip)
   3. config.refresh_interval_minutes 분 sleep
-  4. sleep 후 latest_fire 재확인 — 더 최근 fire 가 있으면 skip
+  4. sleep 후 latest_fire 재확인 — 더 최근 fire 가 있으면 skip.
+     clear/compact 로 suppressed_at_ns 가 기록됐고 그 뒤로 진짜 user prompt 가
+     없으면 (suppressed_at_ns > last_user_activity_at_ns) 소생 자체를 skip
   5. arm/예산 분기:
      - arm=manual + set_budget_remaining==0 (not eligible):
          notify.enabled=true  → 알림 1회 + exit 0 (wake X, 연쇄 fire X)
@@ -286,6 +288,14 @@ def main() -> int:
             f"my_ts={my_ts}), skip"
         )
         return 0
+    # clear/compact 후 진짜 user prompt 가 없었으면 소생하지 않는다 — compact 는
+    # 컨텍스트를 재작성하므로 옛 cache 를 살려도 낭비.
+    if marker.suppressed_at_ns > marker.last_user_activity_at_ns:
+        log_info(
+            f"[refresh] suppressed (clear/compact 후 user input 없음), skip "
+            f"sid={sid_hash}"
+        )
+        return 0
 
     # arm/예산 분기 (spec §7)
     eligible = config.wake.arm == "always" or marker.set_budget_remaining > 0
@@ -321,6 +331,9 @@ def main() -> int:
             return 0
         if marker.last_user_activity_at_ns > my_ts:
             log_info(f"[refresh] grace 중 user activity — wake 취소 sid={sid_hash}")
+            return 0
+        if marker.suppressed_at_ns > marker.last_user_activity_at_ns:
+            log_info(f"[refresh] grace 중 suppress — wake 취소 sid={sid_hash}")
             return 0
         if config.wake.arm != "always" and marker.set_budget_remaining <= 0:
             log_info(f"[refresh] grace 중 예산 소멸 — wake 취소 sid={sid_hash}")

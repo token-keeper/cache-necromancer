@@ -363,6 +363,76 @@ class TestSkipConditions:
         m = _load_marker_for_sid(session_env)
         assert m.wake_count == 0
 
+    def test_suppressed_by_compact_skips_wake(
+        self, cn_root, session_env, monkeypatch, silent_notify, capsys
+    ):
+        """v0.8.0: sleep 중 /compact → SessionStart hook 이 suppressed_at_ns 기록.
+        그 뒤로 진짜 user prompt 가 없으므로 wake/notify 둘 다 skip.
+        """
+        _write_config(cn_root, arm="always", notify_enabled=True)
+
+        def fake_sleep(secs):
+            from lib.session_id import sanitize
+            m = Marker.load(sanitize(session_env))
+            m.suppressed_at_ns = m.latest_fire + 9999
+            m.save()
+
+        monkeypatch.setattr("scripts.refresh.time.sleep", fake_sleep)
+
+        rc = main()
+        assert rc == 0
+        assert PING_PREFIX not in capsys.readouterr().err
+        assert silent_notify == []
+        assert _load_marker_for_sid(session_env).wake_count == 0
+
+    def test_suppress_released_by_later_user_activity(
+        self, cn_root, session_env, monkeypatch, silent_notify, capsys
+    ):
+        """억제 후 진짜 user prompt 가 오면 (last_user_activity_at_ns 가 더 최근)
+        억제 해제 — 정상 wake. user activity 는 my_ts 보다는 과거여야 supersede
+        가드에 걸리지 않는다 (compact 직후 prompt → 그 turn 의 Stop hook 이 곧
+        이 refresh.py 자신).
+        """
+        _write_config(cn_root, arm="always", notify_enabled=False)
+
+        def fake_sleep(secs):
+            from lib.session_id import sanitize
+            m = Marker.load(sanitize(session_env))
+            m.suppressed_at_ns = m.latest_fire - 2
+            m.last_user_activity_at_ns = m.latest_fire - 1
+            m.save()
+
+        monkeypatch.setattr("scripts.refresh.time.sleep", fake_sleep)
+
+        rc = main()
+        assert rc == 2
+        assert PING_PREFIX in capsys.readouterr().err
+        assert _load_marker_for_sid(session_env).wake_count == 1
+
+    def test_suppress_during_grace_cancels_wake(
+        self, cn_root, session_env, monkeypatch, silent_notify, capsys
+    ):
+        """grace 대기 중 /compact 발생 → wake 취소 (알림은 이미 발송됨)."""
+        _write_config(cn_root, arm="always", notify_enabled=True, grace=60)
+
+        sleep_count = {"n": 0}
+
+        def fake_sleep(secs):
+            sleep_count["n"] += 1
+            if sleep_count["n"] == 2:
+                from lib.session_id import sanitize
+                m = Marker.load(sanitize(session_env))
+                m.suppressed_at_ns = m.latest_fire + 9999
+                m.save()
+
+        monkeypatch.setattr("scripts.refresh.time.sleep", fake_sleep)
+
+        rc = main()
+        assert rc == 0
+        assert PING_PREFIX not in capsys.readouterr().err
+        assert len(silent_notify) == 1
+        assert _load_marker_for_sid(session_env).wake_count == 0
+
     def test_session_end_during_sleep_skips_and_no_zombie(
         self, cn_root, session_env, monkeypatch, silent_notify, capsys
     ):

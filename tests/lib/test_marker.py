@@ -323,6 +323,22 @@ class TestSetBudgetFields:
         assert loaded.set_budget_total == 3
         assert loaded.set_charged_at_ns == 12345
 
+    def test_suppressed_roundtrip(self, cn_root):
+        """v0.8.0: clear/compact 억제 시각 저장·로드."""
+        Marker(sid_hash="abc123", suppressed_at_ns=987654321).save()
+        assert Marker.load("abc123").suppressed_at_ns == 987654321
+
+    def test_load_old_marker_without_suppressed_field(self, cn_root):
+        """v0.7.x 이하 marker (suppressed_at_ns 없음) → 기본값 0."""
+        marker_dir().mkdir(parents=True, exist_ok=True)
+        marker_path("legacy-suppress").write_text(
+            json.dumps({"latest_fire": 7, "last_user_activity_at_ns": 3}),
+            encoding="utf-8",
+        )
+        loaded = Marker.load("legacy-suppress")
+        assert loaded.latest_fire == 7
+        assert loaded.suppressed_at_ns == 0
+
     def test_load_old_marker_without_budget_fields(self, cn_root):
         """구버전 marker 파일 (예산 필드 없음) → 기본값 0."""
         marker_dir().mkdir(parents=True, exist_ok=True)
