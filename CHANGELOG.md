@@ -2,6 +2,17 @@
 
 이 프로젝트의 모든 주목할 만한 변경사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고, [Semantic Versioning](https://semver.org/lang/ko/) 을 준수합니다.
 
+## [0.8.0] — 2026-08-31
+
+**`/compact`·`/clear` 후 pending cache 소생 억제**
+
+### Added
+- SessionStart hook 신설 (`scripts/on_session_start.py`, matcher `clear|compact`) — compact/clear 시점을 marker 에 기록. compact 는 컨텍스트를 재작성하므로 옛 cache 를 살리는 건 낭비다.
+- `Marker.suppressed_at_ns` 필드 — 억제 시각(ns). 기본 0 이라 기존 marker 파일과 하위호환.
+
+### Changed
+- `scripts/refresh.py`: sleep 후 supersede 체크와 grace 재확인 두 곳에서 `suppressed_at_ns > last_user_activity_at_ns` 면 wake/notify skip. 억제는 다음 진짜 user prompt 가 `last_user_activity_at_ns` 를 갱신하면 자동 해제된다.
+
 ## 0.6.0
 
 ### Added

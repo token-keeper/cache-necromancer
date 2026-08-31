@@ -50,6 +50,10 @@ class Marker:
       - set_budget_remaining: 남은 wake 예산 (/cn:set 충전, wake 시 차감)
       - set_budget_total: 직전 충전량 — ping (N/M) 의 M
       - set_charged_at_ns: 마지막 충전 시각 (ns) — 복귀 판정 기준
+      - suppressed_at_ns: SessionStart(clear|compact) hook 이 기록하는 소생 억제
+        시각 (ns). last_user_activity_at_ns 보다 크면 refresh.py 가 wake/notify
+        를 skip — compact 로 컨텍스트가 재작성된 뒤의 옛 cache 소생은 낭비다.
+        진짜 user prompt 가 오면 last_user_activity_at_ns 가 더 커져 자동 해제.
     """
     sid_hash: str
     latest_fire: int = 0
@@ -62,6 +66,7 @@ class Marker:
     set_budget_remaining: int = 0
     set_budget_total: int = 0
     set_charged_at_ns: int = 0
+    suppressed_at_ns: int = 0
 
     @classmethod
     def load(cls, sid_hash: str) -> "Marker":
@@ -87,6 +92,7 @@ class Marker:
                 set_budget_remaining=int(data.get("set_budget_remaining", 0)),
                 set_budget_total=int(data.get("set_budget_total", 0)),
                 set_charged_at_ns=int(data.get("set_charged_at_ns", 0)),
+                suppressed_at_ns=int(data.get("suppressed_at_ns", 0)),
             )
         except (json.JSONDecodeError, OSError, ValueError, TypeError):
             return cls(sid_hash=sid_hash, session_started_at=int(time.time()))
@@ -112,6 +118,7 @@ class Marker:
             "set_budget_remaining": self.set_budget_remaining,
             "set_budget_total": self.set_budget_total,
             "set_charged_at_ns": self.set_charged_at_ns,
+            "suppressed_at_ns": self.suppressed_at_ns,
         }
         tmp_path: str | None = None
         try:
