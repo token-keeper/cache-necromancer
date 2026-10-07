@@ -8,11 +8,15 @@ const DEFAULT_CONFIG: CacheNecromancerConfig = { ttlMinutes: 60, warnAfterMinute
 const base = atom({ plugin: 'cache-necromancer', key: 'base' } as const, null as CacheNecromancerTime)
 const warnedFor = atom({ plugin: 'cache-necromancer', key: 'warnedFor' } as const, null as CacheNecromancerTime)
 const expiredFor = atom({ plugin: 'cache-necromancer', key: 'expiredFor' } as const, null as CacheNecromancerTime)
+const wokeFor = atom({ plugin: 'cache-necromancer', key: 'wokeFor' } as const, null as CacheNecromancerTime)
 const label = atom({ plugin: 'cache-necromancer', key: 'label' } as const, null as CacheNecromancerLabel)
 const config = atom({ plugin: 'cache-necromancer', key: 'config' } as const, DEFAULT_CONFIG)
 const tickErrorLogged = atom({ plugin: 'cache-necromancer', key: 'tickErrorLogged' } as const, false)
+const wakeErrorLogged = atom({ plugin: 'cache-necromancer', key: 'wakeErrorLogged' } as const, false)
 
 const MIN_MS = 60 * 1000
+// scripts/refresh.py 의 PING_PREFIX 와 같다 (on_user_prompt.py 도 이 문자열로 ping 을 거른다)
+const PING_PREFIX = '[cn:keepalive'
 // 띠 배경과 글자색. 배경 #1f2d3d 대비: 기본 7.9:1, 경고 7.9:1, 만료 5.6:1 (모두 4.5:1 이상)
 const STRIP = '#1f2d3d'
 const TONE_COLOR = { normal: '#b8c4d4', warning: '#ffb454', error: '#ff7b7b' } as const
@@ -22,31 +26,35 @@ const BUSY_AGENT = new Set(['pending', 'running', 'waiting'])
 // 문구는 lib/i18n.py 의 언어·용어를 따른다 (기본 en)
 const TEXT: Record<
   CacheNecromancerLanguage,
-  { left: (mmss: string) => string; warn: (minutes: number) => string; expired: string; expiredToast: string }
+  { left: (mmss: string) => string; warn: (minutes: number) => string; expired: string; expiredToast: string; wakeOff: string }
 > = {
   ko: {
     left: t => `캐시 ${t} 남음`,
     warn: n => `캐시 ${n}분 남음`,
     expired: '캐시 만료',
     expiredToast: '캐시 만료 — 다음 입력은 캐시를 새로 만듦',
+    wakeOff: '캐시 깨우기 꺼짐 — refresh_interval_minutes 가 cache_ttl_minutes 이상',
   },
   en: {
     left: t => `Cache ${t} left`,
     warn: n => `Cache: ${n} min left`,
     expired: 'Cache expired',
     expiredToast: 'Cache expired — your next input rebuilds it',
+    wakeOff: 'Cache wake off — refresh_interval_minutes is not below cache_ttl_minutes',
   },
   ja: {
     left: t => `キャッシュ残り ${t}`,
     warn: n => `キャッシュ残り${n}分`,
     expired: 'キャッシュ期限切れ',
     expiredToast: 'キャッシュ期限切れ — 次の入力でキャッシュを作り直します',
+    wakeOff: 'キャッシュの自動延長は無効 — refresh_interval_minutes が cache_ttl_minutes 以上',
   },
   zh: {
     left: t => `缓存剩余 ${t}`,
     warn: n => `缓存剩余 ${n} 分钟`,
     expired: '缓存已过期',
     expiredToast: '缓存已过期 — 下次输入将重新创建缓存',
+    wakeOff: '缓存唤醒已关闭 — refresh_interval_minutes 不小于 cache_ttl_minutes',
   },
 }
 
@@ -118,20 +126,29 @@ async function hasBusyAgent($: EngineInterface): Promise<boolean> {
 async function tick($: EngineInterface): Promise<void> {
   const cfg = await read($, config)
   const at = await read($, base)
-  const next = at === null || !cfg.countdown ? null : labelFor(at, await $.clock.now(), cfg)
+  const now = at === null ? 0 : await $.clock.now()
+  const next = at === null || !cfg.countdown ? null : labelFor(at, now, cfg)
   // 백그라운드 에이전트가 도는 동안은 띠만 숨긴다. 캐시 시계는 흐르므로 토스트 판정은 계속한다
   const shown = next !== null && (await hasBusyAgent($)) ? null : next
 
   // 글자가 바뀔 때만 쓴다. 쓰면 label을 읽은 띠가 다시 그려진다
   if ((await read($, label))?.text !== shown?.text) await update($, label, () => shown)
 
-  if (at === null || next === null) return
-  // 이 기준 시각으로 아직 안 알렸을 때만 토스트. 판정과 기록을 update 콜백 한 번에 (겹친 tick 중복 방지)
+  if (at === null) return
+  // 이 기준 시각으로 아직 안 했을 때만 깨우기·토스트. 판정과 기록을 update 콜백 한 번에 (겹친 tick 중복 방지)
   let isFirst = false
   const claim = (prev: CacheNecromancerTime) => {
     isFirst = prev !== at
     return at
   }
+  // 깨우기는 띠(countdown)와 무관하게 판정한다. grace 동안 tick 이 계속 돌아도 claim 이 막는다.
+  // 이미 만료된 캐시(리로드 직후 오래된 기준 시각, 잠자기 복귀 등)는 깨워도 재생성 비용만 나므로 건너뛴다
+  const age = now - at
+  if (age >= cfg.warnAfterMinutes * MIN_MS && age < cfg.ttlMinutes * MIN_MS && (await read($, wokeFor)) !== at) {
+    await update($, wokeFor, claim)
+    if (isFirst) void wake($).catch(error => logWakeOnce($, `wake failed (${errorText(error)})`).catch(() => undefined))
+  }
+  if (next === null) return
   if (next.tone === 'error' && (await read($, expiredFor)) !== at) {
     await update($, expiredFor, claim)
     if (isFirst) $.ui.toast(TEXT[cfg.language].expiredToast)
@@ -142,27 +159,52 @@ async function tick($: EngineInterface): Promise<void> {
   }
 }
 
+// 캐시 마지막 적중 + refresh_interval 이 지나면 refresh.py --now 를 돌린다. 재확인·예산·알림·grace 와 marker 기록은
+// Python 몫이고, exit 2 면 stderr 중 ping 줄만 프롬프트로 낸다 ([cn:warn] 같은 경고 줄은 뺀다). 그 turn 이 캐시를 읽으면 turn.step 이 base 를 갱신해 다음 주기로 이어진다
+// 진행 중인 turn·이미 돌아온 경우는 Python 이 마지막 Stop 뒤 사용자 입력으로 보고 건너뛴다
+async function wake($: EngineInterface): Promise<void> {
+  const r = await $.process.run(['python3', `${$.plugin.root}/scripts/refresh.py`, '--now'], {
+    stdin: JSON.stringify({ session_id: await $.session.id() }),
+    // grace 길이는 Python 이 설정에서 정하므로 process.run 상한(10분)을 그대로 쓴다. 끝나면 바로 돌아온다
+    timeoutMs: 10 * MIN_MS,
+  })
+  const ping = r.stderr
+    .split(/\r?\n/)
+    .filter(line => line.includes(PING_PREFIX))
+    .join('\n')
+    .trim()
+  if (r.exitCode === 2 && ping) await $.prompt.submit({ text: ping })
+}
+
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
+
+// 깨우기도 best-effort: 첫 실패만 디버그 로그에 남긴다
+async function logWakeOnce($: EngineInterface, text: string): Promise<void> {
+  if (await read($, wakeErrorLogged)) return
+  await update($, wakeErrorLogged, () => true)
+  $.ui.log(`cache-necromancer: ${text}; later failures are not logged`, { to: 'debug' })
+}
+
 // tick 은 표시용 best-effort: 실패(리로드·종료 직후 등)는 다음 tick 이 다시 계산한다.
 // 원인 추적용으로 첫 실패만 디버그 로그에 남기고 이후는 조용히 넘긴다
 async function logFirstTickError($: EngineInterface, error: unknown): Promise<void> {
   if (await read($, tickErrorLogged)) return
   await update($, tickErrorLogged, () => true)
-  const reason = error instanceof Error ? error.message : String(error)
-  $.ui.log(`cache-necromancer: countdown tick failed (${reason}); later failures are not logged`, { to: 'debug' })
+  $.ui.log(`cache-necromancer: countdown tick failed (${errorText(error)}); later failures are not logged`, { to: 'debug' })
 }
 
 export const register: Register = on => {
   // 설정은 세션 시작 때 한 번 읽는다 (Python 훅과 같은 "설정 변경 후 새 세션" 규칙).
-  // 리로드 때도 다시 fire되므로 타이머는 여기서만 건다 (이전 환경의 타이머는 엔진이 버림)
+  // 리로드 때도 다시 fire되므로 타이머는 여기서만 건다 (이전 환경의 타이머는 엔진이 버림).
+  // countdown 이 꺼져도 깨우기 때문에 타이머는 돈다
   on('session.start', async ($, e, next) => {
     const cfg = await loadConfig($)
     await update($, config, () => cfg)
-    if (cfg.countdown) {
-      $.clock.every(1000, () => void tick($).catch(error => logFirstTickError($, error).catch(() => undefined)))
-    } else {
-      // 띠도 토스트도 없으므로 타이머를 걸지 않는다. 리로드 전에 남은 띠 값은 지운다
-      await update($, label, () => null)
-    }
+    // 리로드 전에 남은 띠 값은 바로 지운다
+    if (!cfg.countdown) await update($, label, () => null)
+    // 깨우기 창(경고 ~ 만료)이 비어 깨우기가 영영 없으므로 알린다
+    if (cfg.warnAfterMinutes >= cfg.ttlMinutes) $.ui.toast(TEXT[cfg.language].wakeOff)
+    $.clock.every(1000, () => void tick($).catch(error => logFirstTickError($, error).catch(() => undefined)))
     return next(e)
   })
 

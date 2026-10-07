@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine, MockClock } from 'claude-code/testing'
-import type { AgentInfo, AgentStatus, On, SessionCompactTrigger, SessionMessage, TurnUsage } from 'claude-code'
+import type { AgentInfo, AgentStatus, On, ProcessRunResult, SessionCompactTrigger, SessionMessage, TurnUsage } from 'claude-code'
 
 const PLUGIN = 'cache-necromancer'
 const SURFACES = ['terminal', 'desktop'] as const
@@ -19,6 +19,13 @@ type World = {
   // compact 를 거부할 사유(있으면 skip), agent.list 를 붙잡아 둘 관문(tick 경합 재현용)
   compactSkip?: string
   gate?: Promise<void>
+  // 깨우기: refresh.py 실행 기록·결과, 제출된 프롬프트, 디버그 로그. runGate 가 있으면 실행을 붙잡아 둔다(grace 재현)
+  runs: { argv: readonly string[]; stdin?: string; timeoutMs?: number }[]
+  run: Pick<ProcessRunResult, 'exitCode' | 'stderr'>
+  runGate?: Promise<void>
+  runError?: Error
+  submits: string[]
+  logs: string[]
 }
 type Env = Readonly<Record<string, string>>
 type Files = Readonly<Record<string, string>>
@@ -30,7 +37,16 @@ const KO: Files = { [CONFIG]: '[general]\nlanguage = "ko"\n' }
 // 엔진 자리: 띠는 'below' 텍스트, 모델 요청은 world.usage 를 응답 사용량으로, 에이전트 목록은 world.agents 를 돌려준다.
 // 설정 파일은 files 에 있는 경로만 읽히고, 없으면 읽기가 실패한다 (= 파일 없음)
 function setup(on: On, env: Env = { HOME: '/home/t' }, files: Files = KO): World {
-  const w: World = { clock: mock.clock(on, { now: T0 }), toasts: [], usage: CACHED, agents: [] }
+  const w: World = {
+    clock: mock.clock(on, { now: T0 }),
+    toasts: [],
+    usage: CACHED,
+    agents: [],
+    runs: [],
+    run: { exitCode: 2, stderr: `${PING}\n` },
+    submits: [],
+    logs: [],
+  }
   on('agent.list', async () => {
     await w.gate
     return { value: w.agents }
@@ -54,6 +70,21 @@ function setup(on: On, env: Env = { HOME: '/home/t' }, files: Files = KO): World
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
     const { Text } = $.ui.resolve(e)
     return <Text>below</Text>
+  })
+  on('session.id', () => ({ value: 'sid-1' }))
+  on('process.run', async (_$, e) => {
+    w.runs.push({ argv: e.argv, stdin: e.init?.stdin, timeoutMs: e.init?.timeoutMs })
+    await w.runGate
+    if (w.runError) throw w.runError
+    return { value: { stdout: '', isStdoutTruncated: false, isStderrTruncated: false, ...w.run } }
+  })
+  on('prompt.submit', (_$, e) => {
+    w.submits.push(e.text)
+    return { text: e.text }
+  })
+  on('ui.log', (_$, e) => {
+    w.logs.push(e.text)
+    return { value: undefined }
   })
   return w
 }
@@ -308,11 +339,11 @@ async function timersAfterStart($: Engine, on: On, files: Files): Promise<number
   return timers
 }
 
-test('countdown = false 면 1초 타이머 자체를 걸지 않는다', async ($, on) => {
-  expect(await timersAfterStart($, on, { [CONFIG]: '[display]\ncountdown = false\n' })).toBe(0)
+test('countdown = false 여도 1초 타이머를 1개 건다 (깨우기용)', async ($, on) => {
+  expect(await timersAfterStart($, on, { [CONFIG]: '[display]\ncountdown = false\n' })).toBe(1)
 })
 
-test('countdown 기본값이면 타이머를 1개 건다 (위 테스트의 대조군)', async ($, on) => {
+test('countdown 기본값이면 타이머를 1개 건다', async ($, on) => {
   expect(await timersAfterStart($, on, {})).toBe(1)
 })
 
@@ -330,6 +361,12 @@ test('countdown = false 로 다시 시작하면(리로드) 남아 있던 띠를 
 
 // 테스트 환경에는 setTimeout 이 있지만 hooks 모듈 타입(lib: es2023, DOM 없음)에는 선언이 없다
 declare function setTimeout(callback: () => void, ms: number): unknown
+// 같은 이유로 import.meta.url(테스트 런타임은 ESM)의 선언을 더한다
+declare global {
+  interface ImportMeta {
+    readonly url: string
+  }
+}
 const wait = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
 // tick 실패: 시계를 직접 쥐고(주기마다 테스트가 풀어 줌) clock.now 를 실패시킨다
@@ -479,4 +516,194 @@ test('compact 순간 진행 중이던 tick 이 옛 글자를 다시 써도 띠�
   w.gate = undefined
   await w.clock.advance(1000)
   expect((await shown($))?.text).toBeUndefined()
+})
+
+// ── 깨우기: 캐시 마지막 적중 + refresh_interval 에 refresh.py --now, exit 2 면 ping 을 프롬프트로 ──
+const PING = "[cn:keepalive 10:00, 1/3] reply with exactly 'ok @10:00 (1/3)'. No tools, no analysis. Use minimal output tokens."
+const STDIN = JSON.stringify({ session_id: 'sid-1' })
+
+test('refresh_interval 이 지나면 refresh.py --now 를 1회 돌리고, exit 2 면 stderr 를 프롬프트로 낸다', async ($, on) => {
+  const w = setup(on)
+  await start($)
+  await step($, w)
+  await w.clock.advance(50 * MIN - 1000)
+  expect(w.runs).toEqual([])
+  await w.clock.advance(1000)
+  await wait(20)
+  expect(w.runs).toHaveLength(1)
+  expect(w.runs[0]).toMatchObject({ argv: [expect.any(String), expect.any(String), '--now'], stdin: STDIN, timeoutMs: 10 * MIN })
+  expect(w.runs[0]?.argv[0]).toBe('python3')
+  expect(w.submits).toEqual([PING])
+  // 같은 기준 시각으로는 다시 하지 않는다
+  await w.clock.advance(5 * MIN)
+  await wait(20)
+  expect(w.runs).toHaveLength(1)
+  // 깨우기 turn 이 캐시를 읽으면 기준 시각이 갱신되어 다음 주기로 이어진다
+  await step($, w)
+  await w.clock.advance(50 * MIN)
+  await wait(20)
+  expect(w.runs).toHaveLength(2)
+  expect(w.submits).toEqual([PING, PING])
+})
+
+test('실행하는 스크립트는 로드된 플러그인 디렉터리($.plugin.root)의 scripts/refresh.py 다', async ($, on) => {
+  const w = setup(on)
+  await start($)
+  await step($, w)
+  await w.clock.advance(50 * MIN)
+  await wait(20)
+  // 이 테스트 파일(hooks/register.test.tsx) 옆 플러그인 디렉터리 = 테스트가 로드한 플러그인의 root
+  const pluginRoot = decodeURIComponent(import.meta.url.replace(/^file:\/\//, '')).replace(/\/hooks\/[^/]+$/, '')
+  expect(w.runs[0]?.argv[1]).toBe(`${pluginRoot}/scripts/refresh.py`)
+})
+
+test('grace 동안(실행이 끝나기 전) tick 이 계속 돌아도 중복 실행하지 않는다', async ($, on) => {
+  const w = setup(on)
+  let release = () => {}
+  w.runGate = new Promise(resolve => (release = resolve))
+  await start($)
+  await step($, w)
+  await w.clock.advance(50 * MIN)
+  await w.clock.advance(30_000)
+  await wait(20)
+  expect(w.runs).toHaveLength(1)
+  expect(w.submits).toEqual([])
+  release()
+  await wait(20)
+  expect(w.runs).toHaveLength(1)
+  expect(w.submits).toEqual([PING])
+})
+
+test('겹친 tick(앞 tick 이 끝나기 전에 다음 tick)이 동시에 판정해도 1회만 실행한다', async ($, on) => {
+  const w = setup(on)
+  await start($)
+  await step($, w)
+  await w.clock.advance(50 * MIN - 1000)
+  // tick 을 agent.list 에서 붙잡아 50:00 이후 tick 여러 개를 쌓은 뒤 한꺼번에 푼다
+  let release = () => {}
+  w.gate = new Promise(resolve => (release = resolve))
+  await w.clock.advance(3000)
+  release()
+  await wait(20)
+  w.gate = undefined
+  expect(w.runs).toHaveLength(1)
+  expect(w.submits).toEqual([PING])
+})
+
+test('stderr 에 경고 줄이 섞여도 ping 줄만 프롬프트로 낸다', async ($, on) => {
+  const w = setup(on)
+  w.run = { exitCode: 2, stderr: `[cn:warn] invalid wake.arm: 'x' — fallback to 'manual'\n${PING}\n[cn:warn] other\n` }
+  await start($)
+  await step($, w)
+  await w.clock.advance(50 * MIN)
+  await wait(20)
+  expect(w.submits).toEqual([PING])
+})
+
+test('exit 2 여도 ping 줄이 없으면 프롬프트를 내지 않는다', async ($, on) => {
+  const w = setup(on)
+  w.run = { exitCode: 2, stderr: '[cn:warn] only a warning\n' }
+  await start($)
+  await step($, w)
+  await w.clock.advance(50 * MIN)
+  await wait(20)
+  expect(w.runs).toHaveLength(1)
+  expect(w.submits).toEqual([])
+})
+
+for (const exitCode of [0, 1] as const) {
+  test(`exit ${exitCode} 이면 stderr 에 ping 줄이 있어도 프롬프트를 내지 않는다`, async ($, on) => {
+    const w = setup(on)
+    w.run = { exitCode, stderr: `${PING}\n` }
+    await start($)
+    await step($, w)
+    await w.clock.advance(51 * MIN)
+    await wait(20)
+    expect(w.runs).toHaveLength(1)
+    expect(w.submits).toEqual([])
+  })
+}
+
+test('캐시가 이미 만료된 기준 시각(ttl 경과 후 첫 tick)이면 깨우지 않는다', async ($, on) => {
+  const w = setup(on)
+  // 타이머가 걸리기 전에 기준 시각을 잡고 시계를 ttl 너머로 옮긴 뒤 시작 (리로드 직후 오래된 기준 시각) → 첫 tick
+  await step($, w)
+  await w.clock.set(T0 + 60 * MIN)
+  await start($)
+  await w.clock.advance(1000)
+  await wait(20)
+  expect(w.runs).toEqual([])
+  await w.clock.advance(5 * MIN)
+  await wait(20)
+  expect(w.runs).toEqual([])
+})
+
+test('첫 tick 이 정확히 ttl 이면(경계) 깨우지 않는다', async ($, on) => {
+  const w = setup(on)
+  await step($, w)
+  await w.clock.set(T0 + 60 * MIN - 1000)
+  await start($)
+  await w.clock.advance(1000)
+  await wait(20)
+  expect(w.runs).toEqual([])
+})
+
+test('process.run 이 실패해도 tick·띠는 계속 돌고 디버그 로그는 1회만 남긴다', async ($, on) => {
+  const w = setup(on)
+  w.runError = new Error('spawn python3 ENOENT')
+  await start($)
+  await step($, w)
+  await w.clock.advance(50 * MIN)
+  await wait(20)
+  expect(w.runs).toHaveLength(1)
+  expect(w.submits).toEqual([])
+  expect(w.logs).toHaveLength(1)
+  // 엔진은 실패한 process.run 을 자기 말로 감싸 reject 한다
+  expect(w.logs[0]).toMatch(/^cache-necromancer: wake failed \(.+\); later failures are not logged$/)
+  await w.clock.advance(1000)
+  expect((await shown($))?.text).toBe('캐시 09:59 남음')
+  // 다음 기준 시각의 실패는 로그를 더하지 않는다
+  await step($, w)
+  await w.clock.advance(50 * MIN)
+  await wait(20)
+  expect(w.runs).toHaveLength(2)
+  expect(w.logs).toHaveLength(1)
+})
+
+for (const [name, clear] of [
+  ['session.end(/clear)', ($: Engine) => $.session.end({ reason: 'clear', sessionId: 's', resume: { id: 's' } })],
+  ['manual compact', ($: Engine) => compact($, 'manual')],
+] as const) {
+  test(`${name} 뒤에는 기준 시각이 없어 깨우지 않는다`, async ($, on) => {
+    const w = setup(on)
+    await start($)
+    await step($, w)
+    await w.clock.advance(10 * MIN)
+    await clear($)
+    await w.clock.advance(60 * MIN)
+    await wait(20)
+    expect(w.runs).toEqual([])
+  })
+}
+
+test('countdown = false 여도 깨우기는 동작하고 띠는 없다', async ($, on) => {
+  const w = setup(on, undefined, { [CONFIG]: '[display]\ncountdown = false\n' })
+  await start($)
+  await step($, w)
+  await w.clock.advance(50 * MIN)
+  await wait(20)
+  expect(w.runs).toHaveLength(1)
+  expect(w.submits).toEqual([PING])
+  expect((await shown($))?.text).toBeUndefined()
+})
+
+test('refresh_interval_minutes ≥ cache_ttl_minutes 면 세션 시작 때 "깨우기 꺼짐" 토스트 1회, 깨우지 않는다', async ($, on) => {
+  const w = setup(on, undefined, { [CONFIG]: '[general]\nlanguage = "ko"\nrefresh_interval_minutes = 60\ncache_ttl_minutes = 60\n' })
+  await start($)
+  expect(w.toasts).toEqual(['캐시 깨우기 꺼짐 — refresh_interval_minutes 가 cache_ttl_minutes 이상'])
+  await step($, w)
+  await w.clock.advance(61 * MIN)
+  await wait(20)
+  expect(w.runs).toEqual([])
+  expect(w.toasts).toEqual(['캐시 깨우기 꺼짐 — refresh_interval_minutes 가 cache_ttl_minutes 이상', EXPIRED])
 })

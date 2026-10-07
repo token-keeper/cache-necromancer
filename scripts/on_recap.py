@@ -12,6 +12,7 @@ import json
 import os
 import re
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -61,9 +62,21 @@ def _resolve_session_id(payload: dict) -> str:
 _KEEPALIVE_NM = re.compile(r"[\s,](\d+)/\d+")
 
 
-def detect_wake_turn(transcript_path: str) -> tuple[bool, int]:
-    """transcript tail 의 최신 user 엔트리가 cn keepalive 면 (True, N).
+def _is_tool_result(entry: dict) -> bool:
+    """tool 결과를 담은 user 엔트리 (사람·플러그인이 낸 prompt 가 아님)."""
+    content = (entry.get("message") or {}).get("content")
+    return isinstance(content, list) and any(
+        isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+    )
 
+
+def detect_wake_turn(transcript_path: str) -> tuple[bool, int]:
+    """transcript tail 의 최신 prompt(user 엔트리, tool 결과 제외)가 cn keepalive 면 (True, N).
+
+    판정은 PING_PREFIX 부분일치만 본다 — 실제 transcript 의 wake 엔트리엔
+    isMeta 가 없고(v0.9.1 task-notification 128건 실측), v0.10.0 플러그인 prompt
+    는 "The ... plugin sent a message" 틀이 붙을 수 있다. tool 결과는 grep 출력
+    등에 같은 문자열이 들어올 수 있어 제외.
     N = ping 의 (N/M) 에서 파싱(없으면 1). 실패/미존재 시 (False, 0).
     """
     if not transcript_path:
@@ -84,9 +97,9 @@ def detect_wake_turn(transcript_path: str) -> tuple[bool, int]:
             e = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if isinstance(e, dict) and e.get("type") == "user":
+        if isinstance(e, dict) and e.get("type") == "user" and not _is_tool_result(e):
             last_user = e
-    if last_user is None or not last_user.get("isMeta"):
+    if last_user is None:
         return (False, 0)
     msg = last_user.get("message") or {}
     content = msg.get("content")
@@ -95,6 +108,19 @@ def detect_wake_turn(transcript_path: str) -> tuple[bool, int]:
         return (False, 0)
     m = _KEEPALIVE_NM.search(text)
     return (True, int(m.group(1)) if m else 1)
+
+
+def _record_stop(sid_hash: str) -> None:
+    """marker.latest_fire = 이번 Stop 시각 (ns). cn_status 다음 발동·active 판정과
+    cn_set 의 timer 추정 기준. v0.9.x 까지는 Stop 마다 뜨던 refresh.py 가 기록했다.
+    저장 실패는 silent (recap 출력은 계속).
+    """
+    marker = Marker.load(sid_hash)
+    marker.latest_fire = time.time_ns()
+    try:
+        marker.save()
+    except OSError as e:
+        log_warn(f"[on_recap] marker save 실패: {type(e).__name__}: {e}")
 
 
 def _main_impl() -> int:
@@ -108,6 +134,8 @@ def _main_impl() -> int:
         sid_hash = sanitize(sid)
     except ValueError:
         return 0
+
+    _record_stop(sid_hash)
 
     config_path = _resolve_root() / "config.toml"
     try:

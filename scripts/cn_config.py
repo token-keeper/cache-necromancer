@@ -231,7 +231,10 @@ def run_tui(path: Path, input_fn=input) -> list:
         return changes  # 실패 경고는 apply_changes 가 출력
     for item, raw in changes:
         print(f"✓ {item['section']}.{item['key']} → {raw}")
-    print("저장됨 → 다음 Stop hook 발화부터 자동 적용. 재시작 불필요.")
+    # mod(hooks/register.tsx)는 세션 시작·리로드 때 설정을 읽고, Python 훅은 실행마다 읽는다
+    print("저장됨 → 띠·깨우기 시점(refresh_interval·cache_ttl·countdown·language)은 새 세션"
+          "(또는 /reload-plugins)부터 mod 에 반영, Python 쪽(arm·max_refresh_count·notify·grace 등)은"
+          " 다음 판정부터 적용.")
     return changes
 
 

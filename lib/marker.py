@@ -31,9 +31,10 @@ class Marker:
     """Marker file 의 in-memory representation.
 
     Fields (TECH_SPEC §3.1):
-      - latest_fire: 가장 최근 Stop hook fire 시각 (ns). refresh.py 진입부에서만
-        갱신. cn_status 의 "next fire" 시각 계산 기준이라 user prompt 시점은
-        포함하지 않는다 (의미 흐려짐 방지).
+      - latest_fire: 가장 최근 Stop hook fire 시각 (ns). on_recap.py(Stop)와
+        refresh.py 진입부(mod 의 --now 실행 시각)가 갱신. cn_status 의 "next fire"
+        시각 계산 기준이라 user prompt 시점은 포함하지 않는다 (의미 흐려짐 방지).
+        refresh.py 는 grace 후 이 값이 자기 진입 시각보다 크면(그 사이 Stop) wake 취소.
       - wake_count: 누적 wake 또는 notify 횟수 (mode 무관)
       - last_wake_at: 직전 wake/notify 시각
       - session_started_at: 세션 시작 시각
