@@ -40,7 +40,7 @@ v0.5.0 기본 동작: **알림만** (토큰 지출 0). 자리를 비울 때 `/cn
 | 명령 | 설명 |
 |---|---|
 | `/cn:set N` | 예산 충전 — N회 wake 허용 (0=취소, 무인자=상태 표시) |
-| `/cn:config` | 동작 설정 변경 (arm/notify/interval/max_count) |
+| `/cn:config` | 동작 설정 변경 (arm/notify/interval/max_count/countdown) |
 | `/cn:status` | 세션 상태 + 다음 발동 예상 (API 비용 0) |
 
 `/cn:status` 출력 예시:
@@ -88,6 +88,10 @@ enabled = true                        # 만료 임박 macOS 알림
 [wake]
 arm = "manual"                        # manual = /cn:set 시에만 소생 / always = 매 turn 자동
 grace_seconds = 60                    # 알림 후 wake 까지 대기 (notify.enabled=true 일 때)
+
+[display]
+recap_style = "compact"               # compact = 한 줄 / box = 박스로 크게
+countdown = true                      # 프롬프트 위 띠에 캐시 남은 시간 카운트다운 (Claude Code v2.1.287+)
 ```
 
 v0.4.x legacy 키 (`[general].mode`, `[notify].system_notification`, `[refresh].hybrid_wait_seconds`) 는 로드 시 자동 매핑되어 기존 설정 파일도 그대로 동작한다.
@@ -104,6 +108,23 @@ Stop says: 🪦 Cache dies at 09:37.
 예산 0 (또는 `arm = "always"`) 이면 1줄만 표시.
 
 `language` 4종: `ko` / `en` / `ja` / `zh`. 시각 = `now + cache_ttl_minutes`, 사용자 시스템 local time.
+
+## 카운트다운 띠 (v0.9.0)
+
+Claude 가 답변을 끝내고 입력을 기다리는 동안, 프롬프트 바로 위 띠에 캐시가 죽기까지 남은 시간을 1초씩 줄여 보여준다.
+
+```
+  캐시 59:11 남음
+```
+
+- 기준 시각은 메인 대화에서 캐시를 실제로 읽거나 쓴 마지막 모델 요청이다 (서브에이전트 요청·실패한 요청은 세지 않는다). wake turn 도 메인 대화의 요청이라 다시 60:00 부터 셀 것으로 예상한다 (실측 전).
+- `refresh_interval_minutes` 가 지나면(기본 50분 → 남은 10분) 경고색 + `캐시 10분 남음` 토스트, `cache_ttl_minutes` 가 지나면 `캐시 만료` 오류색 + 토스트. 같은 기준 시각에서는 한 번씩만 알린다.
+- 답변 중이거나 설문이 띠를 쓰는 동안에는 숨는다. 세션이 시작된 뒤(또는 `/clear` 뒤) 첫 요청 전에는 아무것도 표시하지 않는다.
+- `[display] countdown = false` 면 띠와 토스트를 모두 끈다. 설정은 **세션 시작 때 읽으므로 바꾼 뒤 새 chat 세션부터** 적용된다.
+- 띠 문구는 현재 한국어만 지원한다 (`language` 설정을 따르지 않는다).
+- what-did-i-say 플러그인의 띠 박스와 함께 쓰면 이 줄이 위, 요청 박스가 아래로 붙는다.
+
+**요구: Claude Code v2.1.287 이상** (mods = 함수 훅 플러그인). 플러그인의 `hooks/hooks.json` `modules` 항목으로 로드된다. 그보다 낮은 버전에서는 `modules` 를 읽지 않아 띠만 빠지고 기존 알림·`/cn:*` 는 그대로 동작할 것으로 예상한다 (실측하지 않은 추정). v2.1.292 에서 `claude plugin validate`·`claude plugin test` 로 확인했다.
 
 ## 어떻게 동작하는가
 

@@ -40,7 +40,7 @@ Takes effect from **a new chat session** (Claude Code doesn't hot-reload setting
 | Command | Description |
 |---|---|
 | `/cn:set N` | Charge wake budget — allow N wakes (0=cancel, no arg=status) |
-| `/cn:config` | Change settings (arm/notify/interval/max_count) |
+| `/cn:config` | Change settings (arm/notify/interval/max_count/countdown) |
 | `/cn:status` | Session state + next scheduled fire (no API cost) |
 
 `/cn:status` output:
@@ -88,6 +88,10 @@ enabled = true                        # macOS notification near expiry
 [wake]
 arm = "manual"                        # manual = wake only after /cn:set / always = auto every turn
 grace_seconds = 60                    # delay between notify and wake (when notify.enabled=true)
+
+[display]
+recap_style = "compact"               # compact = one line / box = large box
+countdown = true                      # cache countdown in the band above the prompt (Claude Code v2.1.287+)
 ```
 
 v0.4.x legacy keys (`[general].mode`, `[notify].system_notification`, `[refresh].hybrid_wait_seconds`) are auto-mapped on load, so existing config files continue to work.
@@ -104,6 +108,23 @@ Stop says: 🪦 Cache dies at 09:37.
 With zero budget (or `arm = "always"`), only the first line is shown.
 
 4 languages: `ko` / `en` / `ja` / `zh`. Time = `now + cache_ttl_minutes`, user's local time.
+
+## Countdown Band (v0.9.0)
+
+While Claude is idle waiting for your input, the band right above the prompt shows the time left before the cache dies, ticking down every second.
+
+```
+  캐시 59:11 남음
+```
+
+- The reference time is the last main-conversation model request that actually read or wrote the cache (subagent requests and failed requests don't count). Wake turns are main-conversation requests too, so they should restart the count from 60:00 (not yet observed).
+- After `refresh_interval_minutes` (default 50 → 10 minutes left) the line turns to the warning color with a `캐시 10분 남음` toast; after `cache_ttl_minutes` it shows `캐시 만료` in the error color with a toast. Each fires once per reference time.
+- Hidden while Claude is answering or a survey holds the band. Nothing is shown before the first request of a session (or after `/clear`).
+- `[display] countdown = false` turns off both the band and the toasts. Settings are **read at session start, so changes apply from a new chat session**.
+- The band text is Korean only for now (it does not follow `language`).
+- With the what-did-i-say plugin's band box, this line sits on top and the request box below it.
+
+**Requires Claude Code v2.1.287 or later** (mods = function-hook plugins), loaded through the `modules` entry of `hooks/hooks.json`. On older versions `modules` is not read, so only the band should be missing while notifications and `/cn:*` keep working (an untested assumption). Checked on v2.1.292 with `claude plugin validate` and `claude plugin test`.
 
 ## Mechanics
 
