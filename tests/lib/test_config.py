@@ -284,3 +284,14 @@ def test_display_invalid_falls_back_to_compact(tmp_path, capsys):
     assert "recap_style" in capsys.readouterr().err
 
 
+def test_display_countdown_default_true(tmp_path):
+    cfg = load_config(tmp_path / "none.toml")  # 파일 없음 → 기본값
+    assert cfg.display.countdown is True
+
+
+def test_display_countdown_false_parsed(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text('[display]\nrecap_style = "box"\ncountdown = false\n', encoding="utf-8")
+    cfg = load_config(p)
+    assert cfg.display.countdown is False
+    assert cfg.display.recap_style == "box"  # 기존 키 동작 불변

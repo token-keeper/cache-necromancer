@@ -19,6 +19,7 @@ def test_creates_default_when_missing(tmp_path):
     assert 'language = "en"' in content
     assert "[notify]" in content
     assert "[wake]" in content
+    assert "countdown = true" in content  # v0.9.0: 띠 카운트다운 기본 on
     # v0.3.0: [advanced] 섹션 없음
     assert "[advanced]" not in content
 
