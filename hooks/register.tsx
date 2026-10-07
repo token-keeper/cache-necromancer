@@ -15,6 +15,8 @@ const tickErrorLogged = atom({ plugin: 'cache-necromancer', key: 'tickErrorLogge
 const wakeErrorLogged = atom({ plugin: 'cache-necromancer', key: 'wakeErrorLogged' } as const, false)
 
 const MIN_MS = 60 * 1000
+// scripts/refresh.py 의 PING_PREFIX 와 같다 (on_user_prompt.py 도 이 문자열로 ping 을 거른다)
+const PING_PREFIX = '[cn:keepalive'
 // 띠 배경과 글자색. 배경 #1f2d3d 대비: 기본 7.9:1, 경고 7.9:1, 만료 5.6:1 (모두 4.5:1 이상)
 const STRIP = '#1f2d3d'
 const TONE_COLOR = { normal: '#b8c4d4', warning: '#ffb454', error: '#ff7b7b' } as const
@@ -136,8 +138,10 @@ async function tick($: EngineInterface): Promise<void> {
     isFirst = prev !== at
     return at
   }
-  // 깨우기는 띠(countdown)와 무관하게 판정한다. grace 동안 tick 이 계속 돌아도 claim 이 막는다
-  if (now - at >= cfg.warnAfterMinutes * MIN_MS && (await read($, wokeFor)) !== at) {
+  // 깨우기는 띠(countdown)와 무관하게 판정한다. grace 동안 tick 이 계속 돌아도 claim 이 막는다.
+  // 이미 만료된 캐시(리로드 직후 오래된 기준 시각, 잠자기 복귀 등)는 깨워도 재생성 비용만 나므로 건너뛴다
+  const age = now - at
+  if (age >= cfg.warnAfterMinutes * MIN_MS && age < cfg.ttlMinutes * MIN_MS && (await read($, wokeFor)) !== at) {
     await update($, wokeFor, claim)
     if (isFirst) void wake($, cfg).catch(error => logWakeOnce($, `wake failed (${errorText(error)})`).catch(() => undefined))
   }
@@ -172,7 +176,7 @@ async function refreshScript($: EngineInterface): Promise<string | null> {
 }
 
 // 캐시 마지막 적중 + refresh_interval 이 지나면 refresh.py --now 를 돌린다. 재확인·예산·알림·grace 와 marker 기록은
-// Python 몫이고, exit 2 면 stderr 의 ping 을 프롬프트로 낸다. 그 turn 이 캐시를 읽으면 turn.step 이 base 를 갱신해 다음 주기로 이어진다
+// Python 몫이고, exit 2 면 stderr 중 ping 줄만 프롬프트로 낸다 ([cn:warn] 같은 경고 줄은 뺀다). 그 turn 이 캐시를 읽으면 turn.step 이 base 를 갱신해 다음 주기로 이어진다
 async function wake($: EngineInterface, cfg: CacheNecromancerConfig): Promise<void> {
   const script = await refreshScript($)
   if (script === null) return logWakeOnce($, 'wake skipped (cache-necromancer not in installed_plugins.json)')
@@ -181,7 +185,11 @@ async function wake($: EngineInterface, cfg: CacheNecromancerConfig): Promise<vo
     // grace 동안 Python 이 기다리므로 그만큼 + 여유. process.run 상한이 10분이다
     timeoutMs: Math.min((cfg.graceSeconds + 30) * 1000, 10 * MIN_MS),
   })
-  const ping = r.stderr.trim()
+  const ping = r.stderr
+    .split(/\r?\n/)
+    .filter(line => line.includes(PING_PREFIX))
+    .join('\n')
+    .trim()
   if (r.exitCode === 2 && ping) await $.prompt.submit({ text: ping })
 }
 

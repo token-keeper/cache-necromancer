@@ -563,6 +563,41 @@ test('grace 동안(실행이 끝나기 전) tick 이 계속 돌아도 중복 실
   expect(w.submits).toEqual([PING])
 })
 
+test('stderr 에 경고 줄이 섞여도 ping 줄만 프롬프트로 낸다', async ($, on) => {
+  const w = setup(on, undefined, WAKE)
+  w.run = { exitCode: 2, stderr: `[cn:warn] invalid wake.arm: 'x' — fallback to 'manual'\n${PING}\n[cn:warn] other\n` }
+  await start($)
+  await step($, w)
+  await w.clock.advance(50 * MIN)
+  await wait(20)
+  expect(w.submits).toEqual([PING])
+})
+
+test('exit 2 여도 ping 줄이 없으면 프롬프트를 내지 않는다', async ($, on) => {
+  const w = setup(on, undefined, WAKE)
+  w.run = { exitCode: 2, stderr: '[cn:warn] only a warning\n' }
+  await start($)
+  await step($, w)
+  await w.clock.advance(50 * MIN)
+  await wait(20)
+  expect(w.runs).toHaveLength(1)
+  expect(w.submits).toEqual([])
+})
+
+test('캐시가 이미 만료된 기준 시각(ttl 경과 후 첫 tick)이면 깨우지 않는다', async ($, on) => {
+  const w = setup(on, undefined, WAKE)
+  // 타이머가 걸리기 전에 기준 시각을 잡고 시계를 ttl 너머로 옮긴 뒤 시작 (리로드 직후 오래된 기준 시각) → 첫 tick
+  await step($, w)
+  await w.clock.set(T0 + 60 * MIN)
+  await start($)
+  await w.clock.advance(1000)
+  await wait(20)
+  expect(w.runs).toEqual([])
+  await w.clock.advance(5 * MIN)
+  await wait(20)
+  expect(w.runs).toEqual([])
+})
+
 test('exit 0(알림만·취소)이면 프롬프트를 내지 않는다', async ($, on) => {
   const w = setup(on, undefined, WAKE)
   w.run = { exitCode: 0, stderr: '' }
