@@ -4,13 +4,14 @@
 
 ## [0.9.0] — 2026-10-07
 
-**프롬프트 위 띠에 캐시 남은 시간 카운트다운** (Claude Code v2.1.287+ mods)
+**프롬프트 위 띠에 캐시 남은 시간 카운트다운** (Claude Code v2.1.286+ mods)
 
 ### Added
 - `hooks/register.tsx` — Claude Code mod(함수 훅). `hooks/hooks.json` 의 `modules` 로 로드되며 기존 settings 훅과 같은 파일에 공존한다.
-  - 답변이 끝난 대기 상태에서 프롬프트 바로 위 띠에 `캐시 59:11 남음` 을 1초씩 줄여 표시. 남은 시간이 `cache_ttl_minutes - refresh_interval_minutes` 이하면 경고색 + 토스트 1회, 만료되면 `캐시 만료` 오류색 + 토스트 1회 (기준 시각마다 한 번).
+  - 모든 작업이 끝난 대기 상태(답변 중·백그라운드 에이전트 실행 중이 아님)에서 프롬프트 바로 위 띠에 남은 시간(`Cache 59:11 left` / `캐시 59:11 남음`)을 1초씩 줄여 표시. 남은 시간이 `cache_ttl_minutes - refresh_interval_minutes` 이하면 주황 + 토스트 1회, 만료되면 빨강 + 토스트 1회 (기준 시각마다 한 번). 문구는 `[general] language`(ko·en·ja·zh) 를 따른다.
   - 기준 시각 = 메인 대화에서 캐시를 실제로 읽거나 쓴 모델 요청의 시작 시각 (서브에이전트·실패 요청 제외). `/clear` 등 세션 종료 시 초기화.
-  - 설정은 세션 시작 때 `$CN_ROOT` 또는 `~/.cache-necromancer/config.toml` 에서 읽는다 (`cache_ttl_minutes`·`refresh_interval_minutes`·`countdown`).
+  - 설정은 세션 시작 때 `$CN_ROOT` 또는 `~/.cache-necromancer/config.toml` 에서 읽는다 (`cache_ttl_minutes`·`refresh_interval_minutes`·`language`·`countdown`). `countdown = false` 면 타이머도 걸지 않는다.
+  - Claude Code v2.1.286 이상. 그보다 낮은 버전은 `modules` 를 무시하고 기존 훅만 로드한다 (v2.1.200~2.1.286 실측).
 - `[display] countdown` 설정 (기본 `true`) — `false` 면 띠·토스트 모두 끔. `config.toml.example`·자동 생성 템플릿·`/cn:config` TUI 에 추가.
 
 ### Changed

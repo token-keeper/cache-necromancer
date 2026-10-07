@@ -91,7 +91,7 @@ grace_seconds = 60                    # delay between notify and wake (when noti
 
 [display]
 recap_style = "compact"               # compact = one line / box = large box
-countdown = true                      # cache countdown in the band above the prompt (Claude Code v2.1.287+)
+countdown = true                      # cache countdown in the band above the prompt (Claude Code v2.1.286+)
 ```
 
 v0.4.x legacy keys (`[general].mode`, `[notify].system_notification`, `[refresh].hybrid_wait_seconds`) are auto-mapped on load, so existing config files continue to work.
@@ -111,20 +111,22 @@ With zero budget (or `arm = "always"`), only the first line is shown.
 
 ## Countdown Band (v0.9.0)
 
-While Claude is idle waiting for your input, the band right above the prompt shows the time left before the cache dies, ticking down every second.
+Once all work is done and Claude is waiting for your input, the band right above the prompt shows the time left before the cache dies, ticking down every second.
 
 ```
-  캐시 59:11 남음
+  Cache 59:11 left       (language = "en", default)
+  캐시 59:11 남음        (language = "ko")
 ```
 
 - The reference time is the last main-conversation model request that actually read or wrote the cache (subagent requests and failed requests don't count). Wake turns are main-conversation requests too, so they should restart the count from 60:00 (not yet observed).
-- After `refresh_interval_minutes` (default 50 → 10 minutes left) the line turns to the warning color with a `캐시 10분 남음` toast; after `cache_ttl_minutes` it shows `캐시 만료` in the error color with a toast. Each fires once per reference time.
-- Hidden while Claude is answering or a survey holds the band. Nothing is shown before the first request of a session (or after `/clear`).
-- `[display] countdown = false` turns off both the band and the toasts. Settings are **read at session start, so changes apply from a new chat session**.
-- The band text is Korean only for now (it does not follow `language`).
+- The recap's expiry time counts from the Stop time while the band counts from the **start** of the last cache request, so the two can differ by a few minutes (the longer the answer, the earlier the band calls expiry).
+- After `refresh_interval_minutes` (default 50 → 10 minutes left) the line turns orange (#ffb454) with a `Cache: 10 min left` toast; after `cache_ttl_minutes` it shows `Cache expired` in red (#ff7b7b) with a toast. Each fires once per reference time.
+- **Hidden while work is running** — while Claude is answering, or while a background agent (subagent etc.) is still `pending`/`running`/`waiting` after the main turn ended. The cache clock keeps running, so warning and expiry toasts still fire meanwhile. Also hidden while a survey holds the band.
+- Nothing is shown before the first request of a session (or after `/clear`).
+- `[display] countdown = false` turns off both the band and the toasts. Text follows `[general] language` (ko/en/ja/zh, default en). Settings are **read at session start, so changes apply from a new chat session**.
 - With the what-did-i-say plugin's band box, this line sits on top and the request box below it.
 
-**Requires Claude Code v2.1.287 or later** (mods = function-hook plugins), loaded through the `modules` entry of `hooks/hooks.json`. On older versions `modules` is not read, so only the band should be missing while notifications and `/cn:*` keep working (an untested assumption). Checked on v2.1.292 with `claude plugin validate` and `claude plugin test`.
+**Requires Claude Code v2.1.286 or later** (mods = function-hook plugins, loaded through the `modules` entry of `hooks/hooks.json`). On older versions the `modules` key is ignored without error: only the band is missing, and the existing hooks (notifications, recap, `/cn:*`) still load. On v2.1.242–v2.1.285 mods sit behind a server rollout flag, so the band may appear depending on the environment (flag-on environments not tested). Evidence: measured on 2026-10-07 with an isolated config on v2.1.200, v2.1.241 and v2.1.242–v2.1.286; checked on v2.1.292 with `claude plugin validate` and `claude plugin test`.
 
 ## Mechanics
 

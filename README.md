@@ -91,7 +91,7 @@ grace_seconds = 60                    # 알림 후 wake 까지 대기 (notify.en
 
 [display]
 recap_style = "compact"               # compact = 한 줄 / box = 박스로 크게
-countdown = true                      # 프롬프트 위 띠에 캐시 남은 시간 카운트다운 (Claude Code v2.1.287+)
+countdown = true                      # 프롬프트 위 띠에 캐시 남은 시간 카운트다운 (Claude Code v2.1.286+)
 ```
 
 v0.4.x legacy 키 (`[general].mode`, `[notify].system_notification`, `[refresh].hybrid_wait_seconds`) 는 로드 시 자동 매핑되어 기존 설정 파일도 그대로 동작한다.
@@ -111,20 +111,22 @@ Stop says: 🪦 Cache dies at 09:37.
 
 ## 카운트다운 띠 (v0.9.0)
 
-Claude 가 답변을 끝내고 입력을 기다리는 동안, 프롬프트 바로 위 띠에 캐시가 죽기까지 남은 시간을 1초씩 줄여 보여준다.
+모든 작업이 끝나 입력을 기다리는 동안, 프롬프트 바로 위 띠에 캐시가 죽기까지 남은 시간을 1초씩 줄여 보여준다.
 
 ```
-  캐시 59:11 남음
+  캐시 59:11 남음        (language = "ko")
+  Cache 59:11 left       (language = "en", 기본)
 ```
 
 - 기준 시각은 메인 대화에서 캐시를 실제로 읽거나 쓴 마지막 모델 요청이다 (서브에이전트 요청·실패한 요청은 세지 않는다). wake turn 도 메인 대화의 요청이라 다시 60:00 부터 셀 것으로 예상한다 (실측 전).
-- `refresh_interval_minutes` 가 지나면(기본 50분 → 남은 10분) 경고색 + `캐시 10분 남음` 토스트, `cache_ttl_minutes` 가 지나면 `캐시 만료` 오류색 + 토스트. 같은 기준 시각에서는 한 번씩만 알린다.
-- 답변 중이거나 설문이 띠를 쓰는 동안에는 숨는다. 세션이 시작된 뒤(또는 `/clear` 뒤) 첫 요청 전에는 아무것도 표시하지 않는다.
-- `[display] countdown = false` 면 띠와 토스트를 모두 끈다. 설정은 **세션 시작 때 읽으므로 바꾼 뒤 새 chat 세션부터** 적용된다.
-- 띠 문구는 현재 한국어만 지원한다 (`language` 설정을 따르지 않는다).
+- recap 의 만료 시각은 Stop 시각 기준이고 띠는 마지막 캐시 요청의 **시작** 시각 기준이라, 둘이 몇 분 차이 날 수 있다 (긴 답변일수록 띠가 더 이르게 만료를 알린다).
+- `refresh_interval_minutes` 가 지나면(기본 50분 → 남은 10분) 주황(#ffb454) + `캐시 10분 남음` 토스트, `cache_ttl_minutes` 가 지나면 `캐시 만료` 빨강(#ff7b7b) + 토스트. 같은 기준 시각에서는 한 번씩만 알린다.
+- **작업 중에는 숨는다** — 답변 중이거나, 리더 턴이 끝났어도 백그라운드 에이전트(서브에이전트 등)가 실행 중(`pending`·`running`·`waiting`)이면 띠를 그리지 않는다. 캐시 시계는 흐르므로 그동안에도 경고·만료 토스트는 울린다. 설문이 띠를 쓰는 동안에도 숨는다.
+- 세션이 시작된 뒤(또는 `/clear` 뒤) 첫 요청 전에는 아무것도 표시하지 않는다.
+- `[display] countdown = false` 면 띠와 토스트를 모두 끈다. 문구는 `[general] language`(ko·en·ja·zh, 기본 en)를 따른다. 설정은 **세션 시작 때 읽으므로 바꾼 뒤 새 chat 세션부터** 적용된다.
 - what-did-i-say 플러그인의 띠 박스와 함께 쓰면 이 줄이 위, 요청 박스가 아래로 붙는다.
 
-**요구: Claude Code v2.1.287 이상** (mods = 함수 훅 플러그인). 플러그인의 `hooks/hooks.json` `modules` 항목으로 로드된다. 그보다 낮은 버전에서는 `modules` 를 읽지 않아 띠만 빠지고 기존 알림·`/cn:*` 는 그대로 동작할 것으로 예상한다 (실측하지 않은 추정). v2.1.292 에서 `claude plugin validate`·`claude plugin test` 로 확인했다.
+**요구: Claude Code v2.1.286 이상** (mods = 함수 훅 플러그인, `hooks/hooks.json` 의 `modules` 항목으로 로드). 그보다 낮은 버전에서는 `modules` 키가 오류 없이 무시되어 띠만 빠지고, 기존 훅(알림·recap·`/cn:*`)은 그대로 로드된다. v2.1.242~v2.1.285 는 mods 가 서버 롤아웃 플래그 뒤에 있어 환경에 따라 띠가 보일 수도 있다 (플래그가 켜진 환경은 추정). 근거: 2026-10-07 격리 설정으로 v2.1.200·v2.1.241·v2.1.242~v2.1.286 실측, v2.1.292 에서 `claude plugin validate`·`claude plugin test` 확인.
 
 ## 어떻게 동작하는가
 

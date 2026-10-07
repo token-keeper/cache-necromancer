@@ -17,4 +17,4 @@ grace_seconds = 60                    # 알림 후 wake 까지 대기 (notify.en
 
 [display]
 recap_style = "compact"               # compact = 한 줄 / box = 박스로 크게
-countdown = true                      # 프롬프트 위 띠에 캐시 남은 시간 카운트다운 (Claude Code v2.1.287+)
+countdown = true                      # 프롬프트 위 띠에 캐시 남은 시간 카운트다운 (Claude Code v2.1.286+)
