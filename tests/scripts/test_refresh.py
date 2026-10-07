@@ -847,7 +847,12 @@ class TestAlwaysArmKeepsLegacyBehavior:
 
 
 class TestNowFlag:
-    """v0.10.0: mod 가 refresh_interval 을 기다린 뒤 --now 로 실행 — 그 sleep 만 생략."""
+    """v0.10.0: mod 가 refresh_interval 을 기다린 뒤 --now 로 실행 — 그 sleep 만 생략.
+
+    latest_fire(마지막 Stop)는 on_recap.py 가 쓰므로 각 테스트가 직접 심는다.
+    """
+
+    SID = "test-now-sid"
 
     @pytest.fixture
     def sleeps(self, monkeypatch):
@@ -855,40 +860,126 @@ class TestNowFlag:
         monkeypatch.setattr("scripts.refresh.time.sleep", calls.append)
         return calls
 
-    def test_budget_wakes_without_interval_sleep(
-        self, cn_root, session_stdin, sleeps, silent_notify, capsys
-    ):
-        _write_config(cn_root, arm="manual", notify_enabled=True, grace=60)
-        m = _load_marker_for_sid(session_stdin)
-        m.set_budget_remaining = 1
-        m.set_budget_total = 1
+    def _marker(self, *, stop_ns, budget=0, activity_ns=0, suppressed_ns=0):
+        m = _load_marker_for_sid(self.SID)
+        m.latest_fire = stop_ns
+        m.set_budget_remaining = budget
+        m.set_budget_total = budget
+        m.last_user_activity_at_ns = activity_ns
+        m.suppressed_at_ns = suppressed_ns
         m.save()
-        assert main(["--now"]) == 2
+
+    def _run(self, monkeypatch, base_ms=None):
+        payload = {"session_id": self.SID}
+        if base_ms is not None:
+            payload["base_ms"] = base_ms
+        monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+        return main(["--now"])
+
+    def test_budget_wakes_without_interval_sleep(
+        self, cn_root, monkeypatch, sleeps, silent_notify, capsys
+    ):
+        import time
+        _write_config(cn_root, arm="manual", notify_enabled=True, grace=60)
+        self._marker(stop_ns=time.time_ns() - 1, budget=1)
+        rc = self._run(monkeypatch)
+        assert rc == 2
         assert sleeps == [60]                   # grace 만, 50분 sleep 없음
         assert len(silent_notify) == 1
         assert PING_PREFIX in capsys.readouterr().err
-        m = _load_marker_for_sid(session_stdin)
-        assert m.set_budget_remaining == 0
-        assert m.latest_fire > 0
+        assert _load_marker_for_sid(self.SID).set_budget_remaining == 0
+
+    def test_does_not_write_latest_fire(
+        self, cn_root, monkeypatch, sleeps, silent_notify
+    ):
+        """--now 는 latest_fire 를 쓰지 않는다 — /cn:status 다음 발동 = 마지막 Stop 기준."""
+        import time
+        _write_config(cn_root, arm="always", notify_enabled=False)
+        stop = time.time_ns() - 5
+        self._marker(stop_ns=stop)
+        rc = self._run(monkeypatch)
+        assert rc == 2
+        assert _load_marker_for_sid(self.SID).latest_fire == stop
 
     def test_no_budget_notifies_only(
-        self, cn_root, session_stdin, sleeps, silent_notify, capsys
+        self, cn_root, monkeypatch, sleeps, silent_notify, capsys
     ):
+        import time
         _write_config(cn_root, arm="manual", notify_enabled=True)
-        assert main(["--now"]) == 0
+        self._marker(stop_ns=time.time_ns() - 1)
+        rc = self._run(monkeypatch)
+        assert rc == 0
         assert sleeps == []
         assert len(silent_notify) == 1
         assert PING_PREFIX not in capsys.readouterr().err
 
     def test_suppressed_by_compact_skips(
-        self, cn_root, session_stdin, sleeps, silent_notify, capsys
+        self, cn_root, monkeypatch, sleeps, silent_notify, capsys
     ):
+        import time
         _write_config(cn_root, arm="always", notify_enabled=True)
-        m = _load_marker_for_sid(session_stdin)
-        m.suppressed_at_ns = 2
-        m.last_user_activity_at_ns = 1
-        m.save()
-        assert main(["--now"]) == 0
+        self._marker(stop_ns=time.time_ns() - 1, suppressed_ns=2, activity_ns=1)
+        rc = self._run(monkeypatch)
+        assert rc == 0
         assert sleeps == []
         assert silent_notify == []
         assert PING_PREFIX not in capsys.readouterr().err
+
+    def test_no_stop_record_skips(
+        self, cn_root, monkeypatch, sleeps, silent_notify, capsys
+    ):
+        """latest_fire == 0 (SessionEnd 가 marker 삭제) → skip, marker 재생성 없음."""
+        _write_config(cn_root, arm="always", notify_enabled=False)
+        rc = self._run(monkeypatch)
+        assert rc == 0
+        assert PING_PREFIX not in capsys.readouterr().err
+        from lib.session_id import sanitize
+        assert not marker_path(sanitize(self.SID)).exists()
+
+    def test_input_after_base_skips_and_keeps_budget(
+        self, cn_root, monkeypatch, sleeps, silent_notify, capsys
+    ):
+        """base 뒤 사용자 입력 = turn 진행 중이거나 이미 돌아옴 → 알림·예산 차감 없이 exit 0."""
+        import time
+        _write_config(cn_root, arm="manual", notify_enabled=True)
+        now_ns = time.time_ns()
+        base_ms = now_ns // 1_000_000 - 50 * 60 * 1000          # 50분 전 캐시 적중
+        self._marker(
+            stop_ns=base_ms * 1_000_000 - 1,                   # 직전 Stop 은 base 앞
+            budget=3,
+            activity_ns=base_ms * 1_000_000 + 5 * 60 * 10**9,  # base 5분 뒤 입력
+        )
+        rc = self._run(monkeypatch, base_ms=base_ms)
+        assert rc == 0
+        assert silent_notify == []
+        assert PING_PREFIX not in capsys.readouterr().err
+        assert _load_marker_for_sid(self.SID).set_budget_remaining == 3
+
+    def test_input_before_base_still_wakes(
+        self, cn_root, monkeypatch, sleeps, silent_notify, capsys
+    ):
+        import time
+        _write_config(cn_root, arm="manual", notify_enabled=False)
+        now_ns = time.time_ns()
+        base_ms = now_ns // 1_000_000 - 50 * 60 * 1000
+        self._marker(
+            stop_ns=base_ms * 1_000_000 + 30 * 10**9,          # 그 turn 의 Stop
+            budget=3,
+            activity_ns=base_ms * 1_000_000 - 10**9,           # turn 을 연 입력은 base 앞
+        )
+        rc = self._run(monkeypatch, base_ms=base_ms)
+        assert rc == 2
+        assert PING_PREFIX in capsys.readouterr().err
+        assert _load_marker_for_sid(self.SID).set_budget_remaining == 2
+
+    def test_without_base_ms_uses_entry_time(
+        self, cn_root, monkeypatch, sleeps, silent_notify, capsys
+    ):
+        """base_ms 가 없으면 기존 기준(진입 시각) — 과거 입력은 막지 않는다."""
+        import time
+        _write_config(cn_root, arm="always", notify_enabled=False)
+        self._marker(stop_ns=time.time_ns() - 2, activity_ns=time.time_ns() - 1)
+        rc = self._run(monkeypatch)
+        assert rc == 2
+        assert PING_PREFIX in capsys.readouterr().err

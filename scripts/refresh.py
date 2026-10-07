@@ -19,9 +19,13 @@ mod 가 --now 로 실행한다 (아래). 단계:
      - wake 시 manual 은 예산 차감 후 (consumed/total) ping,
                 always 는 (wake_count/max_refresh_count) ping.
 
---now (v0.10.0): 3 의 sleep 만 생략. mod(hooks/register.tsx)가 캐시 마지막
-적중 시각 + refresh_interval_minutes 에 이 스크립트를 실행하고, exit 2 면
-stderr ping 을 prompt 로 제출한다. 나머지 단계(재확인·예산·알림·grace)는 같다.
+--now (v0.10.0): mod(hooks/register.tsx)가 캐시 마지막 적중 시각(base) +
+refresh_interval_minutes 에 이 스크립트를 실행하고, exit 2 면 stderr ping 을
+prompt 로 제출한다. 무인자 실행과 다른 점:
+  - 3 의 sleep 생략
+  - 1 의 latest_fire 기록 생략 (마지막 Stop 시각은 on_recap.py 만 기록)
+  - 4 의 사용자 활동 비교 기준 = stdin 의 base_ms (그 뒤 입력 = 진행 중이거나
+    이미 돌아옴). base_ms 가 없으면 진입 시각. grace 후 재확인은 진입 시각 기준
 
 PRD 불변: 어떤 실패도 chat 동작 차단 X (best-effort).
 """
@@ -118,22 +122,37 @@ def _kill_older_buddies() -> None:
             pass
 
 
-def _resolve_session_id() -> str:
+def _read_payload() -> dict:
+    """stdin JSON 1회 read. 비었거나 깨졌으면 빈 dict."""
+    try:
+        raw = sys.stdin.read()
+        if raw.strip():
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                return data
+    except (json.JSONDecodeError, OSError):
+        pass
+    return {}
+
+
+def _resolve_session_id(payload: dict) -> str:
     """stdin JSON ({"session_id": ...}) 우선, env fallback.
 
     Claude Code hook 은 stdin 으로 JSON payload 전달 (CLAUDE_CODE_SESSION_ID
     환경변수는 보장 X). on_user_prompt.py / on_session_end.py 와 일관.
     """
-    try:
-        raw = sys.stdin.read()
-        if raw.strip():
-            data = json.loads(raw)
-            sid = data.get("session_id", "")
-            if sid:
-                return sid
-    except (json.JSONDecodeError, OSError):
-        pass
+    sid = payload.get("session_id", "")
+    if sid:
+        return sid
     return os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+
+
+def _base_ns(payload: dict) -> int | None:
+    """mod 가 --now 와 함께 넘기는 판정 기준 시각 (base_ms, epoch ms) → ns. 없거나 이상하면 None."""
+    base_ms = payload.get("base_ms")
+    if isinstance(base_ms, int) and not isinstance(base_ms, bool) and base_ms > 0:
+        return base_ms * 1_000_000
+    return None
 
 
 def _abbrev_home(path: str) -> str:
@@ -231,7 +250,8 @@ def main(argv: list[str] | None = None) -> int:
     if not is_latest_install():
         return 0
     _kill_older_buddies()
-    sid = _resolve_session_id()
+    payload = _read_payload()
+    sid = _resolve_session_id(payload)
     if not sid:
         return 0
     try:
@@ -252,12 +272,18 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     # 진입부: latest_fire 갱신 + max_refresh_count 체크
-    # my_ts 를 ns 단위로 — 같은 초 안에 fire 2개 발생해도 latest_fire 비교 정확
+    # my_ts 를 ns 단위로 — 같은 초 안에 fire 2개 발생해도 latest_fire 비교 정확.
+    # --now 는 latest_fire 를 쓰지 않는다 — 마지막 Stop 시각으로 on_recap.py 만 기록
+    # (/cn:status 다음 발동 표시 기준). grace 후 latest_fire > my_ts 는 그 Stop 을 본다.
     marker = Marker.load(sid_hash)
     my_ts = time.time_ns()
-    marker.latest_fire = my_ts
-    if not _save_marker(marker, "fire"):
-        return 0
+    if not now:
+        marker.latest_fire = my_ts
+        if not _save_marker(marker, "fire"):
+            return 0
+    # 사용자 활동 비교 기준: --now 는 mod 가 판정에 쓴 base(캐시 마지막 적중) —
+    # 그 뒤 입력이 있었으면 turn 진행 중이거나 이미 돌아온 것. 없으면 진입 시각
+    activity_anchor = (_base_ns(payload) if now else None) or my_ts
 
     if config.wake.arm == "always" and marker.wake_count >= config.max_refresh_count:
         log_info(
@@ -275,7 +301,7 @@ def main(argv: list[str] | None = None) -> int:
     # latest_fire == 0 = SessionEnd 가 마커 파일을 삭제해서 Marker.load 가
     # fresh marker 를 반환한 경우. 이미 종료된 세션의 좀비 wake/notify 방지 +
     # 좀비 마커 재생성 방지. (refresh.py 진입부에 my_ts 로 저장했으므로 정상
-    # 흐름에서는 0 이 될 수 없음.)
+    # 흐름에서는 0 이 될 수 없음. --now 는 on_recap.py 의 Stop 기록이 있어야 한다.)
     if marker.latest_fire == 0:
         log_info(f"[refresh] marker 사라짐 (SessionEnd 후), skip sid={sid_hash}")
         return 0
@@ -285,14 +311,14 @@ def main(argv: list[str] | None = None) -> int:
             f"my_ts={my_ts}), skip"
         )
         return 0
-    # 사용자가 sleep 동안 활발히 prompt 를 쳤다면 wake/notify 하지 않는다.
+    # 사용자가 sleep 동안(--now 는 base 이후) prompt 를 쳤다면 wake/notify 하지 않는다.
     # model 응답이 50분 넘게 진행되어 새 Stop hook fire 가 안 들어와도
     # last_user_activity_at_ns 가 갱신되어 있어서 가드됨.
-    if marker.last_user_activity_at_ns > my_ts:
+    if marker.last_user_activity_at_ns > activity_anchor:
         log_info(
             f"[refresh] superseded by user activity "
             f"(last_user_activity_at_ns={marker.last_user_activity_at_ns} > "
-            f"my_ts={my_ts}), skip"
+            f"anchor={activity_anchor}), skip"
         )
         return 0
     # clear/compact 후 진짜 user prompt 가 없었으면 소생하지 않는다 — compact 는
