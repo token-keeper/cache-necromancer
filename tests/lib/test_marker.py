@@ -165,7 +165,8 @@ class TestAtomicWrite:
 
         errors: list = []
         invalid_reads: list = []
-        write_done = threading.Barrier(n_writers + 1)
+        # writer 가 전부 끝나면 set — reader 는 이것만 보고 루프를 끝낸다
+        stop = threading.Event()
 
         Marker(sid_hash="abc123", latest_fire=0).save()
 
@@ -182,12 +183,10 @@ class TestAtomicWrite:
                     Marker(sid_hash="abc123", latest_fire=val, wake_count=writer_id).save()
             except Exception as e:  # noqa: BLE001
                 errors.append(e)
-            finally:
-                write_done.wait()
 
         def reader() -> None:
             try:
-                while True:
+                while not stop.is_set():
                     try:
                         text = marker_path("abc123").read_text(encoding="utf-8")
                         data = json.loads(text)  # partial 이면 raise
@@ -208,23 +207,24 @@ class TestAtomicWrite:
                         invalid_reads.append(f"partial JSON: {e}")
                     except OSError:
                         pass
-                    if write_done.n_waiting == n_writers:
-                        # writer 들이 모두 끝나기 직전 — 한 번 더 read 후 종료
-                        try:
-                            data = json.loads(
-                                marker_path("abc123").read_text(encoding="utf-8")
-                            )
-                            if required_fields - data.keys():
-                                invalid_reads.append(
-                                    f"final read missing fields: {data.keys()}"
-                                )
-                        except (json.JSONDecodeError, OSError) as e:
-                            invalid_reads.append(f"final read fail: {e}")
-                        return
+                # writer 가 모두 끝난 뒤 — 한 번 더 read 후 종료
+                try:
+                    data = json.loads(
+                        marker_path("abc123").read_text(encoding="utf-8")
+                    )
+                    if required_fields - data.keys():
+                        invalid_reads.append(
+                            f"final read missing fields: {data.keys()}"
+                        )
+                except (json.JSONDecodeError, OSError) as e:
+                    invalid_reads.append(f"final read fail: {e}")
             except Exception as e:  # noqa: BLE001
                 errors.append(e)
 
-        reader_threads = [threading.Thread(target=reader) for _ in range(n_readers)]
+        # daemon — 혹시 reader 가 안 끝나도 인터프리터 종료를 막지 않게 (아래 assert 로 실패 처리)
+        reader_threads = [
+            threading.Thread(target=reader, daemon=True) for _ in range(n_readers)
+        ]
         writer_threads = [
             threading.Thread(target=writer, args=(i,)) for i in range(n_writers)
         ]
@@ -232,12 +232,13 @@ class TestAtomicWrite:
             t.start()
         for t in writer_threads:
             t.start()
-        write_done.wait()  # writer 모두 끝남 (reader 가 detect 후 종료)
         for t in writer_threads:
             t.join()
+        stop.set()
         for t in reader_threads:
-            t.join(timeout=2.0)
+            t.join(timeout=5.0)
 
+        assert not any(t.is_alive() for t in reader_threads), "reader 가 stop 후에도 종료 안 됨"
         assert not errors, f"thread errors: {errors}"
         assert not invalid_reads, (
             f"reader 가 partial/incomplete JSON 봄 — atomic write 실패: {invalid_reads[:5]}"
