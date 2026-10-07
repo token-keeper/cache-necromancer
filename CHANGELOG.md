@@ -12,6 +12,10 @@
 - 실행할 `refresh.py` 는 `installed_plugins.json` 의 활성 installPath 기준 (`is_latest_install` 과 같다). 항목이 없으면 깨우지 않는다.
 - `[display] countdown = false` 여도 타이머는 돈다 — 띠·토스트는 꺼진 그대로, 알림·wake 는 동작.
 - 알림·wake 도 mods(Claude Code v2.1.286+)가 필요해졌다. mods 를 무시하는 버전에서는 recap·`/cn:*` 만 남는다.
+- 기준 시각이 이미 `cache_ttl_minutes` 를 넘었으면(리로드 직후 오래된 기준 시각·잠자기 복귀 등) 깨우지 않는다.
+- ping 은 `refresh.py` stderr 중 `[cn:keepalive` 줄만 제출한다 (설정 경고 줄 제외).
+- `marker.latest_fire`(마지막 Stop 시각)는 이제 Stop 훅 `on_recap.py` 가 기록한다 — `/cn:status` 다음 발동·`/cn:set` 안내 기준 유지.
+- `/cn:config` 저장 안내: 띠·깨우기 시점 설정은 새 세션(또는 `/reload-plugins`)부터, 나머지는 다음 깨우기 판정부터 적용.
 
 ### Added
 - `scripts/refresh.py --now` — 대기 sleep 만 생략하고 재확인·예산·알림·grace·ping 은 그대로. marker 작성은 여전히 Python 만 한다.
