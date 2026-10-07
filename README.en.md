@@ -124,6 +124,7 @@ Once all work is done and Claude is waiting for your input, the band right above
 - **Hidden while work is running** — while Claude is answering, or while a background agent (subagent etc.) is still `pending`/`running`/`waiting` after the main turn ended. The cache clock keeps running, so warning and expiry toasts still fire meanwhile. Also hidden while a survey holds the band.
   - A teammate in its own terminal window may stay `running` after its window is closed or dies, and the band can stay hidden meanwhile.
 - Nothing is shown before the first request of a session (or after `/clear`).
+- Right after `/compact` the band is cleared too, and counting restarts from the next answer's cache request (v0.9.1). An automatic compact in the middle of an answer leaves it as is.
 - `[display] countdown = false` turns off both the band and the toasts. Text follows `[general] language` (ko/en/ja/zh, default en). Settings are **read at session start, so changes apply from a new chat session**.
 - If the config file has a syntax error, the Python side (recap, wake) drops the whole file and uses defaults, while the band uses the values on the lines it can read, so their TTL and warning time can differ.
 - With the what-did-i-say plugin's band box, this line sits on top and the request box below it.

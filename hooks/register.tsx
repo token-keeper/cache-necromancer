@@ -172,6 +172,17 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // 메인 대화의 /compact(또는 플러그인 compact)가 실제로 끝나면 띠를 비운다. 다음 답변의 turn.step 이 기준 시각을 다시 잡는다.
+  // 거부된 compact(skip)·서브에이전트 것·auto(답변 도중 자동)·precompute(아무것도 설치 안 함)는 그대로 둔다
+  on('session.compact', async ($, e, next) => {
+    const r = await next(e)
+    if (r.skip === undefined && e.agentId === undefined && (e.trigger === 'manual' || e.trigger === 'plugin')) {
+      await update($, base, () => null)
+      await update($, label, () => null)
+    }
+    return r
+  })
+
   // 요청 시작 시각을 잡아 두고, 응답이 와서 캐시를 실제로 읽거나 쓴 경우에만 기준 시각으로 삼는다 (서브에이전트 제외)
   on('turn.step', async function* ($, e, next) {
     const at = e.agentId === undefined ? await $.clock.now() : null
@@ -188,7 +199,8 @@ export const register: Register = on => {
     // 답변이 끝난 대기 상태에서만 표시, 설문에는 양보
     if (e.props.isWorking || e.props.hasSurvey) return next(e)
     const line = await read($, label)
-    if (line === null) return next(e)
+    // 기준 시각이 비었으면(/clear·/compact 직후) 숨긴다. 그 순간 진행 중이던 tick 이 옛 글자를 다시 써도 다음 tick 이 지운다
+    if (line === null || (await read($, base)) === null) return next(e)
 
     const below = await next(e)
     const { Box, Text } = $.ui.resolve(e)

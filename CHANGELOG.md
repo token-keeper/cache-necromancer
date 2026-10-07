@@ -2,6 +2,17 @@
 
 이 프로젝트의 모든 주목할 만한 변경사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고, [Semantic Versioning](https://semver.org/lang/ko/) 을 준수합니다.
 
+## [0.9.1] — 2026-10-07
+
+**`/compact` 직후 카운트다운 띠 비움**
+
+### Fixed
+- `hooks/register.tsx` — 메인 대화의 `/compact`(trigger `manual`) 또는 플러그인 compact(`plugin`)가 끝나면 기준 시각과 띠를 비운다. 다음 답변에서 캐시를 쓴 요청이 기준 시각을 다시 잡으면 띠가 다시 뜬다. 거부된 compact·서브에이전트 compact·`auto`(답변 도중 자동)·`precompute` 는 그대로 둔다.
+- 기준 시각이 빈 동안(`/clear`·`/compact` 직후)은 띠를 그리지 않는다 — 그 순간 진행 중이던 1초 tick 이 옛 글자를 다시 써서 띠가 잠깐 되살아나던 경합을 막는다.
+
+### Changed
+- 경고·만료 토스트 동작은 그대로다.
+
 ## [0.9.0] — 2026-10-07
 
 **프롬프트 위 띠에 캐시 남은 시간 카운트다운** (Claude Code v2.1.286+ mods)
