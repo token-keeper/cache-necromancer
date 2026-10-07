@@ -3,7 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { CacheNecromancerConfig, CacheNecromancerLabel, CacheNecromancerLanguage, CacheNecromancerTime } from '../types'
 
-const DEFAULT_CONFIG: CacheNecromancerConfig = { ttlMinutes: 60, warnAfterMinutes: 50, countdown: true, language: 'en', graceSeconds: 60 }
+const DEFAULT_CONFIG: CacheNecromancerConfig = { ttlMinutes: 60, warnAfterMinutes: 50, countdown: true, language: 'en' }
 
 const base = atom({ plugin: 'cache-necromancer', key: 'base' } as const, null as CacheNecromancerTime)
 const warnedFor = atom({ plugin: 'cache-necromancer', key: 'warnedFor' } as const, null as CacheNecromancerTime)
@@ -26,38 +26,42 @@ const BUSY_AGENT = new Set(['pending', 'running', 'waiting'])
 // 문구는 lib/i18n.py 의 언어·용어를 따른다 (기본 en)
 const TEXT: Record<
   CacheNecromancerLanguage,
-  { left: (mmss: string) => string; warn: (minutes: number) => string; expired: string; expiredToast: string }
+  { left: (mmss: string) => string; warn: (minutes: number) => string; expired: string; expiredToast: string; wakeOff: string }
 > = {
   ko: {
     left: t => `캐시 ${t} 남음`,
     warn: n => `캐시 ${n}분 남음`,
     expired: '캐시 만료',
     expiredToast: '캐시 만료 — 다음 입력은 캐시를 새로 만듦',
+    wakeOff: '캐시 깨우기 꺼짐 — refresh_interval_minutes 가 cache_ttl_minutes 이상',
   },
   en: {
     left: t => `Cache ${t} left`,
     warn: n => `Cache: ${n} min left`,
     expired: 'Cache expired',
     expiredToast: 'Cache expired — your next input rebuilds it',
+    wakeOff: 'Cache wake off — refresh_interval_minutes is not below cache_ttl_minutes',
   },
   ja: {
     left: t => `キャッシュ残り ${t}`,
     warn: n => `キャッシュ残り${n}分`,
     expired: 'キャッシュ期限切れ',
     expiredToast: 'キャッシュ期限切れ — 次の入力でキャッシュを作り直します',
+    wakeOff: 'キャッシュの自動延長は無効 — refresh_interval_minutes が cache_ttl_minutes 以上',
   },
   zh: {
     left: t => `缓存剩余 ${t}`,
     warn: n => `缓存剩余 ${n} 分钟`,
     expired: '缓存已过期',
     expiredToast: '缓存已过期 — 下次输入将重新创建缓存',
+    wakeOff: '缓存唤醒已关闭 — refresh_interval_minutes 不小于 cache_ttl_minutes',
   },
 }
 
 const pad = (n: number) => String(n).padStart(2, '0')
 
-// Python 쪽 lib/config.py 와 같은 파일에서 필요한 5개 키만 읽는 최소 TOML 파서.
-// 분은 1 이상 정수, grace_seconds 는 0 이상 정수, countdown 은 불리언, language 는 4종 문자열만 받고,
+// Python 쪽 lib/config.py 와 같은 파일에서 필요한 4개 키만 읽는 최소 TOML 파서.
+// 분은 1 이상 정수, countdown 은 불리언, language 는 4종 문자열만 받고,
 // 그 밖의 값·다른 섹션의 같은 키는 무시해 기본값을 둔다.
 function parseConfig(text: string): CacheNecromancerConfig {
   const cfg = { ...DEFAULT_CONFIG }
@@ -85,7 +89,6 @@ function parseConfig(text: string): CacheNecromancerConfig {
     }
     const lang = /^(["'])(ko|en|ja|zh)\1$/.exec(value)?.[2] as CacheNecromancerLanguage | undefined
     if (section === 'general' && key === 'language' && lang) cfg.language = lang
-    if (section === 'wake' && key === 'grace_seconds' && /^\d+$/.test(value)) cfg.graceSeconds = Number(value)
   }
   return cfg
 }
@@ -143,7 +146,7 @@ async function tick($: EngineInterface): Promise<void> {
   const age = now - at
   if (age >= cfg.warnAfterMinutes * MIN_MS && age < cfg.ttlMinutes * MIN_MS && (await read($, wokeFor)) !== at) {
     await update($, wokeFor, claim)
-    if (isFirst) void wake($, cfg).catch(error => logWakeOnce($, `wake failed (${errorText(error)})`).catch(() => undefined))
+    if (isFirst) void wake($, at).catch(error => logWakeOnce($, `wake failed (${errorText(error)})`).catch(() => undefined))
   }
   if (next === null) return
   if (next.tone === 'error' && (await read($, expiredFor)) !== at) {
@@ -156,34 +159,14 @@ async function tick($: EngineInterface): Promise<void> {
   }
 }
 
-// 활성 설치본의 refresh.py: is_latest_install 과 같은 기준(installed_plugins.json 의 installPath)이라
-// 업데이트·리로드 직후에도 활성 버전이 돈다. 항목이 없거나 못 읽으면 null
-async function refreshScript($: EngineInterface): Promise<string | null> {
-  try {
-    const dir = (await $.env.get('CLAUDE_CONFIG_DIR')) || `${await $.env.get('HOME')}/.claude`
-    const data: unknown = JSON.parse(await $.fs.read(`${dir}/plugins/installed_plugins.json`))
-    const plugins = (data as { plugins?: Record<string, unknown> }).plugins ?? {}
-    for (const [name, entries] of Object.entries(plugins)) {
-      if (!name.startsWith('cache-necromancer@')) continue
-      const entry: unknown = Array.isArray(entries) ? entries[0] : entries
-      const path = (entry as { installPath?: unknown } | undefined)?.installPath
-      if (typeof path === 'string') return `${path}/scripts/refresh.py`
-    }
-  } catch {
-    // 아래 null
-  }
-  return null
-}
-
 // 캐시 마지막 적중 + refresh_interval 이 지나면 refresh.py --now 를 돌린다. 재확인·예산·알림·grace 와 marker 기록은
 // Python 몫이고, exit 2 면 stderr 중 ping 줄만 프롬프트로 낸다 ([cn:warn] 같은 경고 줄은 뺀다). 그 turn 이 캐시를 읽으면 turn.step 이 base 를 갱신해 다음 주기로 이어진다
-async function wake($: EngineInterface, cfg: CacheNecromancerConfig): Promise<void> {
-  const script = await refreshScript($)
-  if (script === null) return logWakeOnce($, 'wake skipped (cache-necromancer not in installed_plugins.json)')
-  const r = await $.process.run(['python3', script, '--now'], {
-    stdin: JSON.stringify({ session_id: await $.session.id() }),
-    // grace 동안 Python 이 기다리므로 그만큼 + 여유. process.run 상한이 10분이다
-    timeoutMs: Math.min((cfg.graceSeconds + 30) * 1000, 10 * MIN_MS),
+// base_ms 는 판정에 쓴 기준 시각: Python 이 그 뒤의 사용자 입력(진행 중인 turn·이미 돌아옴)을 보고 건너뛴다
+async function wake($: EngineInterface, at: number): Promise<void> {
+  const r = await $.process.run(['python3', `${$.plugin.root}/scripts/refresh.py`, '--now'], {
+    stdin: JSON.stringify({ session_id: await $.session.id(), base_ms: at }),
+    // grace 길이는 Python 이 설정에서 정하므로 process.run 상한(10분)을 그대로 쓴다. 끝나면 바로 돌아온다
+    timeoutMs: 10 * MIN_MS,
   })
   const ping = r.stderr
     .split(/\r?\n/)
@@ -219,6 +202,8 @@ export const register: Register = on => {
     await update($, config, () => cfg)
     // 리로드 전에 남은 띠 값은 바로 지운다
     if (!cfg.countdown) await update($, label, () => null)
+    // 깨우기 창(경고 ~ 만료)이 비어 깨우기가 영영 없으므로 알린다
+    if (cfg.warnAfterMinutes >= cfg.ttlMinutes) $.ui.toast(TEXT[cfg.language].wakeOff)
     $.clock.every(1000, () => void tick($).catch(error => logFirstTickError($, error).catch(() => undefined)))
     return next(e)
   })

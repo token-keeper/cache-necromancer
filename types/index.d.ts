@@ -14,8 +14,6 @@ export type CacheNecromancerConfig = {
   countdown: boolean
   /** [general] language — 띠·토스트 문구 언어 (Python 쪽 lib/i18n.py 와 같은 4종, 기본 en) */
   language: CacheNecromancerLanguage
-  /** [wake] grace_seconds — refresh.py 가 알림 뒤 기다리는 초 (process.run 시간 제한 계산용) */
-  graceSeconds: number
 }
 
 export type CacheNecromancerLanguage = 'ko' | 'en' | 'ja' | 'zh'
@@ -37,7 +35,7 @@ declare module 'claude-code' {
       config: CacheNecromancerConfig
       /** tick 실패를 디버그 로그에 이미 남겼는지 (첫 1회만 남긴다) */
       tickErrorLogged: boolean
-      /** 깨우기 실패·건너뜀을 디버그 로그에 이미 남겼는지 (첫 1회만 남긴다) */
+      /** 깨우기 실패를 디버그 로그에 이미 남겼는지 (첫 1회만 남긴다) */
       wakeErrorLogged: boolean
     }
   }
