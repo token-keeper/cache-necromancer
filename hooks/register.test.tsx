@@ -303,6 +303,67 @@ test('countdown 기본값이면 타이머를 1개 건다 (위 테스트의 대�
   expect(await timersAfterStart($, on, {})).toBe(1)
 })
 
+test('countdown = false 로 다시 시작하면(리로드) 남아 있던 띠를 바로 지운다', async ($, on) => {
+  const files: Record<string, string> = { ...KO }
+  const w = setup(on, undefined, files)
+  await start($)
+  await step($, w)
+  await w.clock.advance(1000)
+  expect((await shown($))?.text).toBe('캐시 59:59 남음')
+  files[CONFIG] = '[display]\ncountdown = false\n'
+  await start($) // 시계를 움직이지 않는다 — tick 이 아니라 session.start 가 지워야 한다
+  expect((await shown($))?.text).toBeUndefined()
+})
+
+// 테스트 환경에는 setTimeout 이 있지만 hooks 모듈 타입(lib: es2023, DOM 없음)에는 선언이 없다
+declare function setTimeout(callback: () => void, ms: number): unknown
+const wait = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
+
+// tick 실패: 시계를 직접 쥐고(주기마다 테스트가 풀어 줌) clock.now 를 실패시킨다
+test('tick 이 실패하면 첫 실패만 디버그 로그에 남기고 이후는 조용하다', async ($, on) => {
+  let now = T0
+  let isFailing = false
+  const periods: (() => void)[] = []
+  const logs: { text: string; to: string }[] = []
+  mock.env(on, { HOME: '/home/t' })
+  on('fs.read', () => ({ value: '[general]\nlanguage = "ko"\n' }))
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('agent.list', () => ({ value: [] }))
+  on('clock.now', () => {
+    if (isFailing) throw new Error('clock down')
+    return { value: now }
+  })
+  on('clock.every', () => new Promise(resolve => periods.push(() => resolve({ value: undefined }))))
+  on('ui.log', (_$, e) => {
+    logs.push({ text: e.text, to: e.to })
+    return { value: undefined }
+  })
+  on('turn.step', async function* (_$, e) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as const, usage: CACHED }
+  })
+  const fire = async () => {
+    const period = periods.shift()
+    expect(period).toBeDefined()
+    period?.()
+    // 다음 주기를 청할 때까지(= fn 실행) 기다린 뒤, 그 tick 의 실패 처리까지 끝나도록 조금 더 기다린다
+    for (let i = 0; i < 20 && periods.length === 0; i++) await wait(5)
+    await wait(20)
+  }
+  await start($)
+  const s = $.turn.step({ turnId: 't', index: 0, model: 'm', messageCount: 1 })
+  for await (const _ of s) {
+    // 청크 없음
+  }
+  now += 1000
+  isFailing = true
+  await fire()
+  await fire()
+  await fire()
+  expect(logs).toHaveLength(1)
+  expect(logs[0]).toMatchObject({ to: 'debug' })
+  expect(logs[0]?.text).toMatch(/countdown tick failed \(.+\); later failures are not logged/)
+})
+
 for (const [lang, line, warn, expired, expiredToast] of [
   ['en', 'Cache 59:11 left', 'Cache: 10 min left', 'Cache expired', 'Cache expired — your next input rebuilds it'],
   ['ko', '캐시 59:11 남음', '캐시 10분 남음', '캐시 만료', '캐시 만료 — 다음 입력은 캐시를 새로 만듦'],

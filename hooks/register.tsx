@@ -10,6 +10,7 @@ const warnedFor = atom({ plugin: 'cache-necromancer', key: 'warnedFor' } as cons
 const expiredFor = atom({ plugin: 'cache-necromancer', key: 'expiredFor' } as const, null as CacheNecromancerTime)
 const label = atom({ plugin: 'cache-necromancer', key: 'label' } as const, null as CacheNecromancerLabel)
 const config = atom({ plugin: 'cache-necromancer', key: 'config' } as const, DEFAULT_CONFIG)
+const tickErrorLogged = atom({ plugin: 'cache-necromancer', key: 'tickErrorLogged' } as const, false)
 
 const MIN_MS = 60 * 1000
 // 띠 배경과 글자색. 배경 #1f2d3d 대비: 기본 7.9:1, 경고 7.9:1, 만료 5.6:1 (모두 4.5:1 이상)
@@ -141,15 +142,27 @@ async function tick($: EngineInterface): Promise<void> {
   }
 }
 
+// tick 은 표시용 best-effort: 실패(리로드·종료 직후 등)는 다음 tick 이 다시 계산한다.
+// 원인 추적용으로 첫 실패만 디버그 로그에 남기고 이후는 조용히 넘긴다
+async function logFirstTickError($: EngineInterface, error: unknown): Promise<void> {
+  if (await read($, tickErrorLogged)) return
+  await update($, tickErrorLogged, () => true)
+  const reason = error instanceof Error ? error.message : String(error)
+  $.ui.log(`cache-necromancer: countdown tick failed (${reason}); later failures are not logged`, { to: 'debug' })
+}
+
 export const register: Register = on => {
   // 설정은 세션 시작 때 한 번 읽는다 (Python 훅과 같은 "설정 변경 후 새 세션" 규칙).
   // 리로드 때도 다시 fire되므로 타이머는 여기서만 건다 (이전 환경의 타이머는 엔진이 버림)
   on('session.start', async ($, e, next) => {
     const cfg = await loadConfig($)
     await update($, config, () => cfg)
-    // countdown = false 면 띠도 토스트도 없으므로 타이머 자체를 걸지 않는다
-    // tick 은 표시용 best-effort: 실패(리로드·종료 직후 등)는 다음 tick 이 다시 계산한다
-    if (cfg.countdown) $.clock.every(1000, () => void tick($).catch(() => undefined))
+    if (cfg.countdown) {
+      $.clock.every(1000, () => void tick($).catch(error => logFirstTickError($, error).catch(() => undefined)))
+    } else {
+      // 띠도 토스트도 없으므로 타이머를 걸지 않는다. 리로드 전에 남은 띠 값은 지운다
+      await update($, label, () => null)
+    }
     return next(e)
   })
 

@@ -31,6 +31,8 @@ declare module 'claude-code' {
       label: CacheNecromancerLabel
       /** 세션 시작 때 읽은 설정 */
       config: CacheNecromancerConfig
+      /** tick 실패를 디버그 로그에 이미 남겼는지 (첫 1회만 남긴다) */
+      tickErrorLogged: boolean
     }
   }
 }
