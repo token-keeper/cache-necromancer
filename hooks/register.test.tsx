@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine, MockClock } from 'claude-code/testing'
-import type { AgentInfo, AgentStatus, On, TurnUsage } from 'claude-code'
+import type { AgentInfo, AgentStatus, On, SessionCompactTrigger, SessionMessage, TurnUsage } from 'claude-code'
 
 const PLUGIN = 'cache-necromancer'
 const SURFACES = ['terminal', 'desktop'] as const
@@ -9,8 +9,17 @@ const MIN = 60_000
 const WARN = '캐시 10분 남음'
 const EXPIRED = '캐시 만료 — 다음 입력은 캐시를 새로 만듦'
 const CACHED: TurnUsage = { model: 'm', input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 100, cache_creation_input_tokens: 0 }
+const SUMMARY: SessionMessage = { role: 'user', text: 'summary', toolUses: [] }
 
-type World = { clock: MockClock; toasts: string[]; usage: TurnUsage | null; agents: AgentInfo[] }
+type World = {
+  clock: MockClock
+  toasts: string[]
+  usage: TurnUsage | null
+  agents: AgentInfo[]
+  // compact 를 거부할 사유(있으면 skip), agent.list 를 붙잡아 둘 관문(tick 경합 재현용)
+  compactSkip?: string
+  gate?: Promise<void>
+}
 type Env = Readonly<Record<string, string>>
 type Files = Readonly<Record<string, string>>
 
@@ -22,7 +31,10 @@ const KO: Files = { [CONFIG]: '[general]\nlanguage = "ko"\n' }
 // 설정 파일은 files 에 있는 경로만 읽히고, 없으면 읽기가 실패한다 (= 파일 없음)
 function setup(on: On, env: Env = { HOME: '/home/t' }, files: Files = KO): World {
   const w: World = { clock: mock.clock(on, { now: T0 }), toasts: [], usage: CACHED, agents: [] }
-  on('agent.list', () => ({ value: w.agents }))
+  on('agent.list', async () => {
+    await w.gate
+    return { value: w.agents }
+  })
   mock.env(on, env)
   on('fs.read', (_$, e) => {
     const text = files[e.path]
@@ -31,6 +43,7 @@ function setup(on: On, env: Env = { HOME: '/home/t' }, files: Files = KO): World
   })
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
+  on('session.compact', () => (w.compactSkip === undefined ? { messages: [SUMMARY] } : { skip: w.compactSkip }))
   on('ui.toast', (_$, e) => {
     w.toasts.push(e.text)
     return { value: undefined }
@@ -409,4 +422,61 @@ test('에이전트가 도는 동안에도 경고·만료 토스트는 울린다 
   await w.clock.advance(60 * MIN)
   expect((await shown($))?.text).toBeUndefined()
   expect(w.toasts).toEqual([WARN, EXPIRED])
+})
+
+// ── /compact 직후 띠 비움 ──
+const compact = ($: Engine, trigger: SessionCompactTrigger, agentId?: string) =>
+  $.session.compact({ trigger, messages: [SUMMARY], ...(agentId ? { agentId } : {}) })
+
+for (const trigger of ['manual', 'plugin'] as const) {
+  test(`${trigger} compact 뒤에는 띠를 비우고, 다음 캐시 요청부터 60:00 으로 다시 센다`, async ($, on) => {
+    const w = setup(on)
+    await start($)
+    await step($, w)
+    await w.clock.advance(1000)
+    expect((await shown($))?.text).toBe('캐시 59:59 남음')
+    await compact($, trigger)
+    expect((await shown($))?.text).toBeUndefined()
+    await w.clock.advance(3000)
+    expect((await shown($))?.text).toBeUndefined()
+    await step($, w)
+    await w.clock.advance(1000)
+    expect((await shown($))?.text).toBe('캐시 59:59 남음')
+  })
+}
+
+for (const [name, run] of [
+  ['거부된(skip) compact', ($: Engine, w: World) => ((w.compactSkip = 'blocked'), compact($, 'manual'))],
+  ['서브에이전트 compact', ($: Engine) => compact($, 'manual', 'agent-1')],
+  ['auto compact(답변 도중)', ($: Engine) => compact($, 'auto')],
+  ['precompute', ($: Engine) => compact($, 'precompute')],
+] as const) {
+  test(`${name}은 띠를 그대로 둔다`, async ($, on) => {
+    const w = setup(on)
+    await start($)
+    await step($, w)
+    await w.clock.advance(1000)
+    await run($, w)
+    expect((await shown($))?.text).toBe('캐시 59:59 남음')
+    await w.clock.advance(1000)
+    expect((await shown($))?.text).toBe('캐시 59:58 남음')
+  })
+}
+
+test('compact 순간 진행 중이던 tick 이 옛 글자를 다시 써도 띠는 되살아나지 않는다', async ($, on) => {
+  const w = setup(on)
+  await start($)
+  await step($, w)
+  await w.clock.advance(1000)
+  // tick 을 base 를 읽은 뒤(agent.list)에서 붙잡아 두고 그 사이에 compact
+  let release = () => {}
+  w.gate = new Promise(resolve => (release = resolve))
+  await w.clock.advance(1000)
+  await compact($, 'manual')
+  release()
+  await wait(20)
+  expect((await shown($))?.text).toBeUndefined()
+  w.gate = undefined
+  await w.clock.advance(1000)
+  expect((await shown($))?.text).toBeUndefined()
 })

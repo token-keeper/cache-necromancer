@@ -1,5 +1,5 @@
 {
-  "description": "v0.9.0 — 알림 기본 + /cn:set 소생 + clear/compact 시 소생 억제 (asyncRewake, Stop hook 기반 cache TTL 갱신) + 프롬프트 위 캐시 카운트다운 띠 (modules)",
+  "description": "v0.9.1 — 알림 기본 + /cn:set 소생 + clear/compact 시 소생 억제 (asyncRewake, Stop hook 기반 cache TTL 갱신) + 프롬프트 위 캐시 카운트다운 띠 (modules)",
   "hooks": {
     "Stop": [
       {
