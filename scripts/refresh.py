@@ -24,8 +24,9 @@ refresh_interval_minutes 에 이 스크립트를 실행하고, exit 2 면 stderr
 prompt 로 제출한다. 무인자 실행과 다른 점:
   - 3 의 sleep 생략
   - 1 의 latest_fire 기록 생략 (마지막 Stop 시각은 on_recap.py 만 기록)
-  - 4 의 사용자 활동 비교 기준 = stdin 의 base_ms (그 뒤 입력 = 진행 중이거나
-    이미 돌아옴). base_ms 가 없으면 진입 시각. grace 후 재확인은 진입 시각 기준
+  - 4 의 사용자 활동 비교 기준 = marker.latest_fire (마지막 Stop). 그 뒤 입력 =
+    turn 진행 중(권한 대기·긴 도구 포함)이거나 이미 돌아옴. 0.9.1 의 앵커(Stop
+    직후 진입 시각)와 같은 의미. grace 후 재확인은 진입 시각 기준
 
 PRD 불변: 어떤 실패도 chat 동작 차단 X (best-effort).
 """
@@ -145,14 +146,6 @@ def _resolve_session_id(payload: dict) -> str:
     if sid:
         return sid
     return os.environ.get("CLAUDE_CODE_SESSION_ID", "")
-
-
-def _base_ns(payload: dict) -> int | None:
-    """mod 가 --now 와 함께 넘기는 판정 기준 시각 (base_ms, epoch ms) → ns. 없거나 이상하면 None."""
-    base_ms = payload.get("base_ms")
-    if isinstance(base_ms, int) and not isinstance(base_ms, bool) and base_ms > 0:
-        return base_ms * 1_000_000
-    return None
 
 
 def _abbrev_home(path: str) -> str:
@@ -281,9 +274,6 @@ def main(argv: list[str] | None = None) -> int:
         marker.latest_fire = my_ts
         if not _save_marker(marker, "fire"):
             return 0
-    # 사용자 활동 비교 기준: --now 는 mod 가 판정에 쓴 base(캐시 마지막 적중) —
-    # 그 뒤 입력이 있었으면 turn 진행 중이거나 이미 돌아온 것. 없으면 진입 시각
-    activity_anchor = (_base_ns(payload) if now else None) or my_ts
 
     if config.wake.arm == "always" and marker.wake_count >= config.max_refresh_count:
         log_info(
@@ -311,9 +301,12 @@ def main(argv: list[str] | None = None) -> int:
             f"my_ts={my_ts}), skip"
         )
         return 0
-    # 사용자가 sleep 동안(--now 는 base 이후) prompt 를 쳤다면 wake/notify 하지 않는다.
+    # 사용자가 sleep 동안(--now 는 마지막 Stop 뒤) prompt 를 쳤다면 wake/notify 하지 않는다.
     # model 응답이 50분 넘게 진행되어 새 Stop hook fire 가 안 들어와도
-    # last_user_activity_at_ns 가 갱신되어 있어서 가드됨.
+    # last_user_activity_at_ns 가 갱신되어 있어서 가드됨. --now 의 앵커는 turn 을 연
+    # prompt 보다 늦은 base 가 아니라 Stop 이어야 권한 대기·긴 도구 중 turn 을 거른다.
+    # Esc 로 중단한 turn 은 Stop 이 없어 다음 완료 turn 까지 깨우지 않는다 (0.9.1 과 같음).
+    activity_anchor = marker.latest_fire if now else my_ts
     if marker.last_user_activity_at_ns > activity_anchor:
         log_info(
             f"[refresh] superseded by user activity "

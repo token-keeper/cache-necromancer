@@ -135,10 +135,11 @@ Stop says: 🪦 Cache dies at 09:37.
 
 mod(`hooks/register.tsx`)가 메인 대화에서 캐시를 마지막으로 읽거나 쓴 요청의 시작 시각부터 1초 tick 으로 센다 (띠와 같은 기준 시각).
 
-`refresh_interval_minutes` 가 지나면 `scripts/refresh.py --now` 를 1회 실행한다. 기준 시각 뒤 user input 이 없고 **예산이 있으면** 알림 → `grace_seconds` 대기 → 재확인 후 ping 을 내고, mod 가 그 ping 을 프롬프트로 제출해 chat 세션이 **자기 자신을 wake** — 짧은 ping turn → 모델 `ok` 1 token. 예산이 없으면 알림만 띄운다.
+`refresh_interval_minutes` 가 지나면 `scripts/refresh.py --now` 를 1회 실행한다. 마지막 Stop 뒤 user input 이 없고(turn 진행 중이면 건너뜀) **예산이 있으면** 알림 → `grace_seconds` 대기 → 재확인 후 ping 을 내고, mod 가 그 ping 을 프롬프트로 제출해 chat 세션이 **자기 자신을 wake** — 짧은 ping turn → 모델 `ok` 1 token. 예산이 없으면 알림만 띄운다.
 
 wake turn 이 캐시를 읽으면 기준 시각이 갱신되어 다음 주기로 이어진다 (상한은 예산·`max_refresh_count`). 이미 `cache_ttl_minutes` 가 지난 기준 시각(잠자기 복귀 등)으로는 깨우지 않는다. v0.9.x 까지는 매 turn 끝 `Stop` hook + `asyncRewake` 가 50분 sleep 하는 Python 프로세스를 띄웠지만, v0.10.0 부터 대기 프로세스는 없다.
 
+- Esc 로 중단한 turn 은 Stop 이 없어, 다음 turn 이 끝날 때까지 깨우지 않는다 (v0.9.x 와 같다).
 - `refresh_interval_minutes` 가 `cache_ttl_minutes` 이상이면 깨울 구간이 없어 깨우기가 꺼진다. 세션 시작 때 토스트로 알린다.
 - `grace_seconds` 가 약 9분 30초를 넘으면 플랫폼의 실행 시간 상한(10분)에 걸려 wake 가 일어나지 않는다.
 

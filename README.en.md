@@ -135,10 +135,11 @@ Once all work is done and Claude is waiting for your input, the band right above
 
 The mod (`hooks/register.tsx`) counts with a 1-second tick from the start of the last main-conversation request that read or wrote the cache (the band's reference time).
 
-Once `refresh_interval_minutes` have passed, it runs `scripts/refresh.py --now` once. If there was no user input after the reference time and **budget is available**, it notifies → waits `grace_seconds` → re-checks and emits a ping, which the mod submits as a prompt so the chat session **wakes itself** — short ping turn → model replies `ok` (1 token). Without budget it only notifies.
+Once `refresh_interval_minutes` have passed, it runs `scripts/refresh.py --now` once. If there was no user input after the last Stop (a turn still running is skipped) and **budget is available**, it notifies → waits `grace_seconds` → re-checks and emits a ping, which the mod submits as a prompt so the chat session **wakes itself** — short ping turn → model replies `ok` (1 token). Without budget it only notifies.
 
 When the wake turn reads the cache, the reference time moves and the next cycle follows (capped by the budget and `max_refresh_count`). A reference time already past `cache_ttl_minutes` (e.g. after sleep) does not wake. Up to v0.9.x a `Stop` hook + `asyncRewake` started a Python process that slept 50 minutes after every turn; since v0.10.0 there is no waiting process.
 
+- A turn interrupted with Esc has no Stop, so nothing wakes until the next turn completes (same as v0.9.x).
 - If `refresh_interval_minutes` is not below `cache_ttl_minutes`, there is no window to wake in, so wake is off; a toast says so at session start.
 - If `grace_seconds` exceeds about 9 minutes 30 seconds, the platform's run time limit (10 minutes) cuts the run and no wake happens.
 

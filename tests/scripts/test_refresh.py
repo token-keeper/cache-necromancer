@@ -869,10 +869,8 @@ class TestNowFlag:
         m.suppressed_at_ns = suppressed_ns
         m.save()
 
-    def _run(self, monkeypatch, base_ms=None):
+    def _run(self, monkeypatch):
         payload = {"session_id": self.SID}
-        if base_ms is not None:
-            payload["base_ms"] = base_ms
         monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
         monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
         return main(["--now"])
@@ -937,49 +935,46 @@ class TestNowFlag:
         from lib.session_id import sanitize
         assert not marker_path(sanitize(self.SID)).exists()
 
-    def test_input_after_base_skips_and_keeps_budget(
+    def test_prompt_after_stop_skips_midturn(
         self, cn_root, monkeypatch, sleeps, silent_notify, capsys
     ):
-        """base 뒤 사용자 입력 = turn 진행 중이거나 이미 돌아옴 → 알림·예산 차감 없이 exit 0."""
+        """진행 중 turn(권한 대기·긴 도구): 마지막 Stop 60분 전 → prompt 55분 전 → 그 turn 의
+        첫 요청(base)은 prompt 직후라 mod 가 base+50분에 깨운다. prompt 가 Stop 뒤이므로
+        알림·예산 차감 없이 exit 0 (리뷰 재현 midturn2)."""
         import time
         _write_config(cn_root, arm="manual", notify_enabled=True)
         now_ns = time.time_ns()
-        base_ms = now_ns // 1_000_000 - 50 * 60 * 1000          # 50분 전 캐시 적중
-        self._marker(
-            stop_ns=base_ms * 1_000_000 - 1,                   # 직전 Stop 은 base 앞
-            budget=3,
-            activity_ns=base_ms * 1_000_000 + 5 * 60 * 10**9,  # base 5분 뒤 입력
-        )
-        rc = self._run(monkeypatch, base_ms=base_ms)
+        self._marker(stop_ns=now_ns - 60 * 60 * 10**9, budget=3,
+                     activity_ns=now_ns - 55 * 60 * 10**9)
+        rc = self._run(monkeypatch)
         assert rc == 0
         assert silent_notify == []
         assert PING_PREFIX not in capsys.readouterr().err
         assert _load_marker_for_sid(self.SID).set_budget_remaining == 3
 
-    def test_input_before_base_still_wakes(
+    def test_idle_after_stop_wakes(
         self, cn_root, monkeypatch, sleeps, silent_notify, capsys
     ):
+        """정상 자리비움: prompt → (base) → Stop, 그 뒤 입력 없음 → wake, 예산 −1."""
         import time
         _write_config(cn_root, arm="manual", notify_enabled=False)
         now_ns = time.time_ns()
-        base_ms = now_ns // 1_000_000 - 50 * 60 * 1000
-        self._marker(
-            stop_ns=base_ms * 1_000_000 + 30 * 10**9,          # 그 turn 의 Stop
-            budget=3,
-            activity_ns=base_ms * 1_000_000 - 10**9,           # turn 을 연 입력은 base 앞
-        )
-        rc = self._run(monkeypatch, base_ms=base_ms)
+        self._marker(stop_ns=now_ns - (50 * 60 - 30) * 10**9, budget=3,
+                     activity_ns=now_ns - 51 * 60 * 10**9)
+        rc = self._run(monkeypatch)
         assert rc == 2
         assert PING_PREFIX in capsys.readouterr().err
         assert _load_marker_for_sid(self.SID).set_budget_remaining == 2
 
-    def test_without_base_ms_uses_entry_time(
+    def test_anchor_is_last_stop_not_entry_time(
         self, cn_root, monkeypatch, sleeps, silent_notify, capsys
     ):
-        """base_ms 가 없으면 기존 기준(진입 시각) — 과거 입력은 막지 않는다."""
+        """앵커 = 마지막 Stop: 진입 직전(진입 시각보다 앞)이라도 Stop 뒤 입력이면 skip.
+        (앵커가 진입 시각이면 깨워 버린다 — 0.10.0 1차 회귀)"""
         import time
         _write_config(cn_root, arm="always", notify_enabled=False)
-        self._marker(stop_ns=time.time_ns() - 2, activity_ns=time.time_ns() - 1)
+        stop = time.time_ns() - 2
+        self._marker(stop_ns=stop, activity_ns=stop + 1)
         rc = self._run(monkeypatch)
-        assert rc == 2
-        assert PING_PREFIX in capsys.readouterr().err
+        assert rc == 0
+        assert PING_PREFIX not in capsys.readouterr().err

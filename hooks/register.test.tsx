@@ -520,8 +520,7 @@ test('compact 순간 진행 중이던 tick 이 옛 글자를 다시 써도 띠�
 
 // ── 깨우기: 캐시 마지막 적중 + refresh_interval 에 refresh.py --now, exit 2 면 ping 을 프롬프트로 ──
 const PING = "[cn:keepalive 10:00, 1/3] reply with exactly 'ok @10:00 (1/3)'. No tools, no analysis. Use minimal output tokens."
-// 판정에 쓴 기준 시각(첫 step 이 T0 에 시작)이 base_ms 로 넘어간다
-const STDIN = JSON.stringify({ session_id: 'sid-1', base_ms: T0 })
+const STDIN = JSON.stringify({ session_id: 'sid-1' })
 
 test('refresh_interval 이 지나면 refresh.py --now 를 1회 돌리고, exit 2 면 stderr 를 프롬프트로 낸다', async ($, on) => {
   const w = setup(on)

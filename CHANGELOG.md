@@ -9,7 +9,7 @@
 ### Changed
 - 대기 프로세스 제거 — `hooks/hooks.json` 의 Stop `refresh.py`(`asyncRewake`, timeout 3600) 항목을 지웠다. 매 turn 끝마다 50분 sleep 하던 Python 프로세스가 더 이상 뜨지 않는다.
 - 깨우기 기준 시각: **Stop 시각 → 캐시 마지막 적중 시각**. `hooks/register.tsx` 의 1초 tick 이 띠와 같은 기준 시각(메인 대화에서 캐시를 실제로 읽거나 쓴 마지막 요청의 시작) + `refresh_interval_minutes` 에 `scripts/refresh.py --now` 를 기준 시각당 1회 실행하고, exit 2 면 stderr 중 `[cn:keepalive` 줄만 `$.prompt.submit` 으로 제출한다 (설정 경고 줄 제외). wake turn 이 캐시를 읽으면 기준 시각이 갱신되어 다음 주기로 이어진다.
-- 기준 시각 뒤 사용자 입력이 있었으면(turn 진행 중이거나 이미 돌아옴) 알림·wake·예산 차감 없이 건너뛴다 — mod 가 기준 시각을 `base_ms` 로 넘긴다.
+- 마지막 Stop 뒤 사용자 입력이 있으면(turn 진행 중 — 권한 대기·긴 도구 호출 포함 — 이거나 이미 돌아옴) 알림·wake·예산 차감 없이 건너뛴다. Esc 로 중단한 turn 은 Stop 이 없어 다음 완료 turn 까지 깨우지 않는다 — 0.9.1 과 같다.
 - 기준 시각이 이미 `cache_ttl_minutes` 를 넘었으면(리로드 직후 오래된 기준 시각·잠자기 복귀 등) 깨우지 않는다. `refresh_interval_minutes` 가 `cache_ttl_minutes` 이상이면 깨우기가 꺼지고 세션 시작 때 토스트로 알린다.
 - 실행할 `refresh.py` 는 로드된 플러그인 디렉터리(`$.plugin.root`)의 것이다. 시간 제한은 플랫폼 상한 10분 — grace 길이는 Python 이 설정에서 정한다 (`grace_seconds` 가 약 9분 30초를 넘으면 상한에 걸린다).
 - `[display] countdown = false` 여도 타이머는 돈다 — 띠·토스트는 꺼진 그대로, 알림·wake 는 동작.
@@ -18,7 +18,7 @@
 - `/cn:config` 저장 안내: 띠·깨우기 시점(`refresh_interval`·`cache_ttl`·`countdown`·`language`)은 새 세션(또는 `/reload-plugins`)부터 mod 에 반영, Python 쪽(`arm`·`max_refresh_count`·`notify`·`grace` 등)은 다음 판정부터.
 
 ### Added
-- `scripts/refresh.py --now` — 대기 sleep·`latest_fire` 기록을 생략하고, 사용자 활동은 stdin 의 `base_ms` 기준으로 본다. 재확인·예산·알림·grace·ping 은 그대로. marker 작성은 여전히 Python 만 한다.
+- `scripts/refresh.py --now` — 대기 sleep·`latest_fire` 기록을 생략하고, 사용자 활동은 마지막 Stop(`latest_fire`) 기준으로 본다. 재확인·예산·알림·grace·ping 은 그대로. marker 작성은 여전히 Python 만 한다.
 
 ### Fixed
 - recap 의 wake turn 판정(`detect_wake_turn`)이 `isMeta` 를 요구해 실제 transcript 에서 "Revived N×" 가 나오지 않던 결함 — `[cn:keepalive` 부분일치만 본다 (tool 결과 제외).

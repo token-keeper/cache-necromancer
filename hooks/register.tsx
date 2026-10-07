@@ -146,7 +146,7 @@ async function tick($: EngineInterface): Promise<void> {
   const age = now - at
   if (age >= cfg.warnAfterMinutes * MIN_MS && age < cfg.ttlMinutes * MIN_MS && (await read($, wokeFor)) !== at) {
     await update($, wokeFor, claim)
-    if (isFirst) void wake($, at).catch(error => logWakeOnce($, `wake failed (${errorText(error)})`).catch(() => undefined))
+    if (isFirst) void wake($).catch(error => logWakeOnce($, `wake failed (${errorText(error)})`).catch(() => undefined))
   }
   if (next === null) return
   if (next.tone === 'error' && (await read($, expiredFor)) !== at) {
@@ -161,10 +161,10 @@ async function tick($: EngineInterface): Promise<void> {
 
 // 캐시 마지막 적중 + refresh_interval 이 지나면 refresh.py --now 를 돌린다. 재확인·예산·알림·grace 와 marker 기록은
 // Python 몫이고, exit 2 면 stderr 중 ping 줄만 프롬프트로 낸다 ([cn:warn] 같은 경고 줄은 뺀다). 그 turn 이 캐시를 읽으면 turn.step 이 base 를 갱신해 다음 주기로 이어진다
-// base_ms 는 판정에 쓴 기준 시각: Python 이 그 뒤의 사용자 입력(진행 중인 turn·이미 돌아옴)을 보고 건너뛴다
-async function wake($: EngineInterface, at: number): Promise<void> {
+// 진행 중인 turn·이미 돌아온 경우는 Python 이 마지막 Stop 뒤 사용자 입력으로 보고 건너뛴다
+async function wake($: EngineInterface): Promise<void> {
   const r = await $.process.run(['python3', `${$.plugin.root}/scripts/refresh.py`, '--now'], {
-    stdin: JSON.stringify({ session_id: await $.session.id(), base_ms: at }),
+    stdin: JSON.stringify({ session_id: await $.session.id() }),
     // grace 길이는 Python 이 설정에서 정하므로 process.run 상한(10분)을 그대로 쓴다. 끝나면 바로 돌아온다
     timeoutMs: 10 * MIN_MS,
   })
