@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Stop hook 의 asyncRewake 본체 (TECH_SPEC §4, v0.5.0 arm/예산 분기).
+"""캐시 소생 본체 (TECH_SPEC §4, v0.5.0 arm/예산 분기).
 
-Claude Code 의 Stop hook 에 등록되어 background 에서 실행됨:
+v0.9.x 까지는 Stop hook 의 asyncRewake 로 background 에서 실행됐다. v0.10.0 부터는
+mod 가 --now 로 실행한다 (아래). 단계:
   1. marker 의 latest_fire 갱신 (timestamp 비교용)
   2. arm=="always" 일 때만 진입부 max_refresh_count 체크 (skip)
   3. config.refresh_interval_minutes 분 sleep
@@ -17,6 +18,10 @@ Claude Code 의 Stop hook 에 등록되어 background 에서 실행됨:
          notify.enabled=false → 즉시 exit 2
      - wake 시 manual 은 예산 차감 후 (consumed/total) ping,
                 always 는 (wake_count/max_refresh_count) ping.
+
+--now (v0.10.0): 3 의 sleep 만 생략. mod(hooks/register.tsx)가 캐시 마지막
+적중 시각 + refresh_interval_minutes 에 이 스크립트를 실행하고, exit 2 면
+stderr ping 을 prompt 로 제출한다. 나머지 단계(재확인·예산·알림·grace)는 같다.
 
 PRD 불변: 어떤 실패도 chat 동작 차단 X (best-effort).
 """
@@ -221,7 +226,8 @@ def _do_notify(marker: Marker, sid_hash: str, config: Config, message: str) -> i
     return 0
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    now = "--now" in (argv or [])
     if not is_latest_install():
         return 0
     _kill_older_buddies()
@@ -260,8 +266,9 @@ def main() -> int:
         )
         return 0
 
-    # sleep — cache TTL 만료 직전까지
-    time.sleep(config.refresh_interval_minutes * 60)
+    # sleep — cache TTL 만료 직전까지 (--now 는 호출자가 이미 기다렸다)
+    if not now:
+        time.sleep(config.refresh_interval_minutes * 60)
 
     # sleep 후 marker 재 load — 더 최근 fire 또는 user activity 가 있으면 skip
     marker = Marker.load(sid_hash)
@@ -343,4 +350,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

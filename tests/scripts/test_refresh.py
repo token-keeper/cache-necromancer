@@ -844,3 +844,51 @@ class TestAlwaysArmKeepsLegacyBehavior:
         rc = main()
         assert rc == 2
         assert "(1/10)" in capsys.readouterr().err
+
+
+class TestNowFlag:
+    """v0.10.0: mod 가 refresh_interval 을 기다린 뒤 --now 로 실행 — 그 sleep 만 생략."""
+
+    @pytest.fixture
+    def sleeps(self, monkeypatch):
+        calls: list = []
+        monkeypatch.setattr("scripts.refresh.time.sleep", calls.append)
+        return calls
+
+    def test_budget_wakes_without_interval_sleep(
+        self, cn_root, session_stdin, sleeps, silent_notify, capsys
+    ):
+        _write_config(cn_root, arm="manual", notify_enabled=True, grace=60)
+        m = _load_marker_for_sid(session_stdin)
+        m.set_budget_remaining = 1
+        m.set_budget_total = 1
+        m.save()
+        assert main(["--now"]) == 2
+        assert sleeps == [60]                   # grace 만, 50분 sleep 없음
+        assert len(silent_notify) == 1
+        assert PING_PREFIX in capsys.readouterr().err
+        m = _load_marker_for_sid(session_stdin)
+        assert m.set_budget_remaining == 0
+        assert m.latest_fire > 0
+
+    def test_no_budget_notifies_only(
+        self, cn_root, session_stdin, sleeps, silent_notify, capsys
+    ):
+        _write_config(cn_root, arm="manual", notify_enabled=True)
+        assert main(["--now"]) == 0
+        assert sleeps == []
+        assert len(silent_notify) == 1
+        assert PING_PREFIX not in capsys.readouterr().err
+
+    def test_suppressed_by_compact_skips(
+        self, cn_root, session_stdin, sleeps, silent_notify, capsys
+    ):
+        _write_config(cn_root, arm="always", notify_enabled=True)
+        m = _load_marker_for_sid(session_stdin)
+        m.suppressed_at_ns = 2
+        m.last_user_activity_at_ns = 1
+        m.save()
+        assert main(["--now"]) == 0
+        assert sleeps == []
+        assert silent_notify == []
+        assert PING_PREFIX not in capsys.readouterr().err
