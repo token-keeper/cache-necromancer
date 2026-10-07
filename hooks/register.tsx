@@ -1,9 +1,9 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { CacheNecromancerConfig, CacheNecromancerLabel, CacheNecromancerTime } from '../types'
+import type { CacheNecromancerConfig, CacheNecromancerLabel, CacheNecromancerLanguage, CacheNecromancerTime } from '../types'
 
-const DEFAULT_CONFIG: CacheNecromancerConfig = { ttlMinutes: 60, warnAfterMinutes: 50, countdown: true }
+const DEFAULT_CONFIG: CacheNecromancerConfig = { ttlMinutes: 60, warnAfterMinutes: 50, countdown: true, language: 'en' }
 
 const base = atom({ plugin: 'cache-necromancer', key: 'base' } as const, null as CacheNecromancerTime)
 const warnedFor = atom({ plugin: 'cache-necromancer', key: 'warnedFor' } as const, null as CacheNecromancerTime)
@@ -12,14 +12,48 @@ const label = atom({ plugin: 'cache-necromancer', key: 'label' } as const, null 
 const config = atom({ plugin: 'cache-necromancer', key: 'config' } as const, DEFAULT_CONFIG)
 
 const MIN_MS = 60 * 1000
-// 띠 배경. 기본 글자색은 이 배경 대비 7.9:1 (#9a9a9a는 5.0:1)
+// 띠 배경과 글자색. 배경 #1f2d3d 대비: 기본 7.9:1, 경고 7.9:1, 만료 5.6:1 (모두 4.5:1 이상)
 const STRIP = '#1f2d3d'
-const TONE_COLOR = { normal: '#b8c4d4', warning: 'warning', error: 'error' } as const
+const TONE_COLOR = { normal: '#b8c4d4', warning: '#ffb454', error: '#ff7b7b' } as const
+// 띠가 숨는 백그라운드 에이전트 상태 (idle·종료는 사용자 입력을 막지 않으므로 제외)
+const BUSY_AGENT = new Set(['pending', 'running', 'waiting'])
+
+// 문구는 lib/i18n.py 의 언어·용어를 따른다 (기본 en)
+const TEXT: Record<
+  CacheNecromancerLanguage,
+  { left: (mmss: string) => string; warn: (minutes: number) => string; expired: string; expiredToast: string }
+> = {
+  ko: {
+    left: t => `캐시 ${t} 남음`,
+    warn: n => `캐시 ${n}분 남음`,
+    expired: '캐시 만료',
+    expiredToast: '캐시 만료 — 다음 입력은 캐시를 새로 만듦',
+  },
+  en: {
+    left: t => `Cache ${t} left`,
+    warn: n => `Cache: ${n} min left`,
+    expired: 'Cache expired',
+    expiredToast: 'Cache expired — your next input rebuilds it',
+  },
+  ja: {
+    left: t => `キャッシュ残り ${t}`,
+    warn: n => `キャッシュ残り${n}分`,
+    expired: 'キャッシュ期限切れ',
+    expiredToast: 'キャッシュ期限切れ — 次の入力でキャッシュを作り直します',
+  },
+  zh: {
+    left: t => `缓存剩余 ${t}`,
+    warn: n => `缓存剩余 ${n} 分钟`,
+    expired: '缓存已过期',
+    expiredToast: '缓存已过期 — 下次输入将重新创建缓存',
+  },
+}
 
 const pad = (n: number) => String(n).padStart(2, '0')
 
-// Python 쪽 lib/config.py 와 같은 파일에서 필요한 3개 키만 읽는 최소 TOML 파서.
-// 값은 정수(1 이상)·불리언만 받고, 그 밖의 값·다른 섹션의 같은 키는 무시해 기본값을 둔다.
+// Python 쪽 lib/config.py 와 같은 파일에서 필요한 4개 키만 읽는 최소 TOML 파서.
+// 분은 1 이상 정수, countdown 은 불리언, language 는 4종 문자열만 받고,
+// 그 밖의 값·다른 섹션의 같은 키는 무시해 기본값을 둔다.
 function parseConfig(text: string): CacheNecromancerConfig {
   const cfg = { ...DEFAULT_CONFIG }
   let section = ''
@@ -28,6 +62,11 @@ function parseConfig(text: string): CacheNecromancerConfig {
     const header = /^\[\s*([A-Za-z0-9_.-]+)\s*\]$/.exec(line)
     if (header) {
       section = header[1] ?? ''
+      continue
+    }
+    // 헤더 모양이 깨진 줄도 새 섹션의 시작으로 보고, 앞 섹션의 키가 이어 붙지 않게 끊는다
+    if (line.startsWith('[')) {
+      section = ''
       continue
     }
     const pair = /^([A-Za-z0-9_-]+)\s*=\s*(\S+)$/.exec(line)
@@ -39,6 +78,8 @@ function parseConfig(text: string): CacheNecromancerConfig {
     if (section === 'display' && key === 'countdown' && (value === 'true' || value === 'false')) {
       cfg.countdown = value === 'true'
     }
+    const lang = /^(["'])(ko|en|ja|zh)\1$/.exec(value)?.[2] as CacheNecromancerLanguage | undefined
+    if (section === 'general' && key === 'language' && lang) cfg.language = lang
   }
   return cfg
 }
@@ -57,19 +98,31 @@ async function loadConfig($: EngineInterface): Promise<CacheNecromancerConfig> {
 
 function labelFor(at: number, now: number, cfg: CacheNecromancerConfig): CacheNecromancerLabel {
   const left = cfg.ttlMinutes * MIN_MS - (now - at)
-  if (left <= 0) return { text: '캐시 만료', tone: 'error' }
+  const text = TEXT[cfg.language]
+  if (left <= 0) return { text: text.expired, tone: 'error' }
   const sec = Math.ceil(left / 1000)
   const isWarning = left <= (cfg.ttlMinutes - cfg.warnAfterMinutes) * MIN_MS
-  return { text: `캐시 ${pad(Math.floor(sec / 60))}:${pad(sec % 60)} 남음`, tone: isWarning ? 'warning' : 'normal' }
+  return { text: text.left(`${pad(Math.floor(sec / 60))}:${pad(sec % 60)}`), tone: isWarning ? 'warning' : 'normal' }
+}
+
+// 리더 턴이 끝나도 백그라운드 에이전트가 돌고 있으면 아직 "모든 작업이 끝난" 게 아니다
+async function hasBusyAgent($: EngineInterface): Promise<boolean> {
+  try {
+    return (await $.agent.list()).some(agent => BUSY_AGENT.has(agent.status))
+  } catch {
+    return false
+  }
 }
 
 async function tick($: EngineInterface): Promise<void> {
   const cfg = await read($, config)
   const at = await read($, base)
   const next = at === null || !cfg.countdown ? null : labelFor(at, await $.clock.now(), cfg)
+  // 백그라운드 에이전트가 도는 동안은 띠만 숨긴다. 캐시 시계는 흐르므로 토스트 판정은 계속한다
+  const shown = next !== null && (await hasBusyAgent($)) ? null : next
 
   // 글자가 바뀔 때만 쓴다. 쓰면 label을 읽은 띠가 다시 그려진다
-  if ((await read($, label))?.text !== next?.text) await update($, label, () => next)
+  if ((await read($, label))?.text !== shown?.text) await update($, label, () => shown)
 
   if (at === null || next === null) return
   // 이 기준 시각으로 아직 안 알렸을 때만 토스트. 판정과 기록을 update 콜백 한 번에 (겹친 tick 중복 방지)
@@ -80,11 +133,11 @@ async function tick($: EngineInterface): Promise<void> {
   }
   if (next.tone === 'error' && (await read($, expiredFor)) !== at) {
     await update($, expiredFor, claim)
-    if (isFirst) $.ui.toast('캐시 만료 — 다음 입력은 캐시를 새로 만듦')
+    if (isFirst) $.ui.toast(TEXT[cfg.language].expiredToast)
   }
   if (next.tone === 'warning' && (await read($, warnedFor)) !== at) {
     await update($, warnedFor, claim)
-    if (isFirst) $.ui.toast(`캐시 ${cfg.ttlMinutes - cfg.warnAfterMinutes}분 남음`)
+    if (isFirst) $.ui.toast(TEXT[cfg.language].warn(cfg.ttlMinutes - cfg.warnAfterMinutes))
   }
 }
 
@@ -94,7 +147,9 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const cfg = await loadConfig($)
     await update($, config, () => cfg)
-    $.clock.every(1000, () => void tick($))
+    // countdown = false 면 띠도 토스트도 없으므로 타이머 자체를 걸지 않는다
+    // tick 은 표시용 best-effort: 실패(리로드·종료 직후 등)는 다음 tick 이 다시 계산한다
+    if (cfg.countdown) $.clock.every(1000, () => void tick($).catch(() => undefined))
     return next(e)
   })
 

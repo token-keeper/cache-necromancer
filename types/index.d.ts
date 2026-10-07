@@ -12,7 +12,11 @@ export type CacheNecromancerConfig = {
   warnAfterMinutes: number
   /** [display] countdown */
   countdown: boolean
+  /** [general] language — 띠·토스트 문구 언어 (Python 쪽 lib/i18n.py 와 같은 4종, 기본 en) */
+  language: CacheNecromancerLanguage
 }
+
+export type CacheNecromancerLanguage = 'ko' | 'en' | 'ja' | 'zh'
 
 declare module 'claude-code' {
   interface PluginState {

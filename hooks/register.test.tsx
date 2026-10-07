@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine, MockClock } from 'claude-code/testing'
-import type { On, TurnUsage } from 'claude-code'
+import type { AgentInfo, AgentStatus, On, TurnUsage } from 'claude-code'
 
 const PLUGIN = 'cache-necromancer'
 const SURFACES = ['terminal', 'desktop'] as const
@@ -10,14 +10,19 @@ const WARN = '캐시 10분 남음'
 const EXPIRED = '캐시 만료 — 다음 입력은 캐시를 새로 만듦'
 const CACHED: TurnUsage = { model: 'm', input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 100, cache_creation_input_tokens: 0 }
 
-type World = { clock: MockClock; toasts: string[]; usage: TurnUsage | null }
+type World = { clock: MockClock; toasts: string[]; usage: TurnUsage | null; agents: AgentInfo[] }
 type Env = Readonly<Record<string, string>>
 type Files = Readonly<Record<string, string>>
 
-// 엔진 자리: 띠는 'below' 텍스트, 모델 요청은 world.usage 를 응답 사용량으로 돌려준다.
+const CONFIG = '/home/t/.cache-necromancer/config.toml'
+// 대부분의 테스트는 한국어 설정으로 돈다. 기본값(en)·다른 언어는 따로 확인한다
+const KO: Files = { [CONFIG]: '[general]\nlanguage = "ko"\n' }
+
+// 엔진 자리: 띠는 'below' 텍스트, 모델 요청은 world.usage 를 응답 사용량으로, 에이전트 목록은 world.agents 를 돌려준다.
 // 설정 파일은 files 에 있는 경로만 읽히고, 없으면 읽기가 실패한다 (= 파일 없음)
-function setup(on: On, env: Env = { HOME: '/home/t' }, files: Files = {}): World {
-  const w: World = { clock: mock.clock(on, { now: T0 }), toasts: [], usage: CACHED }
+function setup(on: On, env: Env = { HOME: '/home/t' }, files: Files = KO): World {
+  const w: World = { clock: mock.clock(on, { now: T0 }), toasts: [], usage: CACHED, agents: [] }
+  on('agent.list', () => ({ value: w.agents }))
   mock.env(on, env)
   on('fs.read', (_$, e) => {
     const text = files[e.path]
@@ -65,7 +70,7 @@ async function shown($: Engine, over: { isWorking?: boolean; hasSurvey?: boolean
   const seen = []
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'AbovePrompt', props: band(over) })
-    const line = await ui.find({ type: 'Text', text: /캐시/ })
+    const line = (await ui.findAll({ type: 'Text' })).find(t => t.text !== 'below')
     seen.push({ text: line?.text, color: line?.props['color'], tree: await ui.drawn() })
     await ui.unmount()
   }
@@ -114,7 +119,7 @@ test('답변 중엔 표시하지 않고(아래 그대로), 설문이 있으면 �
   expect(survey?.tree).toMatchObject({ type: 'Text', children: ['below'] })
 })
 
-test('50분 경과: warning 색 + 경고 토스트 1회, 이후 중복 없음', async ($, on) => {
+test('50분 경과: 경고색(#ffb454) + 경고 토스트 1회, 이후 중복 없음', async ($, on) => {
   const w = setup(on)
   await start($)
   await step($, w)
@@ -122,18 +127,18 @@ test('50분 경과: warning 색 + 경고 토스트 1회, 이후 중복 없음', 
   expect(await shown($)).toMatchObject({ text: '캐시 10:01 남음', color: '#b8c4d4' })
   expect(w.toasts).toEqual([])
   await w.clock.advance(1000)
-  expect(await shown($)).toMatchObject({ text: '캐시 10:00 남음', color: 'warning' })
+  expect(await shown($)).toMatchObject({ text: '캐시 10:00 남음', color: '#ffb454' })
   expect(w.toasts).toEqual([WARN])
   await w.clock.advance(2 * MIN)
   expect(w.toasts).toEqual([WARN])
 })
 
-test('60분 경과: error 색 캐시 만료 + 만료 토스트 1회, 이후 중복 없음', async ($, on) => {
+test('60분 경과: 만료색(#ff7b7b) 캐시 만료 + 만료 토스트 1회, 이후 중복 없음', async ($, on) => {
   const w = setup(on)
   await start($)
   await step($, w)
   await w.clock.advance(60 * MIN)
-  expect(await shown($)).toMatchObject({ text: '캐시 만료', color: 'error' })
+  expect(await shown($)).toMatchObject({ text: '캐시 만료', color: '#ff7b7b' })
   expect(w.toasts).toEqual([WARN, EXPIRED])
   await w.clock.advance(2 * MIN)
   expect(w.toasts).toEqual([WARN, EXPIRED])
@@ -204,11 +209,11 @@ test('띠가 떠 있는 동안 1초마다 글자가 바뀌어 다시 그려진�
 })
 
 // ── 설정 연동 (~/.cache-necromancer/config.toml, 세션 시작 때 읽음) ──
-const CONFIG = '/home/t/.cache-necromancer/config.toml'
 
 test('cache_ttl_minutes·refresh_interval_minutes 를 읽어 남은 시간·경고 시점·문구를 정한다', async ($, on) => {
   const toml = [
     '[general]',
+    'language = "ko"',
     'refresh_interval_minutes = 25   # 경고까지',
     'cache_ttl_minutes = 30',
     '[wake]',
@@ -220,7 +225,7 @@ test('cache_ttl_minutes·refresh_interval_minutes 를 읽어 남은 시간·경�
   await w.clock.advance(49_000)
   expect(await shown($)).toMatchObject({ text: '캐시 29:11 남음', color: '#b8c4d4' })
   await w.clock.advance(25 * MIN - 49_000)
-  expect(await shown($)).toMatchObject({ text: '캐시 05:00 남음', color: 'warning' })
+  expect(await shown($)).toMatchObject({ text: '캐시 05:00 남음', color: '#ffb454' })
   expect(w.toasts).toEqual(['캐시 5분 남음'])
   await w.clock.advance(5 * MIN)
   expect((await shown($))?.text).toBe('캐시 만료')
@@ -240,7 +245,7 @@ test('[display] countdown = false 면 띠에 아무것도 안 그리고 토스�
 
 test('CN_ROOT 가 있으면 그 아래 config.toml 을 읽는다', async ($, on) => {
   const w = setup(on, { HOME: '/home/t', CN_ROOT: '/custom' }, {
-    '/custom/config.toml': '[general]\ncache_ttl_minutes = 30\n',
+    '/custom/config.toml': '[general]\nlanguage = "ko"\ncache_ttl_minutes = 30\n',
     [CONFIG]: '[general]\ncache_ttl_minutes = 45\n',
   })
   await start($)
@@ -250,14 +255,97 @@ test('CN_ROOT 가 있으면 그 아래 config.toml 을 읽는다', async ($, on)
 })
 
 for (const [name, toml] of [
-  ['깨진 파일', '[general\ncache_ttl_minutes = = 30\ncountdown = maybe'],
-  ['범위 밖·문자열 값', '[general]\ncache_ttl_minutes = 0\nrefresh_interval_minutes = "50"\n[display]\ncountdown = "false"\n'],
+  ['파일 없음', undefined],
+  ['깨진 파일', '[general\ncache_ttl_minutes = = 30\ncountdown = maybe\nlanguage = ko'],
+  ['범위 밖·문자열 값', '[general]\ncache_ttl_minutes = 0\nrefresh_interval_minutes = "50"\nlanguage = "fr"\n[display]\ncountdown = "false"\n'],
 ] as const) {
-  test(`설정을 못 읽으면 기본값(60분·50분 경고·표시) — ${name}`, async ($, on) => {
-    const w = setup(on, undefined, { [CONFIG]: toml })
+  test(`설정을 못 읽으면 기본값(60분·50분 경고·표시·en) — ${name}`, async ($, on) => {
+    const w = setup(on, undefined, toml === undefined ? {} : { [CONFIG]: toml })
     await start($)
     await step($, w)
     await w.clock.advance(49_000)
-    expect((await shown($))?.text).toBe('캐시 59:11 남음')
+    expect((await shown($))?.text).toBe('Cache 59:11 left')
   })
 }
+
+test('헤더 모양이 깨진 줄에서 섹션을 끊어, 앞 섹션 키로 잘못 읽지 않는다', async ($, on) => {
+  const toml = '[general]\nlanguage = "ko"\n[[broken\ncache_ttl_minutes = 30\n'
+  const w = setup(on, undefined, { [CONFIG]: toml })
+  await start($)
+  await step($, w)
+  await w.clock.advance(49_000)
+  expect((await shown($))?.text).toBe('캐시 59:11 남음')
+})
+
+// 타이머 수를 세려고 mock.clock 대신 clock.every 를 직접 받는다 (같은 이벤트를 두 번 등록할 수 없다)
+async function timersAfterStart($: Engine, on: On, files: Files): Promise<number> {
+  let timers = 0
+  mock.env(on, { HOME: '/home/t' })
+  on('fs.read', (_$, e) => {
+    const text = files[e.path]
+    if (text === undefined) throw new Error(`ENOENT: ${e.path}`)
+    return { value: text }
+  })
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('clock.every', () => {
+    timers += 1
+    return { value: undefined }
+  })
+  await start($)
+  return timers
+}
+
+test('countdown = false 면 1초 타이머 자체를 걸지 않는다', async ($, on) => {
+  expect(await timersAfterStart($, on, { [CONFIG]: '[display]\ncountdown = false\n' })).toBe(0)
+})
+
+test('countdown 기본값이면 타이머를 1개 건다 (위 테스트의 대조군)', async ($, on) => {
+  expect(await timersAfterStart($, on, {})).toBe(1)
+})
+
+for (const [lang, line, warn, expired, expiredToast] of [
+  ['en', 'Cache 59:11 left', 'Cache: 10 min left', 'Cache expired', 'Cache expired — your next input rebuilds it'],
+  ['ko', '캐시 59:11 남음', '캐시 10분 남음', '캐시 만료', '캐시 만료 — 다음 입력은 캐시를 새로 만듦'],
+  ['ja', 'キャッシュ残り 59:11', 'キャッシュ残り10分', 'キャッシュ期限切れ', 'キャッシュ期限切れ — 次の入力でキャッシュを作り直します'],
+  ['zh', '缓存剩余 59:11', '缓存剩余 10 分钟', '缓存已过期', '缓存已过期 — 下次输入将重新创建缓存'],
+] as const) {
+  test(`language = "${lang}" 이면 띠·토스트 문구가 그 언어로 나온다`, async ($, on) => {
+    const w = setup(on, undefined, { [CONFIG]: `[general]\nlanguage = "${lang}"\n` })
+    await start($)
+    await step($, w)
+    await w.clock.advance(49_000)
+    expect((await shown($))?.text).toBe(line)
+    await w.clock.advance(60 * MIN)
+    expect((await shown($))?.text).toBe(expired)
+    expect(w.toasts).toEqual([warn, expiredToast])
+  })
+}
+
+// ── 백그라운드 에이전트가 도는 동안은 숨김 ──
+const agent = (status: AgentStatus): AgentInfo => ({ id: `a-${status}`, description: 'lane', type: 'general-purpose', status })
+
+for (const status of ['pending', 'running', 'waiting'] as const) {
+  test(`백그라운드 에이전트가 ${status} 이면 띠를 숨기고, 끝나면 다시 보인다`, async ($, on) => {
+    const w = setup(on)
+    await start($)
+    await step($, w)
+    w.agents = [agent('idle'), agent(status)]
+    await w.clock.advance(1000)
+    const hidden = await shown($)
+    expect(hidden?.text).toBeUndefined()
+    expect(hidden?.tree).toMatchObject({ type: 'Text', children: ['below'] })
+    w.agents = [agent('idle'), agent('completed'), agent('failed'), agent('killed')]
+    await w.clock.advance(1000)
+    expect((await shown($))?.text).toBe('캐시 59:58 남음')
+  })
+}
+
+test('에이전트가 도는 동안에도 경고·만료 토스트는 울린다 (캐시 시계는 흐른다)', async ($, on) => {
+  const w = setup(on)
+  await start($)
+  await step($, w)
+  w.agents = [agent('running')]
+  await w.clock.advance(60 * MIN)
+  expect((await shown($))?.text).toBeUndefined()
+  expect(w.toasts).toEqual([WARN, EXPIRED])
+})
