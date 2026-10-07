@@ -3,14 +3,16 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { CacheNecromancerConfig, CacheNecromancerLabel, CacheNecromancerLanguage, CacheNecromancerTime } from '../types'
 
-const DEFAULT_CONFIG: CacheNecromancerConfig = { ttlMinutes: 60, warnAfterMinutes: 50, countdown: true, language: 'en' }
+const DEFAULT_CONFIG: CacheNecromancerConfig = { ttlMinutes: 60, warnAfterMinutes: 50, countdown: true, language: 'en', graceSeconds: 60 }
 
 const base = atom({ plugin: 'cache-necromancer', key: 'base' } as const, null as CacheNecromancerTime)
 const warnedFor = atom({ plugin: 'cache-necromancer', key: 'warnedFor' } as const, null as CacheNecromancerTime)
 const expiredFor = atom({ plugin: 'cache-necromancer', key: 'expiredFor' } as const, null as CacheNecromancerTime)
+const wokeFor = atom({ plugin: 'cache-necromancer', key: 'wokeFor' } as const, null as CacheNecromancerTime)
 const label = atom({ plugin: 'cache-necromancer', key: 'label' } as const, null as CacheNecromancerLabel)
 const config = atom({ plugin: 'cache-necromancer', key: 'config' } as const, DEFAULT_CONFIG)
 const tickErrorLogged = atom({ plugin: 'cache-necromancer', key: 'tickErrorLogged' } as const, false)
+const wakeErrorLogged = atom({ plugin: 'cache-necromancer', key: 'wakeErrorLogged' } as const, false)
 
 const MIN_MS = 60 * 1000
 // 띠 배경과 글자색. 배경 #1f2d3d 대비: 기본 7.9:1, 경고 7.9:1, 만료 5.6:1 (모두 4.5:1 이상)
@@ -52,8 +54,8 @@ const TEXT: Record<
 
 const pad = (n: number) => String(n).padStart(2, '0')
 
-// Python 쪽 lib/config.py 와 같은 파일에서 필요한 4개 키만 읽는 최소 TOML 파서.
-// 분은 1 이상 정수, countdown 은 불리언, language 는 4종 문자열만 받고,
+// Python 쪽 lib/config.py 와 같은 파일에서 필요한 5개 키만 읽는 최소 TOML 파서.
+// 분은 1 이상 정수, grace_seconds 는 0 이상 정수, countdown 은 불리언, language 는 4종 문자열만 받고,
 // 그 밖의 값·다른 섹션의 같은 키는 무시해 기본값을 둔다.
 function parseConfig(text: string): CacheNecromancerConfig {
   const cfg = { ...DEFAULT_CONFIG }
@@ -81,6 +83,7 @@ function parseConfig(text: string): CacheNecromancerConfig {
     }
     const lang = /^(["'])(ko|en|ja|zh)\1$/.exec(value)?.[2] as CacheNecromancerLanguage | undefined
     if (section === 'general' && key === 'language' && lang) cfg.language = lang
+    if (section === 'wake' && key === 'grace_seconds' && /^\d+$/.test(value)) cfg.graceSeconds = Number(value)
   }
   return cfg
 }
@@ -118,20 +121,27 @@ async function hasBusyAgent($: EngineInterface): Promise<boolean> {
 async function tick($: EngineInterface): Promise<void> {
   const cfg = await read($, config)
   const at = await read($, base)
-  const next = at === null || !cfg.countdown ? null : labelFor(at, await $.clock.now(), cfg)
+  const now = at === null ? 0 : await $.clock.now()
+  const next = at === null || !cfg.countdown ? null : labelFor(at, now, cfg)
   // 백그라운드 에이전트가 도는 동안은 띠만 숨긴다. 캐시 시계는 흐르므로 토스트 판정은 계속한다
   const shown = next !== null && (await hasBusyAgent($)) ? null : next
 
   // 글자가 바뀔 때만 쓴다. 쓰면 label을 읽은 띠가 다시 그려진다
   if ((await read($, label))?.text !== shown?.text) await update($, label, () => shown)
 
-  if (at === null || next === null) return
-  // 이 기준 시각으로 아직 안 알렸을 때만 토스트. 판정과 기록을 update 콜백 한 번에 (겹친 tick 중복 방지)
+  if (at === null) return
+  // 이 기준 시각으로 아직 안 했을 때만 깨우기·토스트. 판정과 기록을 update 콜백 한 번에 (겹친 tick 중복 방지)
   let isFirst = false
   const claim = (prev: CacheNecromancerTime) => {
     isFirst = prev !== at
     return at
   }
+  // 깨우기는 띠(countdown)와 무관하게 판정한다. grace 동안 tick 이 계속 돌아도 claim 이 막는다
+  if (now - at >= cfg.warnAfterMinutes * MIN_MS && (await read($, wokeFor)) !== at) {
+    await update($, wokeFor, claim)
+    if (isFirst) void wake($, cfg).catch(error => logWakeOnce($, `wake failed (${errorText(error)})`).catch(() => undefined))
+  }
+  if (next === null) return
   if (next.tone === 'error' && (await read($, expiredFor)) !== at) {
     await update($, expiredFor, claim)
     if (isFirst) $.ui.toast(TEXT[cfg.language].expiredToast)
@@ -142,27 +152,66 @@ async function tick($: EngineInterface): Promise<void> {
   }
 }
 
+// 활성 설치본의 refresh.py: is_latest_install 과 같은 기준(installed_plugins.json 의 installPath)이라
+// 업데이트·리로드 직후에도 활성 버전이 돈다. 항목이 없거나 못 읽으면 null
+async function refreshScript($: EngineInterface): Promise<string | null> {
+  try {
+    const dir = (await $.env.get('CLAUDE_CONFIG_DIR')) || `${await $.env.get('HOME')}/.claude`
+    const data: unknown = JSON.parse(await $.fs.read(`${dir}/plugins/installed_plugins.json`))
+    const plugins = (data as { plugins?: Record<string, unknown> }).plugins ?? {}
+    for (const [name, entries] of Object.entries(plugins)) {
+      if (!name.startsWith('cache-necromancer@')) continue
+      const entry: unknown = Array.isArray(entries) ? entries[0] : entries
+      const path = (entry as { installPath?: unknown } | undefined)?.installPath
+      if (typeof path === 'string') return `${path}/scripts/refresh.py`
+    }
+  } catch {
+    // 아래 null
+  }
+  return null
+}
+
+// 캐시 마지막 적중 + refresh_interval 이 지나면 refresh.py --now 를 돌린다. 재확인·예산·알림·grace 와 marker 기록은
+// Python 몫이고, exit 2 면 stderr 의 ping 을 프롬프트로 낸다. 그 turn 이 캐시를 읽으면 turn.step 이 base 를 갱신해 다음 주기로 이어진다
+async function wake($: EngineInterface, cfg: CacheNecromancerConfig): Promise<void> {
+  const script = await refreshScript($)
+  if (script === null) return logWakeOnce($, 'wake skipped (cache-necromancer not in installed_plugins.json)')
+  const r = await $.process.run(['python3', script, '--now'], {
+    stdin: JSON.stringify({ session_id: await $.session.id() }),
+    // grace 동안 Python 이 기다리므로 그만큼 + 여유. process.run 상한이 10분이다
+    timeoutMs: Math.min((cfg.graceSeconds + 30) * 1000, 10 * MIN_MS),
+  })
+  const ping = r.stderr.trim()
+  if (r.exitCode === 2 && ping) await $.prompt.submit({ text: ping })
+}
+
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
+
+// 깨우기도 best-effort: 첫 실패만 디버그 로그에 남긴다
+async function logWakeOnce($: EngineInterface, text: string): Promise<void> {
+  if (await read($, wakeErrorLogged)) return
+  await update($, wakeErrorLogged, () => true)
+  $.ui.log(`cache-necromancer: ${text}; later failures are not logged`, { to: 'debug' })
+}
+
 // tick 은 표시용 best-effort: 실패(리로드·종료 직후 등)는 다음 tick 이 다시 계산한다.
 // 원인 추적용으로 첫 실패만 디버그 로그에 남기고 이후는 조용히 넘긴다
 async function logFirstTickError($: EngineInterface, error: unknown): Promise<void> {
   if (await read($, tickErrorLogged)) return
   await update($, tickErrorLogged, () => true)
-  const reason = error instanceof Error ? error.message : String(error)
-  $.ui.log(`cache-necromancer: countdown tick failed (${reason}); later failures are not logged`, { to: 'debug' })
+  $.ui.log(`cache-necromancer: countdown tick failed (${errorText(error)}); later failures are not logged`, { to: 'debug' })
 }
 
 export const register: Register = on => {
   // 설정은 세션 시작 때 한 번 읽는다 (Python 훅과 같은 "설정 변경 후 새 세션" 규칙).
-  // 리로드 때도 다시 fire되므로 타이머는 여기서만 건다 (이전 환경의 타이머는 엔진이 버림)
+  // 리로드 때도 다시 fire되므로 타이머는 여기서만 건다 (이전 환경의 타이머는 엔진이 버림).
+  // countdown 이 꺼져도 깨우기 때문에 타이머는 돈다
   on('session.start', async ($, e, next) => {
     const cfg = await loadConfig($)
     await update($, config, () => cfg)
-    if (cfg.countdown) {
-      $.clock.every(1000, () => void tick($).catch(error => logFirstTickError($, error).catch(() => undefined)))
-    } else {
-      // 띠도 토스트도 없으므로 타이머를 걸지 않는다. 리로드 전에 남은 띠 값은 지운다
-      await update($, label, () => null)
-    }
+    // 리로드 전에 남은 띠 값은 바로 지운다
+    if (!cfg.countdown) await update($, label, () => null)
+    $.clock.every(1000, () => void tick($).catch(error => logFirstTickError($, error).catch(() => undefined)))
     return next(e)
   })
 

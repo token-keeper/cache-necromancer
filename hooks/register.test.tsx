@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine, MockClock } from 'claude-code/testing'
-import type { AgentInfo, AgentStatus, On, SessionCompactTrigger, SessionMessage, TurnUsage } from 'claude-code'
+import type { AgentInfo, AgentStatus, On, ProcessRunResult, SessionCompactTrigger, SessionMessage, TurnUsage } from 'claude-code'
 
 const PLUGIN = 'cache-necromancer'
 const SURFACES = ['terminal', 'desktop'] as const
@@ -19,6 +19,12 @@ type World = {
   // compact 를 거부할 사유(있으면 skip), agent.list 를 붙잡아 둘 관문(tick 경합 재현용)
   compactSkip?: string
   gate?: Promise<void>
+  // 깨우기: refresh.py 실행 기록·결과, 제출된 프롬프트, 디버그 로그. runGate 가 있으면 실행을 붙잡아 둔다(grace 재현)
+  runs: { argv: readonly string[]; stdin?: string; timeoutMs?: number }[]
+  run: Pick<ProcessRunResult, 'exitCode' | 'stderr'>
+  runGate?: Promise<void>
+  submits: string[]
+  logs: string[]
 }
 type Env = Readonly<Record<string, string>>
 type Files = Readonly<Record<string, string>>
@@ -30,7 +36,16 @@ const KO: Files = { [CONFIG]: '[general]\nlanguage = "ko"\n' }
 // 엔진 자리: 띠는 'below' 텍스트, 모델 요청은 world.usage 를 응답 사용량으로, 에이전트 목록은 world.agents 를 돌려준다.
 // 설정 파일은 files 에 있는 경로만 읽히고, 없으면 읽기가 실패한다 (= 파일 없음)
 function setup(on: On, env: Env = { HOME: '/home/t' }, files: Files = KO): World {
-  const w: World = { clock: mock.clock(on, { now: T0 }), toasts: [], usage: CACHED, agents: [] }
+  const w: World = {
+    clock: mock.clock(on, { now: T0 }),
+    toasts: [],
+    usage: CACHED,
+    agents: [],
+    runs: [],
+    run: { exitCode: 2, stderr: `${PING}\n` },
+    submits: [],
+    logs: [],
+  }
   on('agent.list', async () => {
     await w.gate
     return { value: w.agents }
@@ -54,6 +69,20 @@ function setup(on: On, env: Env = { HOME: '/home/t' }, files: Files = KO): World
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
     const { Text } = $.ui.resolve(e)
     return <Text>below</Text>
+  })
+  on('session.id', () => ({ value: 'sid-1' }))
+  on('process.run', async (_$, e) => {
+    w.runs.push({ argv: e.argv, stdin: e.init?.stdin, timeoutMs: e.init?.timeoutMs })
+    await w.runGate
+    return { value: { stdout: '', isStdoutTruncated: false, isStderrTruncated: false, ...w.run } }
+  })
+  on('prompt.submit', (_$, e) => {
+    w.submits.push(e.text)
+    return { text: e.text }
+  })
+  on('ui.log', (_$, e) => {
+    w.logs.push(e.text)
+    return { value: undefined }
   })
   return w
 }
@@ -308,11 +337,11 @@ async function timersAfterStart($: Engine, on: On, files: Files): Promise<number
   return timers
 }
 
-test('countdown = false 면 1초 타이머 자체를 걸지 않는다', async ($, on) => {
-  expect(await timersAfterStart($, on, { [CONFIG]: '[display]\ncountdown = false\n' })).toBe(0)
+test('countdown = false 여도 1초 타이머를 1개 건다 (깨우기용)', async ($, on) => {
+  expect(await timersAfterStart($, on, { [CONFIG]: '[display]\ncountdown = false\n' })).toBe(1)
 })
 
-test('countdown 기본값이면 타이머를 1개 건다 (위 테스트의 대조군)', async ($, on) => {
+test('countdown 기본값이면 타이머를 1개 건다', async ($, on) => {
   expect(await timersAfterStart($, on, {})).toBe(1)
 })
 
@@ -478,5 +507,144 @@ test('compact 순간 진행 중이던 tick 이 옛 글자를 다시 써도 띠�
   expect((await shown($))?.text).toBeUndefined()
   w.gate = undefined
   await w.clock.advance(1000)
+  expect((await shown($))?.text).toBeUndefined()
+})
+
+// ── 깨우기: 캐시 마지막 적중 + refresh_interval 에 refresh.py --now, exit 2 면 ping 을 프롬프트로 ──
+const PING = "[cn:keepalive 10:00, 1/3] reply with exactly 'ok @10:00 (1/3)'. No tools, no analysis. Use minimal output tokens."
+const INSTALLED = '/home/t/.claude/plugins/installed_plugins.json'
+const SCRIPT = '/home/t/.claude/plugins/cache/token-keeper/cache-necromancer/0.10.0/scripts/refresh.py'
+const installed = (dir = '/home/t/.claude') =>
+  JSON.stringify({
+    version: 2,
+    plugins: {
+      'other@token-keeper': [{ scope: 'user', installPath: `${dir}/plugins/cache/token-keeper/other/1.0.0` }],
+      'cache-necromancer@token-keeper': [{ scope: 'user', installPath: `${dir}/plugins/cache/token-keeper/cache-necromancer/0.10.0` }],
+    },
+  })
+const WAKE: Files = { ...KO, [INSTALLED]: installed() }
+
+test('refresh_interval 이 지나면 refresh.py --now 를 1회 돌리고, exit 2 면 stderr 를 프롬프트로 낸다', async ($, on) => {
+  const w = setup(on, undefined, WAKE)
+  await start($)
+  await step($, w)
+  await w.clock.advance(50 * MIN - 1000)
+  expect(w.runs).toEqual([])
+  await w.clock.advance(1000)
+  await wait(20)
+  expect(w.runs).toEqual([{ argv: ['python3', SCRIPT, '--now'], stdin: JSON.stringify({ session_id: 'sid-1' }), timeoutMs: 90_000 }])
+  expect(w.submits).toEqual([PING])
+  // 같은 기준 시각으로는 다시 하지 않는다
+  await w.clock.advance(5 * MIN)
+  await wait(20)
+  expect(w.runs).toHaveLength(1)
+  // 깨우기 turn 이 캐시를 읽으면 기준 시각이 갱신되어 다음 주기로 이어진다
+  await step($, w)
+  await w.clock.advance(50 * MIN)
+  await wait(20)
+  expect(w.runs).toHaveLength(2)
+  expect(w.submits).toEqual([PING, PING])
+})
+
+test('grace 동안(실행이 끝나기 전) tick 이 계속 돌아도 중복 실행하지 않는다', async ($, on) => {
+  const w = setup(on, undefined, WAKE)
+  let release = () => {}
+  w.runGate = new Promise(resolve => (release = resolve))
+  await start($)
+  await step($, w)
+  await w.clock.advance(50 * MIN)
+  await w.clock.advance(30_000)
+  await wait(20)
+  expect(w.runs).toHaveLength(1)
+  expect(w.submits).toEqual([])
+  release()
+  await wait(20)
+  expect(w.runs).toHaveLength(1)
+  expect(w.submits).toEqual([PING])
+})
+
+test('exit 0(알림만·취소)이면 프롬프트를 내지 않는다', async ($, on) => {
+  const w = setup(on, undefined, WAKE)
+  w.run = { exitCode: 0, stderr: '' }
+  await start($)
+  await step($, w)
+  await w.clock.advance(51 * MIN)
+  await wait(20)
+  expect(w.runs).toHaveLength(1)
+  expect(w.submits).toEqual([])
+})
+
+test('[wake] grace_seconds 로 실행 시간 제한을 정하고, 10분에서 자른다', async ($, on) => {
+  const files: Record<string, string> = { ...WAKE, [CONFIG]: '[wake]\ngrace_seconds = 5\n' }
+  const w = setup(on, undefined, files)
+  await start($)
+  await step($, w)
+  await w.clock.advance(50 * MIN)
+  await wait(20)
+  expect(w.runs[0]?.timeoutMs).toBe(35_000)
+  files[CONFIG] = '[wake]\ngrace_seconds = 3600\n'
+  await start($)
+  await step($, w)
+  await w.clock.advance(50 * MIN)
+  await wait(20)
+  expect(w.runs[1]?.timeoutMs).toBe(10 * MIN)
+})
+
+for (const [name, clear] of [
+  ['session.end(/clear)', ($: Engine) => $.session.end({ reason: 'clear', sessionId: 's', resume: { id: 's' } })],
+  ['manual compact', ($: Engine) => compact($, 'manual')],
+] as const) {
+  test(`${name} 뒤에는 기준 시각이 없어 깨우지 않는다`, async ($, on) => {
+    const w = setup(on, undefined, WAKE)
+    await start($)
+    await step($, w)
+    await w.clock.advance(10 * MIN)
+    await clear($)
+    await w.clock.advance(60 * MIN)
+    await wait(20)
+    expect(w.runs).toEqual([])
+  })
+}
+
+test('installed_plugins.json 에 항목이 없으면 실행하지 않고 디버그 로그를 1회 남긴다', async ($, on) => {
+  const w = setup(on, undefined, { ...KO, [INSTALLED]: JSON.stringify({ version: 2, plugins: {} }) })
+  await start($)
+  await step($, w)
+  await w.clock.advance(51 * MIN)
+  await wait(20)
+  await step($, w)
+  await w.clock.advance(51 * MIN)
+  await wait(20)
+  expect(w.runs).toEqual([])
+  expect(w.logs).toHaveLength(1)
+  expect(w.logs[0]).toMatch(/wake skipped/)
+})
+
+test('installed_plugins.json 이 없어도 실행하지 않는다', async ($, on) => {
+  const w = setup(on)
+  await start($)
+  await step($, w)
+  await w.clock.advance(51 * MIN)
+  await wait(20)
+  expect(w.runs).toEqual([])
+})
+
+test('CLAUDE_CONFIG_DIR 이 있으면 그 아래 installed_plugins.json 을 읽는다', async ($, on) => {
+  const w = setup(on, { HOME: '/home/t', CLAUDE_CONFIG_DIR: '/cfg' }, { ...KO, '/cfg/plugins/installed_plugins.json': installed('/cfg') })
+  await start($)
+  await step($, w)
+  await w.clock.advance(50 * MIN)
+  await wait(20)
+  expect(w.runs[0]?.argv).toEqual(['python3', '/cfg/plugins/cache/token-keeper/cache-necromancer/0.10.0/scripts/refresh.py', '--now'])
+})
+
+test('countdown = false 여도 깨우기는 동작하고 띠는 없다', async ($, on) => {
+  const w = setup(on, undefined, { ...WAKE, [CONFIG]: '[display]\ncountdown = false\n' })
+  await start($)
+  await step($, w)
+  await w.clock.advance(50 * MIN)
+  await wait(20)
+  expect(w.runs).toHaveLength(1)
+  expect(w.submits).toEqual([PING])
   expect((await shown($))?.text).toBeUndefined()
 })

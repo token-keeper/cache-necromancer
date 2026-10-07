@@ -17,11 +17,11 @@ def _load_hooks_json() -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def test_hooks_json_stop_array_has_two_entries():
-    """Stop 배열에 sync (on_recap) + async (refresh) 두 hook 등록."""
+def test_hooks_json_stop_array_has_recap_only():
+    """Stop 배열엔 sync on_recap 하나 (v0.10.0: refresh 는 mod 가 --now 로 실행)."""
     data = _load_hooks_json()
     stop = data["hooks"]["Stop"]
-    assert len(stop) == 2, f"Stop 배열 객체 2개 기대, 실제 {len(stop)}"
+    assert len(stop) == 1, f"Stop 배열 객체 1개 기대, 실제 {len(stop)}"
 
 
 def test_hooks_json_first_stop_is_sync_recap():
@@ -33,13 +33,11 @@ def test_hooks_json_first_stop_is_sync_recap():
     assert first["timeout"] == 5
 
 
-def test_hooks_json_second_stop_is_async_refresh_unchanged():
-    """두번째 = refresh.py (asyncRewake true, timeout 3600) — 기존 그대로."""
-    data = _load_hooks_json()
-    second = data["hooks"]["Stop"][1]["hooks"][0]
-    assert "refresh.py" in second["command"]
-    assert second["asyncRewake"] is True
-    assert second["timeout"] == 3600
+def test_hooks_json_has_no_refresh_hook():
+    """v0.10.0: refresh.py 를 거는 command hook 이 없다 (asyncRewake 대기 프로세스 제거)."""
+    text = (_PROJECT_ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8")
+    assert "refresh.py" not in text
+    assert "asyncRewake" not in text
 
 
 @pytest.fixture
