@@ -2,6 +2,21 @@
 
 이 프로젝트의 모든 주목할 만한 변경사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고, [Semantic Versioning](https://semver.org/lang/ko/) 을 준수합니다.
 
+## [0.10.0] — 2026-10-07
+
+**깨우기를 Stop 훅 대기 프로세스에서 mod 타이머로 이전**
+
+### Changed
+- 대기 프로세스 제거 — `hooks/hooks.json` 의 Stop `refresh.py`(`asyncRewake`, timeout 3600) 항목을 지웠다. 매 turn 끝마다 50분 sleep 하던 Python 프로세스가 더 이상 뜨지 않는다.
+- 깨우기 기준 시각: **Stop 시각 → 캐시 마지막 적중 시각**. `hooks/register.tsx` 의 1초 tick 이 띠와 같은 기준 시각(메인 대화에서 캐시를 실제로 읽거나 쓴 마지막 요청의 시작) + `refresh_interval_minutes` 에 `scripts/refresh.py --now` 를 기준 시각당 1회 실행하고, exit 2 면 stderr 의 ping 을 `$.prompt.submit` 으로 제출한다. wake turn 이 캐시를 읽으면 기준 시각이 갱신되어 다음 주기로 이어진다.
+- 실행할 `refresh.py` 는 `installed_plugins.json` 의 활성 installPath 기준 (`is_latest_install` 과 같다). 항목이 없으면 깨우지 않는다.
+- `[display] countdown = false` 여도 타이머는 돈다 — 띠·토스트는 꺼진 그대로, 알림·wake 는 동작.
+- 알림·wake 도 mods(Claude Code v2.1.286+)가 필요해졌다. mods 를 무시하는 버전에서는 recap·`/cn:*` 만 남는다.
+
+### Added
+- `scripts/refresh.py --now` — 대기 sleep 만 생략하고 재확인·예산·알림·grace·ping 은 그대로. marker 작성은 여전히 Python 만 한다.
+- mod 가 `[wake] grace_seconds` 를 읽어 실행 시간 제한(grace + 30초, 최대 10분)을 정한다.
+
 ## [0.9.1] — 2026-10-07
 
 **`/compact` 직후 카운트다운 띠 비움**

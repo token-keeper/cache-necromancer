@@ -125,17 +125,19 @@ Once all work is done and Claude is waiting for your input, the band right above
   - A teammate in its own terminal window may stay `running` after its window is closed or dies, and the band can stay hidden meanwhile.
 - Nothing is shown before the first request of a session (or after `/clear`).
 - Right after `/compact` the band is cleared too, and counting restarts from the next answer's cache request (v0.9.1). An automatic compact in the middle of an answer leaves it as is.
-- `[display] countdown = false` turns off both the band and the toasts. Text follows `[general] language` (ko/en/ja/zh, default en). Settings are **read at session start, so changes apply from a new chat session**.
+- `[display] countdown = false` turns off both the band and the toasts (the expiry notification and wake keep working). Text follows `[general] language` (ko/en/ja/zh, default en). Settings are **read at session start, so changes apply from a new chat session**.
 - If the config file has a syntax error, the Python side (recap, wake) drops the whole file and uses defaults, while the band uses the values on the lines it can read, so their TTL and warning time can differ.
 - With the what-did-i-say plugin's band box, this line sits on top and the request box below it.
 
-**Requires Claude Code v2.1.286 or later** (mods = function-hook plugins, loaded through the `modules` entry of `hooks/hooks.json`). On v2.1.200–v2.1.241 the `modules` key is ignored without error: only the band is missing, and the existing hooks (notifications, recap, `/cn:*`) still load (measured on v2.1.200 and later; older versions not checked). On v2.1.242–v2.1.285 mods sit behind a server rollout flag, so the band may appear depending on the environment (flag-on environments not tested). Evidence: measured on 2026-10-07 with an isolated config on v2.1.200, v2.1.241 and v2.1.242–v2.1.286; `claude plugin test` passes on v2.1.287, v2.1.290, v2.1.291 and v2.1.292.
+**Requires Claude Code v2.1.286 or later** (mods = function-hook plugins, loaded through the `modules` entry of `hooks/hooks.json`). Since v0.10.0 the mod also runs the expiry notification and wake, so on v2.1.200–v2.1.241, where the `modules` key is ignored without error, the band, notifications and wake are all missing and only recap and `/cn:*` remain (`modules` being ignored measured on v2.1.200 and later; older versions not checked). On v2.1.242–v2.1.285 mods sit behind a server rollout flag, so the band, notifications and wake may work depending on the environment (flag-on environments not tested). Evidence: measured on 2026-10-07 with an isolated config on v2.1.200, v2.1.241 and v2.1.242–v2.1.286; `claude plugin test` passes on v2.1.287, v2.1.290, v2.1.291 and v2.1.292.
 
 ## Mechanics
 
-After each turn, a `Stop` hook + `asyncRewake` starts a background sleep.
+The mod (`hooks/register.tsx`) counts with a 1-second tick from the start of the last main-conversation request that read or wrote the cache (the band's reference time).
 
-If there's no user input for `refresh_interval_minutes` and **budget is available**, the chat session **wakes itself** — short ping turn → model replies `ok` (1 token).
+Once `refresh_interval_minutes` have passed, it runs `scripts/refresh.py --now` once. If there was no user input and **budget is available**, it notifies → waits `grace_seconds` → re-checks and emits a ping, which the mod submits as a prompt so the chat session **wakes itself** — short ping turn → model replies `ok` (1 token). Without budget it only notifies.
+
+When the wake turn reads the cache, the reference time moves and the next cycle follows (capped by the budget and `max_refresh_count`). Up to v0.9.x a `Stop` hook + `asyncRewake` started a Python process that slept 50 minutes after every turn; since v0.10.0 there is no waiting process.
 
 Because wake happens inside the chat process, the system prompt + tools stay byte-exact → **cache prefix 100% hit**.
 
@@ -146,18 +148,20 @@ sequenceDiagram
     autonumber
     participant U as User
     participant C as Chat session
-    participant H as Stop hook (asyncRewake)
+    participant H as mod (1-second tick)
+    participant P as refresh.py --now
     participant M as Model
 
     U->>C: prompt
-    C->>M: assistant turn
+    C->>M: assistant turn (cache_read)
     M-->>C: response
-    C->>H: Stop event
-    H-->>H: background sleep 50m
+    C->>H: reference time = this request's start
 
-    Note over U,H: no user input for 50 minutes (budget present)
+    Note over U,H: 50 minutes after the last cache hit, no user input (budget present)
 
-    H->>C: ping
+    H->>P: run
+    P-->>H: notify → grace wait → exit 2 + ping
+    H->>C: ping (prompt.submit)
     C->>M: minimal turn (cache_read)
     M-->>C: "ok" (1 token)
 

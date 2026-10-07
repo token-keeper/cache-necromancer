@@ -125,17 +125,19 @@ Stop says: 🪦 Cache dies at 09:37.
   - 별도 터미널 창의 팀메이트는 창이 닫히거나 죽어도 상태가 `running` 으로 남을 수 있고, 그동안 띠가 계속 숨을 수 있다.
 - 세션이 시작된 뒤(또는 `/clear` 뒤) 첫 요청 전에는 아무것도 표시하지 않는다.
 - `/compact` 직후에도 띠를 비우고, 다음 답변에서 캐시를 쓴 요청부터 다시 센다 (v0.9.1). 답변 도중 자동 compact 는 그대로 둔다.
-- `[display] countdown = false` 면 띠와 토스트를 모두 끈다. 문구는 `[general] language`(ko·en·ja·zh, 기본 en)를 따른다. 설정은 **세션 시작 때 읽으므로 바꾼 뒤 새 chat 세션부터** 적용된다.
+- `[display] countdown = false` 면 띠와 토스트를 모두 끈다 (만료 임박 알림·wake 는 그대로 동작). 문구는 `[general] language`(ko·en·ja·zh, 기본 en)를 따른다. 설정은 **세션 시작 때 읽으므로 바꾼 뒤 새 chat 세션부터** 적용된다.
 - 설정 파일에 문법 오류가 있으면 Python 쪽(recap·wake)은 파일 전체를 버리고 기본값을 쓰지만, 띠는 읽을 수 있는 줄의 값만 쓴다. 그래서 둘의 TTL·경고 시점이 다를 수 있다.
 - what-did-i-say 플러그인의 띠 박스와 함께 쓰면 이 줄이 위, 요청 박스가 아래로 붙는다.
 
-**요구: Claude Code v2.1.286 이상** (mods = 함수 훅 플러그인, `hooks/hooks.json` 의 `modules` 항목으로 로드). v2.1.200~v2.1.241 에서는 `modules` 키가 오류 없이 무시되어 띠만 빠지고, 기존 훅(알림·recap·`/cn:*`)은 그대로 로드된다 (v2.1.200 이상에서 실측, 그 미만은 미확인). v2.1.242~v2.1.285 는 mods 가 서버 롤아웃 플래그 뒤에 있어 환경에 따라 띠가 보일 수도 있다 (플래그가 켜진 환경은 추정). 근거: 2026-10-07 격리 설정으로 v2.1.200·v2.1.241·v2.1.242~v2.1.286 실측, v2.1.287·v2.1.290·v2.1.291·v2.1.292 에서 `claude plugin test` 통과.
+**요구: Claude Code v2.1.286 이상** (mods = 함수 훅 플러그인, `hooks/hooks.json` 의 `modules` 항목으로 로드). v0.10.0 부터는 만료 임박 알림과 wake 도 mod 가 실행하므로, v2.1.200~v2.1.241 에서는 `modules` 키가 오류 없이 무시되어 띠·알림·wake 가 빠지고 recap·`/cn:*` 만 남는다 (`modules` 무시는 v2.1.200 이상에서 실측, 그 미만은 미확인). v2.1.242~v2.1.285 는 mods 가 서버 롤아웃 플래그 뒤에 있어 환경에 따라 띠·알림·wake 가 동작할 수도 있다 (플래그가 켜진 환경은 추정). 근거: 2026-10-07 격리 설정으로 v2.1.200·v2.1.241·v2.1.242~v2.1.286 실측, v2.1.287·v2.1.290·v2.1.291·v2.1.292 에서 `claude plugin test` 통과.
 
 ## 어떻게 동작하는가
 
-매 turn 끝마다 `Stop` hook + `asyncRewake` 로 background sleep 시작.
+mod(`hooks/register.tsx`)가 메인 대화에서 캐시를 마지막으로 읽거나 쓴 요청의 시작 시각부터 1초 tick 으로 센다 (띠와 같은 기준 시각).
 
-`refresh_interval_minutes` 동안 user input 이 없고 **예산이 있으면** chat 세션이 **자기 자신을 wake** — 짧은 ping turn → 모델 `ok` 1 token.
+`refresh_interval_minutes` 가 지나면 `scripts/refresh.py --now` 를 1회 실행한다. 그 사이 user input 이 없고 **예산이 있으면** 알림 → `grace_seconds` 대기 → 재확인 후 ping 을 내고, mod 가 그 ping 을 프롬프트로 제출해 chat 세션이 **자기 자신을 wake** — 짧은 ping turn → 모델 `ok` 1 token. 예산이 없으면 알림만 띄운다.
+
+wake turn 이 캐시를 읽으면 기준 시각이 갱신되어 다음 주기로 이어진다 (상한은 예산·`max_refresh_count`). v0.9.x 까지는 매 turn 끝 `Stop` hook + `asyncRewake` 가 50분 sleep 하는 Python 프로세스를 띄웠지만, v0.10.0 부터 대기 프로세스는 없다.
 
 chat 프로세스 내부에서 wake 하므로 system prompt + tools 가 byte-exact 보존됨 → **cache prefix 100% hit**.
 
@@ -146,18 +148,20 @@ sequenceDiagram
     autonumber
     participant U as User
     participant C as Chat session
-    participant H as Stop hook (asyncRewake)
+    participant H as mod (1초 tick)
+    participant P as refresh.py --now
     participant M as Model
 
     U->>C: prompt
-    C->>M: assistant turn
+    C->>M: assistant turn (cache_read)
     M-->>C: response
-    C->>H: Stop event
-    H-->>H: background sleep 50m
+    C->>H: 기준 시각 = 이 요청의 시작
 
-    Note over U,H: 50분 동안 user input 없음 (예산 있음)
+    Note over U,H: 마지막 캐시 적중 후 50분, user input 없음 (예산 있음)
 
-    H->>C: ping
+    H->>P: 실행
+    P-->>H: 알림 → grace 대기 → exit 2 + ping
+    H->>C: ping (prompt.submit)
     C->>M: minimal turn (cache_read)
     M-->>C: "ok" (1 token)
 
