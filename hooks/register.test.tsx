@@ -575,6 +575,22 @@ test('grace 동안(실행이 끝나기 전) tick 이 계속 돌아도 중복 실
   expect(w.submits).toEqual([PING])
 })
 
+test('겹친 tick(앞 tick 이 끝나기 전에 다음 tick)이 동시에 판정해도 1회만 실행한다', async ($, on) => {
+  const w = setup(on)
+  await start($)
+  await step($, w)
+  await w.clock.advance(50 * MIN - 1000)
+  // tick 을 agent.list 에서 붙잡아 50:00 이후 tick 여러 개를 쌓은 뒤 한꺼번에 푼다
+  let release = () => {}
+  w.gate = new Promise(resolve => (release = resolve))
+  await w.clock.advance(3000)
+  release()
+  await wait(20)
+  w.gate = undefined
+  expect(w.runs).toHaveLength(1)
+  expect(w.submits).toEqual([PING])
+})
+
 test('stderr 에 경고 줄이 섞여도 ping 줄만 프롬프트로 낸다', async ($, on) => {
   const w = setup(on)
   w.run = { exitCode: 2, stderr: `[cn:warn] invalid wake.arm: 'x' — fallback to 'manual'\n${PING}\n[cn:warn] other\n` }
