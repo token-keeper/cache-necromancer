@@ -95,6 +95,7 @@ def test_schema_covers_user_keys():
         ("general", "refresh_interval_minutes"),
         ("general", "max_refresh_count"),
         ("display", "recap_style"),
+        ("display", "countdown"),
         ("general", "language"),
         ("general", "cache_ttl_minutes"),
     }
@@ -184,7 +185,7 @@ def test_apply_changes_returns_false_on_oserror(tmp_path):
 
 def test_run_tui_applies_only_changed(tmp_path):
     path = tmp_path / "config.toml"
-    inputs = iter(["2", "", "", "", "", "", ""])  # arm=always, 나머지 유지
+    inputs = iter(["2", "", "", "", "", "", "", ""])  # arm=always, 나머지 유지
     changes = run_tui(path, input_fn=lambda _: next(inputs))
     assert len(changes) == 1
     assert changes[0][0]["key"] == "arm"
@@ -201,7 +202,7 @@ def test_run_tui_no_change_when_all_kept(tmp_path):
 def test_run_tui_selecting_same_value_is_not_a_change(tmp_path):
     path = tmp_path / "config.toml"
     # arm 의 현재값(기본 manual)을 그대로 1번으로 다시 선택 → 변경 아님
-    inputs = iter(["1", "", "", "", "", "", ""])
+    inputs = iter(["1", "", "", "", "", "", "", ""])
     changes = run_tui(path, input_fn=lambda _: next(inputs))
     assert changes == []
 
@@ -212,3 +213,14 @@ def test_main_hint_prints_launch_command(capsys):
     assert rc == 0
     assert "cn_config.py" in out  # 실행 경로 안내
     assert "터미널" in out
+
+
+def test_apply_changes_adds_countdown_to_old_display_section(tmp_path):
+    """countdown 키가 없는 구버전 파일에도 [display] 안에 추가되고 다른 키는 보존."""
+    _COUNTDOWN = next(i for i in SCHEMA if i["key"] == "countdown")
+    path = tmp_path / "config.toml"
+    path.write_text('[display]\nrecap_style = "box"\n')
+    apply_changes(path, [(_COUNTDOWN, "false")])
+    text = path.read_text()
+    assert 'recap_style = "box"' in text
+    assert "countdown = false" in text

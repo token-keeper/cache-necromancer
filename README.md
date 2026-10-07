@@ -40,7 +40,7 @@ v0.5.0 기본 동작: **알림만** (토큰 지출 0). 자리를 비울 때 `/cn
 | 명령 | 설명 |
 |---|---|
 | `/cn:set N` | 예산 충전 — N회 wake 허용 (0=취소, 무인자=상태 표시) |
-| `/cn:config` | 동작 설정 변경 (arm/notify/interval/max_count) |
+| `/cn:config` | 동작 설정 변경 (arm/notify/interval/max_count/countdown) |
 | `/cn:status` | 세션 상태 + 다음 발동 예상 (API 비용 0) |
 
 `/cn:status` 출력 예시:
@@ -88,6 +88,10 @@ enabled = true                        # 만료 임박 macOS 알림
 [wake]
 arm = "manual"                        # manual = /cn:set 시에만 소생 / always = 매 turn 자동
 grace_seconds = 60                    # 알림 후 wake 까지 대기 (notify.enabled=true 일 때)
+
+[display]
+recap_style = "compact"               # compact = 한 줄 / box = 박스로 크게
+countdown = true                      # 프롬프트 위 띠에 캐시 남은 시간 카운트다운 (Claude Code v2.1.286+)
 ```
 
 v0.4.x legacy 키 (`[general].mode`, `[notify].system_notification`, `[refresh].hybrid_wait_seconds`) 는 로드 시 자동 매핑되어 기존 설정 파일도 그대로 동작한다.
@@ -104,6 +108,27 @@ Stop says: 🪦 Cache dies at 09:37.
 예산 0 (또는 `arm = "always"`) 이면 1줄만 표시.
 
 `language` 4종: `ko` / `en` / `ja` / `zh`. 시각 = `now + cache_ttl_minutes`, 사용자 시스템 local time.
+
+## 카운트다운 띠 (v0.9.0)
+
+모든 작업이 끝나 입력을 기다리는 동안, 프롬프트 바로 위 띠에 캐시가 죽기까지 남은 시간을 1초씩 줄여 보여준다.
+
+```
+  캐시 59:11 남음        (language = "ko")
+  Cache 59:11 left       (language = "en", 기본)
+```
+
+- 기준 시각은 메인 대화에서 캐시를 실제로 읽거나 쓴 마지막 모델 요청이다 (서브에이전트 요청·실패한 요청은 세지 않는다). wake turn 도 메인 대화의 요청이라 다시 60:00 부터 셀 것으로 예상한다 (실측 전).
+- recap 의 만료 시각은 Stop 시각 기준이고 띠는 마지막 캐시 요청의 **시작** 시각 기준이라, 둘이 몇 분 차이 날 수 있다 (긴 답변일수록 띠가 더 이르게 만료를 알린다).
+- `refresh_interval_minutes` 가 지나면(기본 50분 → 남은 10분) 주황(#ffb454) + `캐시 10분 남음` 토스트, `cache_ttl_minutes` 가 지나면 `캐시 만료` 빨강(#ff7b7b) + 토스트. 같은 기준 시각에서는 한 번씩만 알린다.
+- **작업 중에는 숨는다** — 답변 중이거나, 리더 턴이 끝났어도 백그라운드 에이전트(서브에이전트 등)가 실행 중(`pending`·`running`·`waiting`)이면 띠를 그리지 않는다. 캐시 시계는 흐르므로 그동안에도 경고·만료 토스트는 울린다. 설문이 띠를 쓰는 동안에도 숨는다.
+  - 별도 터미널 창의 팀메이트는 창이 닫히거나 죽어도 상태가 `running` 으로 남을 수 있고, 그동안 띠가 계속 숨을 수 있다.
+- 세션이 시작된 뒤(또는 `/clear` 뒤) 첫 요청 전에는 아무것도 표시하지 않는다.
+- `[display] countdown = false` 면 띠와 토스트를 모두 끈다. 문구는 `[general] language`(ko·en·ja·zh, 기본 en)를 따른다. 설정은 **세션 시작 때 읽으므로 바꾼 뒤 새 chat 세션부터** 적용된다.
+- 설정 파일에 문법 오류가 있으면 Python 쪽(recap·wake)은 파일 전체를 버리고 기본값을 쓰지만, 띠는 읽을 수 있는 줄의 값만 쓴다. 그래서 둘의 TTL·경고 시점이 다를 수 있다.
+- what-did-i-say 플러그인의 띠 박스와 함께 쓰면 이 줄이 위, 요청 박스가 아래로 붙는다.
+
+**요구: Claude Code v2.1.286 이상** (mods = 함수 훅 플러그인, `hooks/hooks.json` 의 `modules` 항목으로 로드). v2.1.200~v2.1.241 에서는 `modules` 키가 오류 없이 무시되어 띠만 빠지고, 기존 훅(알림·recap·`/cn:*`)은 그대로 로드된다 (v2.1.200 이상에서 실측, 그 미만은 미확인). v2.1.242~v2.1.285 는 mods 가 서버 롤아웃 플래그 뒤에 있어 환경에 따라 띠가 보일 수도 있다 (플래그가 켜진 환경은 추정). 근거: 2026-10-07 격리 설정으로 v2.1.200·v2.1.241·v2.1.242~v2.1.286 실측, v2.1.287·v2.1.290·v2.1.291·v2.1.292 에서 `claude plugin test` 통과.
 
 ## 어떻게 동작하는가
 

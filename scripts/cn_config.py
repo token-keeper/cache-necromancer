@@ -56,6 +56,12 @@ SCHEMA: list[dict] = [
         "options": [("box", "박스로 크게"), ("compact", "한 줄")],
     },
     {
+        "section": "display", "key": "countdown",
+        "label": "프롬프트 위 캐시 카운트다운 (새 세션부터 적용)",
+        "type": "bool", "default": True,
+        "options": [("true", "표시"), ("false", "숨김")],
+    },
+    {
         "section": "general", "key": "language", "label": "메시지 언어",
         "type": "str", "default": "en",
         "options": [("en", "English"), ("ko", "한국어"), ("ja", "日本語"), ("zh", "中文")],

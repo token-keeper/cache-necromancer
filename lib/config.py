@@ -51,6 +51,7 @@ class DisplayConfig:
     """recap 표시 설정."""
 
     recap_style: str = "compact"  # compact = 한 줄 / box = 박스
+    countdown: bool = True  # 프롬프트 위 띠의 캐시 카운트다운 (mod — hooks/register.tsx 가 읽음)
 
 
 @dataclass(frozen=True)
@@ -216,7 +217,10 @@ def load_config(path: Path) -> Config:
             file=sys.stderr,
         )
         recap_style = "compact"
-    display = DisplayConfig(recap_style=recap_style)
+    display = DisplayConfig(
+        recap_style=recap_style,
+        countdown=bool(display_data.get("countdown", True)),
+    )
     return Config(
         refresh_interval_minutes=general.get("refresh_interval_minutes", 50),
         cache_ttl_minutes=general.get("cache_ttl_minutes", 60),
@@ -247,6 +251,7 @@ grace_seconds = 60                    # 알림 후 wake 까지 대기 (notify.en
 
 [display]
 recap_style = "compact"               # compact = 한 줄 / box = 박스로 크게
+countdown = true                      # 프롬프트 위 띠에 캐시 남은 시간 카운트다운 (Claude Code v2.1.286+)
 """
 
 
