@@ -500,3 +500,15 @@ def test_compact_wake_turn_shows_skull(temp_root, monkeypatch):
     msg = json.loads(out.getvalue())["systemMessage"]
     assert msg == "☠️ ☠️ Revived 2× — dies again at 10:50"
 
+
+
+def test_stop_records_latest_fire(session_stdin, temp_root):
+    """v0.10.0: Stop(on_recap) 1회 → marker.latest_fire = Stop 시각 (cn_status·cn_set 기준)."""
+    import time
+    from lib.session_id import sanitize
+    from scripts.on_recap import main
+    before = time.time_ns()
+    assert main() == 0
+    from lib.marker import Marker
+    m = Marker.load(sanitize(session_stdin))
+    assert before <= m.latest_fire <= time.time_ns()

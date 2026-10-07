@@ -12,6 +12,7 @@ import json
 import os
 import re
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -97,6 +98,19 @@ def detect_wake_turn(transcript_path: str) -> tuple[bool, int]:
     return (True, int(m.group(1)) if m else 1)
 
 
+def _record_stop(sid_hash: str) -> None:
+    """marker.latest_fire = 이번 Stop 시각 (ns). cn_status 다음 발동·active 판정과
+    cn_set 의 timer 추정 기준. v0.9.x 까지는 Stop 마다 뜨던 refresh.py 가 기록했다.
+    저장 실패는 silent (recap 출력은 계속).
+    """
+    marker = Marker.load(sid_hash)
+    marker.latest_fire = time.time_ns()
+    try:
+        marker.save()
+    except OSError as e:
+        log_warn(f"[on_recap] marker save 실패: {type(e).__name__}: {e}")
+
+
 def _main_impl() -> int:
     if not is_latest_install():
         return 0
@@ -108,6 +122,8 @@ def _main_impl() -> int:
         sid_hash = sanitize(sid)
     except ValueError:
         return 0
+
+    _record_stop(sid_hash)
 
     config_path = _resolve_root() / "config.toml"
     try:
