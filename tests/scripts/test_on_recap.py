@@ -512,3 +512,38 @@ def test_stop_records_latest_fire(session_stdin, temp_root):
     from lib.marker import Marker
     m = Marker.load(sanitize(session_stdin))
     assert before <= m.latest_fire <= time.time_ns()
+
+
+@freeze_time("2026-05-23 10:00:00")
+def test_wake_without_ismeta_shows_revived(temp_root, monkeypatch):
+    """실제 transcript 형식: wake 엔트리에 isMeta 가 없고, 플러그인 prompt 틀이 붙을 수 있다 → Revived."""
+    (temp_root / "config.toml").write_text(
+        '[general]\nlanguage = "en"\ncache_ttl_minutes = 50\n', encoding="utf-8")
+    tpath = _write_transcript(temp_root, [
+        {"type": "user", "message": {"role": "user", "content": "real prompt"}},
+        {"type": "assistant", "message": {"role": "assistant", "content": "..."}},
+        {"type": "user", "message": {"role": "user", "content": [{"type": "text", "text":
+         "The cache-necromancer plugin sent a message: [cn:keepalive 09:10, 2/5] "
+         "reply with exactly 'ok @09:10 (2/5)'."}]}},
+    ])
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(
+        {"session_id": "wake-sid", "transcript_path": tpath})))
+    monkeypatch.setattr("scripts.on_recap.is_latest_install", lambda: True)
+    from scripts.on_recap import main
+    out = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", out)
+    main()
+    assert json.loads(out.getvalue())["systemMessage"] == "☠️ ☠️ Revived 2× — dies again at 10:50"
+
+
+def test_detect_wake_turn_ignores_tool_result_with_ping_text(tmp_path):
+    """tool 결과(grep 출력 등)에 ping 문자열이 있어도 wake turn 이 아니다."""
+    from scripts.on_recap import detect_wake_turn
+    path = _write_transcript(tmp_path, [
+        {"type": "user", "message": {"role": "user", "content": "grep the ping"}},
+        {"type": "assistant", "message": {"role": "assistant", "content": "..."}},
+        {"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "PING_PREFIX = \"[cn:keepalive\""}]}},
+    ])
+    assert detect_wake_turn(path) == (False, 0)
