@@ -2,6 +2,28 @@
 
 이 프로젝트의 모든 주목할 만한 변경사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고, [Semantic Versioning](https://semver.org/lang/ko/) 을 준수합니다.
 
+## [0.11.0] — 2026-10-08
+
+**Stop recap 박스 → 카운트다운 띠 뒤 정보, 리로드 후 타이머 미기동 수정**
+
+### Changed
+- Stop 때 채팅에 뜨던 recap 박스(만료 시각·목숨·예산·N번째 소생)를 없앴다. `scripts/on_recap.py` 는 `marker.latest_fire` 기록만 하고 아무것도 출력하지 않는다.
+- 같은 정보를 프롬프트 위 띠의 카운트다운 뒤에 ` · ` 로 붙인다 (`hooks/register.tsx`):
+  - `arm = "always"`: `목숨 N (HH:MM까지)` — N = `max_refresh_count - wake_count`
+  - `arm = "manual"` + `/cn:set` 예산 남음: `깨우기 N회 남음 (HH:MM까지)`
+  - 그 외: 카운트다운만
+  - 마지막 사용자 입력 뒤 깨운 적이 있으면 `N번 살림` (manual 은 예산 없는 알림으로 늘어난 `wake_count` 는 세지 않는다)
+  - 시각 = 기준 시각(캐시 마지막 적중 요청 시작) + 남은 횟수 × `refresh_interval_minutes` + `cache_ttl_minutes`, 로컬 HH:MM. 4개 언어(ko·en·ja·zh), 이모지 없음.
+  - 폭이 좁으면 살린 횟수 → 목숨·예산 순으로 뺀다. 만료 뒤에는 붙이지 않는다.
+- mod 가 `[wake] arm`(없으면 legacy `[general] mode`: hybrid·auto → always)과 `[general] max_refresh_count` 를 읽고, 이 세션의 marker 파일(`marker/<session_id>.json`)을 5초 간격·깨우기 직후에 읽는다 (읽기만, 작성은 여전히 Python). 파일 없음·깨짐·id 모양 밖이면 카운트다운만.
+- `[display] recap_style` 은 효과가 없다 — 옛 설정 파일의 키는 오류 없이 읽고 무시한다. 기본 템플릿·`config.toml.example`·`/cn:config` 메뉴에서 뺐다.
+
+### Fixed
+- `/reload-plugins` 로 mod 가 다시 로드된 뒤 `session.start` 가 오지 않으면 1초 타이머가 걸리지 않아 띠·깨우기가 멈추던 문제 (2026-10-07 실측: 리로드 후 8분간 깨우기 0회). 타이머를 모듈 로드당 1회, `session.start`·`ui.render`(AbovePrompt)·`turn.step` 중 먼저 오는 쪽에서 건다. `session.start` 없이 시작하면 첫 tick 이 설정을 읽는다.
+
+### Removed
+- `lib/box_render.py`, `lib/i18n.py` 의 recap 문구 함수(`build_recap_message`·`build_set_recap_line`·`build_lives_recap_line`·`build_revived_message`·`build_skull`·`_format_time`), `on_recap.detect_wake_turn` 과 그 테스트.
+
 ## [0.10.0] — 2026-10-07
 
 **깨우기를 Stop 훅 대기 프로세스에서 mod 타이머로 이전**

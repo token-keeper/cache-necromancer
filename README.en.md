@@ -78,7 +78,7 @@ Wake on/off is determined by **`arm` policy × budget**:
 ```toml
 [general]
 refresh_interval_minutes = 50         # sleep before notify/wake (before cache TTL expires)
-cache_ttl_minutes = 60                # Anthropic prompt cache TTL (used for recap timestamp)
+cache_ttl_minutes = 60                # Anthropic prompt cache TTL (band countdown and survival time)
 max_refresh_count = 10                # wake cap (always chain / set single-charge cap)
 language = "en"                       # ko | en | ja | zh
 
@@ -90,24 +90,12 @@ arm = "manual"                        # manual = wake only after /cn:set / alway
 grace_seconds = 60                    # delay between notify and wake (when notify.enabled=true)
 
 [display]
-recap_style = "compact"               # compact = one line / box = large box
 countdown = true                      # cache countdown in the band above the prompt (Claude Code v2.1.286+)
 ```
 
 v0.4.x legacy keys (`[general].mode`, `[notify].system_notification`, `[refresh].hybrid_wait_seconds`) are auto-mapped on load, so existing config files continue to work.
 
-## Recap Message
-
-Displayed in Claude Code recap area right after each turn ends (with budget charged):
-
-```
-Stop says: 🪦 Cache dies at 09:37.
-           🔥 2 wake(s) left — alive until 11:17 at most
-```
-
-With zero budget (or `arm = "always"`), only the first line is shown.
-
-4 languages: `ko` / `en` / `ja` / `zh`. Time = `now + cache_ttl_minutes`, user's local time.
+`[display] recap_style` has no effect since v0.11.0 (the Stop recap box is gone). Old config files that still have it load without error.
 
 ## Countdown Band (v0.9.0)
 
@@ -118,18 +106,30 @@ Once all work is done and Claude is waiting for your input, the band right above
   캐시 59:11 남음        (language = "ko")
 ```
 
+Since v0.11.0 the recap box that appeared in the chat at Stop (expiry time, lives, budget) is gone; that information is appended to the countdown with ` · `:
+
+```
+  Cache 52:10 left · Lives 10 (until 19:37)                arm = "always" — lives = max_refresh_count - wakes
+  Cache 52:10 left · Wakes 2 left (until 12:57)             arm = "manual" + /cn:set budget left
+  Cache 52:10 left                                          arm = "manual" + no budget
+  Cache 59:58 left · Revived 2× · Lives 8 (until 18:47)     right after a wake turn (wakes since your last input)
+```
+
+- The time in parentheses = reference time + remaining count × `refresh_interval_minutes` + `cache_ttl_minutes` — the latest the cache stays alive while you are away (local time, HH:MM). Your next input resets the wake count to 0.
+- Values come from this session's marker file (`~/.cache-necromancer/marker/<session_id>.json`), read every 5 seconds (right away after a wake). If the file is missing or broken, only the countdown shows.
+- When the band is narrow, the revived count goes first, then lives/budget. Nothing is appended after expiry.
+
 - The reference time is the last main-conversation model request that actually read or wrote the cache (subagent requests and failed requests don't count). Wake turns are main-conversation requests too, so they should restart the count from 60:00 (not yet observed).
-- The recap's expiry time counts from the Stop time while the band counts from the **start** of the last cache request, so the two can differ by a few minutes (the longer the answer, the earlier the band calls expiry).
 - After `refresh_interval_minutes` (default 50 → 10 minutes left) the line turns orange (#ffb454) with a `Cache: 10 min left` toast; after `cache_ttl_minutes` it shows `Cache expired` in red (#ff7b7b) with a toast. Each fires once per reference time.
 - **Hidden while work is running** — while Claude is answering, or while a background agent (subagent etc.) is still `pending`/`running`/`waiting` after the main turn ended. The cache clock keeps running, so warning and expiry toasts still fire meanwhile. Also hidden while a survey holds the band.
   - A teammate in its own terminal window may stay `running` after its window is closed or dies, and the band can stay hidden meanwhile.
 - Nothing is shown before the first request of a session (or after `/clear`).
 - Right after `/compact` the band is cleared too, and counting restarts from the next answer's cache request (v0.9.1). An automatic compact in the middle of an answer leaves it as is.
-- `[display] countdown = false` turns off both the band and the toasts (the expiry notification and wake keep working). Text follows `[general] language` (ko/en/ja/zh, default en). Settings are **read at session start, so changes apply from a new chat session**.
-- If the config file has a syntax error, the Python side (recap, wake) drops the whole file and uses defaults, while the band uses the values on the lines it can read, so their TTL and warning time can differ.
+- `[display] countdown = false` turns off both the band and the toasts (the expiry notification and wake keep working). Text follows `[general] language` (ko/en/ja/zh, default en). Settings are **read at session start, so changes apply from a new chat session**. When `/reload-plugins` loads the mod anew, the band and tick restart on the next request or screen redraw and re-read the settings then (v0.11.0).
+- If the config file has a syntax error, the Python side (wake, `/cn:status`) drops the whole file and uses defaults, while the band uses the values on the lines it can read, so their TTL and warning time can differ.
 - With the what-did-i-say plugin's band box, this line sits on top and the request box below it.
 
-**Requires Claude Code v2.1.286 or later** (mods = function-hook plugins, loaded through the `modules` entry of `hooks/hooks.json`). Since v0.10.0 the mod also runs the expiry notification and wake, so on v2.1.200–v2.1.241, where the `modules` key is ignored without error, the band, notifications and wake are all missing and only recap and `/cn:*` remain (`modules` being ignored measured on v2.1.200 and later; older versions not checked). On v2.1.242–v2.1.285 mods sit behind a server rollout flag, so the band, notifications and wake may work depending on the environment (flag-on environments not tested). Evidence: measured on 2026-10-07 with an isolated config on v2.1.200, v2.1.241 and v2.1.242–v2.1.286; `claude plugin test` passes on v2.1.287, v2.1.290, v2.1.291 and v2.1.292.
+**Requires Claude Code v2.1.286 or later** (mods = function-hook plugins, loaded through the `modules` entry of `hooks/hooks.json`). Since v0.10.0 the mod also runs the expiry notification and wake, so on v2.1.200–v2.1.241, where the `modules` key is ignored without error, the band, notifications and wake are all missing and only `/cn:*` remains (`modules` being ignored measured on v2.1.200 and later; older versions not checked). On v2.1.242–v2.1.285 mods sit behind a server rollout flag, so the band, notifications and wake may work depending on the environment (flag-on environments not tested). Evidence: measured on 2026-10-07 with an isolated config on v2.1.200, v2.1.241 and v2.1.242–v2.1.286; `claude plugin test` passes on v2.1.287, v2.1.290, v2.1.291 and v2.1.292.
 
 ## Mechanics
 
