@@ -49,7 +49,8 @@ class Marker:
         latest_fire 와 OR 로 묶임 — model 응답이 50분 넘게 진행되는 동안
         사용자가 활발히 활동하고 있는 경우에도 wake 가 안 일어나도록 보장.
       - set_budget_remaining: 남은 wake 예산 (/cn:set 충전, wake 시 차감)
-      - set_budget_total: 직전 충전량 — ping (N/M) 의 M
+      - set_budget_total: 직전 충전량 — ping (N/M) 의 M. 사용자 복귀 판정 시
+        (on_user_prompt) 0 으로 비워짐
       - set_charged_at_ns: 마지막 충전 시각 (ns) — 복귀 판정 기준
       - suppressed_at_ns: SessionStart(clear|compact) hook 이 기록하는 소생 억제
         시각 (ns). last_user_activity_at_ns 보다 크면 refresh.py 가 wake/notify

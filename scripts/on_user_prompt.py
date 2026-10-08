@@ -6,8 +6,9 @@
   2. marker.last_prompt = truncate(stdin payload 의 prompt, 40자)
      /cn:status 에서 다른 세션 식별용. PRD §8 예외 (single-user alpha 가정).
   3. cn: 메타 명령 (/cn:set·status·config 등) 은 activity 갱신 대상 아님 — 완전 skip.
-  4. 복귀 판정: 진짜 user input 이고 set_budget_remaining > 0 이며 충전 이후
-     wake 가 1회 이상 발생했으면 set_budget_remaining = 0 으로 소멸.
+  4. 복귀 판정: 진짜 user input 이고 set_budget_total > 0 이며 충전 이후
+     wake 가 1회 이상 발생했으면 set_budget_remaining·set_budget_total 둘 다 0 으로
+     소멸 (예산을 다 쓴 뒤 복귀 포함 — mod 띠가 total - remaining 으로 살린 횟수를 셈).
 
 자기간섭 방지: refresh.py 의 PING 및 Claude Code 의 background
 task-notification 도 user prompt 로 hook 에 도달함. system event 인
