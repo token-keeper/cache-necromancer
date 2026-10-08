@@ -115,7 +115,7 @@ Since v0.11.0 the recap box that appeared in the chat at Stop (expiry time, live
   Cache 59:58 left · Revived 2× · Lives 8 (until 18:55)     right after a wake turn (wakes since your last input)
 ```
 
-- The time in parentheses = reference time + remaining count × (`refresh_interval_minutes` + `grace_seconds` when notifications are on) + `cache_ttl_minutes` — the latest the cache stays alive while you are away (local time, HH:MM). Your next input resets the wake count to 0. In manual, notifications without budget after you came back from a `/cn:set` charge are not counted as revives.
+- The time in parentheses = reference time + remaining count × (`refresh_interval_minutes` + `grace_seconds` when notifications are on) + `cache_ttl_minutes` — the latest the cache stays alive while you are away (local time, HH:MM). Your next input resets the wake count to 0. In manual only consumed budget counts; once you come back after a wake from a `/cn:set` charge (budget cleared), later notifications are not counted as revives.
 - Values come from this session's marker file (`~/.cache-necromancer/marker/<session_id>.json`), read every 5 seconds (right away after a wake). If the file is missing or broken, only the countdown shows.
 - When the band is narrow, the revived count goes first, then lives/budget. Nothing is appended after expiry.
 

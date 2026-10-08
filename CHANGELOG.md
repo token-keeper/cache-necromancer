@@ -12,13 +12,15 @@
   - `arm = "always"`: `목숨 N (HH:MM까지)` — N = `max_refresh_count - wake_count`
   - `arm = "manual"` + `/cn:set` 예산 남음: `깨우기 N회 남음 (HH:MM까지)`
   - 그 외: 카운트다운만
-  - 마지막 사용자 입력 뒤 깨운 적이 있으면 `N번 살림` (manual 은 소비한 예산만큼만 — 예산 없는 알림, `/cn:set` 충전 뒤 사용자가 돌아온 다음의 알림은 세지 않는다)
+  - 마지막 사용자 입력 뒤 깨운 적이 있으면 `N번 살림` (manual 은 소비한 예산 `set_budget_total - set_budget_remaining` 만큼만 — 예산 없는 알림, 복귀 뒤 알림은 세지 않는다. `/cn:set` 직후 깨우기 전에 한 입력("하나만 더")은 복귀가 아니라 그 뒤 깨운 횟수는 그대로 센다)
   - 시각 = 기준 시각(캐시 마지막 적중 요청 시작) + 남은 횟수 × (`refresh_interval_minutes` + 알림이 켜져 있으면 `grace_seconds`) + `cache_ttl_minutes`, 로컬 HH:MM. 알림·grace 는 `lib/config.py` 와 같은 legacy 매핑(`mode`·`system_notification`·`hybrid_wait_seconds`). 4개 언어(ko·en·ja·zh), 이모지 없음.
   - 뒤 정보 글자색은 회청(#b8c4d4) 고정.
   - 폭이 좁으면 살린 횟수 → 목숨·예산 순으로 뺀다. 만료 뒤에는 붙이지 않는다.
 - mod 가 `[wake] arm`(없으면 legacy `[general] mode`: hybrid·auto → always)과 `[general] max_refresh_count` 를 읽고, 이 세션의 marker 파일(`marker/<session_id>.json`)을 5초 간격·깨우기 직후에 읽는다 (읽기만, 작성은 여전히 Python). 파일 없음·깨짐·id 모양 밖이면 카운트다운만.
 - 카운트다운 글자색을 남은 시간 10분 구간 6단계로: 60~50분 #b8c4d4 / 50~40 #8ec5ff / 40~30 #8fe3a1 / 30~20 #f2d16b / 20~10 #ffb454 / 10~0·만료 #ff7b7b (경계는 위 구간). 배경 #1f2d3d 대비 7.92·7.72·9.11·9.40·7.93·5.58:1. 경고·만료 토스트 시점은 그대로(`refresh_interval_minutes` 기준).
 - label·config state 에 shape 태그(`v0.11`)를 달았다 — 0.10.0 이 띠를 그리던 세션을 리로드해도 옛 모양 값은 없는 것으로 읽혀 tick·깨우기가 멈추지 않는다.
+- `scripts/on_user_prompt.py`: 복귀 판정(충전 뒤 깨우기가 있은 다음의 사용자 입력) 때 `set_budget_remaining` 과 함께 `set_budget_total` 도 0 으로 비운다 (예산을 다 쓴 뒤 복귀 포함). `/cn:status`·`/cn:set`·`refresh.py` 는 remaining > 0 일 때만 total 을 써서 영향 없음.
+- 띠는 바깥 Text 안에 카운트다운·뒤 정보 Text 를 중첩해 한 줄 흐름으로 그린다.
 - Stop 훅은 여전히 config.toml 이 없으면 기본 템플릿을 만든다. `/cn:config` 저장 안내에 arm·max_refresh_count·notify·grace 도 띠가 새 세션(또는 리로드)부터 반영한다고 적었다.
 - `[display] recap_style` 은 효과가 없다 — 옛 설정 파일의 키는 오류 없이 읽고 무시한다. 기본 템플릿·`config.toml.example`·`/cn:config` 메뉴에서 뺐다.
 
