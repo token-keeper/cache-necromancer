@@ -109,18 +109,19 @@ Once all work is done and Claude is waiting for your input, the band right above
 Since v0.11.0 the recap box that appeared in the chat at Stop (expiry time, lives, budget) is gone; that information is appended to the countdown with ` · `:
 
 ```
-  Cache 52:10 left · Lives 10 (until 19:37)                arm = "always" — lives = max_refresh_count - wakes
-  Cache 52:10 left · Wakes 2 left (until 12:57)             arm = "manual" + /cn:set budget left
+  Cache 52:10 left · Lives 10 (until 19:47)                arm = "always" — lives = max_refresh_count - wakes
+  Cache 52:10 left · Wakes 2 left (until 12:59)             arm = "manual" + /cn:set budget left
   Cache 52:10 left                                          arm = "manual" + no budget
-  Cache 59:58 left · Revived 2× · Lives 8 (until 18:47)     right after a wake turn (wakes since your last input)
+  Cache 59:58 left · Revived 2× · Lives 8 (until 18:55)     right after a wake turn (wakes since your last input)
 ```
 
-- The time in parentheses = reference time + remaining count × `refresh_interval_minutes` + `cache_ttl_minutes` — the latest the cache stays alive while you are away (local time, HH:MM). Your next input resets the wake count to 0.
+- The time in parentheses = reference time + remaining count × (`refresh_interval_minutes` + `grace_seconds` when notifications are on) + `cache_ttl_minutes` — the latest the cache stays alive while you are away (local time, HH:MM). Your next input resets the wake count to 0. In manual, notifications without budget after you came back from a `/cn:set` charge are not counted as revives.
 - Values come from this session's marker file (`~/.cache-necromancer/marker/<session_id>.json`), read every 5 seconds (right away after a wake). If the file is missing or broken, only the countdown shows.
 - When the band is narrow, the revived count goes first, then lives/budget. Nothing is appended after expiry.
 
 - The reference time is the last main-conversation model request that actually read or wrote the cache (subagent requests and failed requests don't count). Wake turns are main-conversation requests too, so they should restart the count from 60:00 (not yet observed).
-- After `refresh_interval_minutes` (default 50 → 10 minutes left) the line turns orange (#ffb454) with a `Cache: 10 min left` toast; after `cache_ttl_minutes` it shows `Cache expired` in red (#ff7b7b) with a toast. Each fires once per reference time.
+- The countdown color changes every 10 minutes of time left (v0.11.0): 60–50 min slate #b8c4d4 → 50–40 blue #8ec5ff → 40–30 green #8fe3a1 → 30–20 yellow #f2d16b → 20–10 orange #ffb454 → 10–0 and expired red #ff7b7b (a boundary belongs to the upper range — 50:00 is slate). The appended info stays slate.
+- After `refresh_interval_minutes` (default 50 → 10 minutes left) a `Cache: 10 min left` toast fires; after `cache_ttl_minutes` it shows `Cache expired` with a toast. Each fires once per reference time.
 - **Hidden while work is running** — while Claude is answering, or while a background agent (subagent etc.) is still `pending`/`running`/`waiting` after the main turn ended. The cache clock keeps running, so warning and expiry toasts still fire meanwhile. Also hidden while a survey holds the band.
   - A teammate in its own terminal window may stay `running` after its window is closed or dies, and the band can stay hidden meanwhile.
 - Nothing is shown before the first request of a session (or after `/clear`).
