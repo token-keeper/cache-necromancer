@@ -51,11 +51,6 @@ SCHEMA: list[dict] = [
         "options": [("5", "보수"), ("10", "기본"), ("20", "여유"), ("50", "거의무제한")],
     },
     {
-        "section": "display", "key": "recap_style", "label": "만료 표시 방식",
-        "type": "choice", "default": "compact",
-        "options": [("box", "박스로 크게"), ("compact", "한 줄")],
-    },
-    {
         "section": "display", "key": "countdown",
         "label": "프롬프트 위 캐시 카운트다운 (새 세션부터 적용)",
         "type": "bool", "default": True,
@@ -68,7 +63,7 @@ SCHEMA: list[dict] = [
     },
     {
         "section": "general", "key": "cache_ttl_minutes",
-        "label": "캐시 수명(분) — recap 만료시각 계산 기준",
+        "label": "캐시 수명(분) — 띠 카운트다운·생존 시각 기준",
         "type": "int", "default": 60,
         "options": [("60", "기본(1h)"), ("5", "테스트")],
     },
@@ -232,9 +227,9 @@ def run_tui(path: Path, input_fn=input) -> list:
     for item, raw in changes:
         print(f"✓ {item['section']}.{item['key']} → {raw}")
     # mod(hooks/register.tsx)는 세션 시작·리로드 때 설정을 읽고, Python 훅은 실행마다 읽는다
-    print("저장됨 → 띠·깨우기 시점(refresh_interval·cache_ttl·countdown·language)은 새 세션"
-          "(또는 /reload-plugins)부터 mod 에 반영, Python 쪽(arm·max_refresh_count·notify·grace 등)은"
-          " 다음 판정부터 적용.")
+    print("저장됨 → 띠(카운트다운·깨우기 시점·뒤 정보 — refresh_interval·cache_ttl·countdown·language·"
+          "arm·max_refresh_count·notify·grace)는 새 세션(또는 /reload-plugins)부터 mod 에 반영, "
+          "실제 알림·깨우기 판정(arm·max_refresh_count·notify·grace)은 Python 이 다음 판정부터 적용.")
     return changes
 
 

@@ -26,6 +26,8 @@ type World = {
   runError?: Error
   submits: string[]
   logs: string[]
+  // $.session.id 가 돌려줄 id (marker 파일명)
+  sid: string
 }
 type Env = Readonly<Record<string, string>>
 type Files = Readonly<Record<string, string>>
@@ -46,6 +48,7 @@ function setup(on: On, env: Env = { HOME: '/home/t' }, files: Files = KO): World
     run: { exitCode: 2, stderr: `${PING}\n` },
     submits: [],
     logs: [],
+    sid: 'sid-1',
   }
   on('agent.list', async () => {
     await w.gate
@@ -71,7 +74,7 @@ function setup(on: On, env: Env = { HOME: '/home/t' }, files: Files = KO): World
     const { Text } = $.ui.resolve(e)
     return <Text>below</Text>
   })
-  on('session.id', () => ({ value: 'sid-1' }))
+  on('session.id', () => ({ value: w.sid }))
   on('process.run', async (_$, e) => {
     w.runs.push({ argv: e.argv, stdin: e.init?.stdin, timeoutMs: e.init?.timeoutMs })
     await w.runGate
@@ -99,7 +102,9 @@ async function step($: Engine, w: World, opts: { agentId?: string; usage?: TurnU
   }
 }
 
-const band = (over: { isWorking?: boolean; hasSurvey?: boolean } = {}) => ({
+type BandOver = { isWorking?: boolean; hasSurvey?: boolean; bodyColumns?: number }
+
+const band = (over: BandOver = {}) => ({
   hasSurvey: false,
   isWorking: false,
   maxRows: 20,
@@ -109,13 +114,19 @@ const band = (over: { isWorking?: boolean; hasSurvey?: boolean } = {}) => ({
   ...over,
 })
 
-// 두 surface에 띠를 그려 캐시 줄(글자·색)을 읽는다. 두 surface 결과는 같아야 한다
-async function shown($: Engine, over: { isWorking?: boolean; hasSurvey?: boolean } = {}) {
+// 두 surface에 띠를 그려 캐시 줄(글자·색)을 읽는다. 두 surface 결과는 같아야 한다.
+// 줄은 바깥 Text(전체 글자) 안에 카운트다운 Text·뒤 정보 Text 를 중첩한다: text 는 바깥 글자, color 는 카운트다운 색, extraColor 는 뒤 정보 색
+async function shown($: Engine, over: BandOver = {}) {
   const seen = []
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'AbovePrompt', props: band(over) })
-    const line = (await ui.findAll({ type: 'Text' })).find(t => t.text !== 'below')
-    seen.push({ text: line?.text, color: line?.props['color'], tree: await ui.drawn() })
+    const [outer, countdown, extra] = (await ui.findAll({ type: 'Text' })).filter(t => t.text !== 'below')
+    seen.push({
+      text: outer?.text,
+      color: countdown?.props['color'],
+      extraColor: extra?.props['color'],
+      tree: await ui.drawn(),
+    })
     await ui.unmount()
   }
   expect(seen[1]).toEqual(seen[0])
@@ -163,12 +174,12 @@ test('답변 중엔 표시하지 않고(아래 그대로), 설문이 있으면 �
   expect(survey?.tree).toMatchObject({ type: 'Text', children: ['below'] })
 })
 
-test('50분 경과: 경고색(#ffb454) + 경고 토스트 1회, 이후 중복 없음', async ($, on) => {
+test('50분 경과: 경고 토스트 1회, 이후 중복 없음 (색은 남은 시간 구간대로)', async ($, on) => {
   const w = setup(on)
   await start($)
   await step($, w)
   await w.clock.advance(50 * MIN - 1000)
-  expect(await shown($)).toMatchObject({ text: '캐시 10:01 남음', color: '#b8c4d4' })
+  expect(await shown($)).toMatchObject({ text: '캐시 10:01 남음', color: '#ffb454' })
   expect(w.toasts).toEqual([])
   await w.clock.advance(1000)
   expect(await shown($)).toMatchObject({ text: '캐시 10:00 남음', color: '#ffb454' })
@@ -267,9 +278,9 @@ test('cache_ttl_minutes·refresh_interval_minutes 를 읽어 남은 시간·경�
   await start($)
   await step($, w)
   await w.clock.advance(49_000)
-  expect(await shown($)).toMatchObject({ text: '캐시 29:11 남음', color: '#b8c4d4' })
+  expect(await shown($)).toMatchObject({ text: '캐시 29:11 남음', color: '#f2d16b' })
   await w.clock.advance(25 * MIN - 49_000)
-  expect(await shown($)).toMatchObject({ text: '캐시 05:00 남음', color: '#ffb454' })
+  expect(await shown($)).toMatchObject({ text: '캐시 05:00 남음', color: '#ff7b7b' })
   expect(w.toasts).toEqual(['캐시 5분 남음'])
   await w.clock.advance(5 * MIN)
   expect((await shown($))?.text).toBe('캐시 만료')
@@ -624,31 +635,52 @@ for (const exitCode of [0, 1] as const) {
   })
 }
 
-test('캐시가 이미 만료된 기준 시각(ttl 경과 후 첫 tick)이면 깨우지 않는다', async ($, on) => {
-  const w = setup(on)
-  // 타이머가 걸리기 전에 기준 시각을 잡고 시계를 ttl 너머로 옮긴 뒤 시작 (리로드 직후 오래된 기준 시각) → 첫 tick
-  await step($, w)
-  await w.clock.set(T0 + 60 * MIN)
-  await start($)
-  await w.clock.advance(1000)
-  await wait(20)
-  expect(w.runs).toEqual([])
-  await w.clock.advance(5 * MIN)
-  await wait(20)
-  expect(w.runs).toEqual([])
-})
+// 시계를 직접 쥔다: 주기는 테스트가 하나씩 풀고, 그 사이 시각은 tick 없이 옮긴다 (리로드·잠자기 복귀 뒤 첫 tick 재현)
+function heldClock(on: On) {
+  const c = { now: T0, periods: [] as (() => void)[], runs: 0 }
+  mock.env(on, { HOME: '/home/t' })
+  on('fs.read', () => ({ value: '[general]\nlanguage = "ko"\n' }))
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('session.id', () => ({ value: 'sid-1' }))
+  on('agent.list', () => ({ value: [] }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('clock.now', () => ({ value: c.now }))
+  on('clock.every', () => new Promise(resolve => c.periods.push(() => resolve({ value: undefined }))))
+  on('process.run', () => {
+    c.runs += 1
+    return { value: { stdout: '', stderr: '', exitCode: 0, isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('turn.step', async function* (_$, e) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as const, usage: CACHED }
+  })
+  const fire = async () => {
+    c.periods.shift()?.()
+    await wait(30)
+  }
+  return { c, fire }
+}
 
-test('첫 tick 이 정확히 ttl 이면(경계) 깨우지 않는다', async ($, on) => {
-  const w = setup(on)
-  await step($, w)
-  await w.clock.set(T0 + 60 * MIN - 1000)
-  await start($)
-  await w.clock.advance(1000)
-  await wait(20)
-  expect(w.runs).toEqual([])
-})
+for (const [name, gap, runs] of [
+  ['캐시가 이미 만료된 기준 시각(ttl 경과 후 첫 tick)이면 깨우지 않는다', 61 * MIN, 0],
+  ['첫 tick 이 정확히 ttl 이면(경계) 깨우지 않는다', 60 * MIN, 0],
+  ['첫 tick 이 깨우기 창(경고 ~ 만료) 안이면 깨운다 (대조군)', 55 * MIN, 1],
+] as const) {
+  test(name, async ($, on) => {
+    const { c, fire } = heldClock(on)
+    await start($)
+    const s = $.turn.step({ turnId: 't', index: 0, model: 'm', messageCount: 1 })
+    for await (const _ of s) {
+      // 청크 없음
+    }
+    c.now = T0 + gap
+    await fire()
+    await fire()
+    expect(c.runs).toBe(runs)
+  })
+}
 
-test('process.run 이 실패해도 tick·띠는 계속 돌고 디버그 로그는 1회만 남긴다', async ($, on) => {
+// 시계를 50분씩 두 번 움직여(1초 주기 약 6000회) 스위트에서 가장 무겁다 — 부하 시 기본 5초 상한에 걸려 넉넉히 둔다
+test('process.run 이 실패해도 tick·띠는 계속 돌고 디버그 로그는 1회만 남긴다', { timeoutMs: 15000 }, async ($, on) => {
   const w = setup(on)
   w.runError = new Error('spawn python3 ENOENT')
   await start($)
@@ -706,4 +738,286 @@ test('refresh_interval_minutes ≥ cache_ttl_minutes 면 세션 시작 때 "깨�
   await wait(20)
   expect(w.runs).toEqual([])
   expect(w.toasts).toEqual(['캐시 깨우기 꺼짐 — refresh_interval_minutes 가 cache_ttl_minutes 이상', EXPIRED])
+})
+
+// ── 띠 뒤 정보: 살린 횟수·목숨·예산 (Python 이 쓰는 marker 를 읽음) ──
+const MARKER = '/home/t/.cache-necromancer/marker/sid-1.json'
+// 기대 시각은 런타임 로컬 시각대로 계산한다 (mod 와 같은 Date 기준)
+const hhmm = (ms: number) => {
+  const d = new Date(ms)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+// 기준 시각(step 시점 T0) + n × (50분 + grace) + 60분. 알림 기본 켜짐·grace 60초
+const until = (n: number, graceSec = 60) => hhmm(T0 + n * (50 * MIN + graceSec * 1000) + 60 * MIN)
+const ALWAYS = '[general]\nlanguage = "ko"\nmax_refresh_count = 5\n[wake]\narm = "always"\n'
+const MANUAL = '[general]\nlanguage = "ko"\n[wake]\narm = "manual"\n'
+
+async function bandWith($: Engine, on: On, toml: string, mark: string | undefined, over: BandOver = {}) {
+  const w = setup(on, undefined, { [CONFIG]: toml, ...(mark === undefined ? {} : { [MARKER]: mark }) })
+  await start($)
+  await step($, w)
+  await w.clock.advance(49_000)
+  return (await shown($, over))?.text
+}
+
+for (const [name, toml, mark, tail] of [
+  ['always: 목숨 = max_refresh_count - wake_count', ALWAYS, '{"wake_count": 0}', ` · 목숨 5 (${until(5)}까지)`],
+  ['always 깨운 직후: 살린 횟수 + 줄어든 목숨', ALWAYS, '{"wake_count": 2}', ` · 2번 살림 · 목숨 3 (${until(3)}까지)`],
+  ['always 목숨 0', ALWAYS, '{"wake_count": 7}', ` · 7번 살림 · 목숨 0 (${until(0)}까지)`],
+  ['manual 예산 있음', MANUAL, '{"set_budget_remaining": 3, "set_budget_total": 3}', ` · 깨우기 3회 남음 (${until(3)}까지)`],
+  ['manual 예산 소비 중', MANUAL, '{"wake_count": 1, "set_budget_remaining": 2, "set_budget_total": 3}', ` · 1번 살림 · 깨우기 2회 남음 (${until(2)}까지)`],
+  ['manual 예산 없음(알림만 센 wake_count 는 살린 횟수 아님)', MANUAL, '{"wake_count": 2}', ''],
+  ['legacy [general] mode = "hybrid" 는 always', '[general]\nlanguage = "ko"\nmode = "hybrid"\nmax_refresh_count = 5\n', '{}', ` · 목숨 5 (${until(5)}까지)`],
+  ['[wake] arm 이 legacy mode 보다 우선', '[general]\nlanguage = "ko"\nmode = "auto"\n[wake]\narm = "manual"\n', '{}', ''],
+  ['marker 없음', ALWAYS, undefined, ''],
+  ['marker 깨짐', ALWAYS, '{"wake_count": ', ''],
+  ['marker 가 객체 아님', ALWAYS, '[1, 2]', ''],
+] as const) {
+  test(`띠 뒤 정보 — ${name}`, async ($, on) => {
+    expect(await bandWith($, on, toml, mark)).toBe(`캐시 59:11 남음${tail}`)
+  })
+}
+
+test('기본 설정(en·manual)·예산 있음 문구', async ($, on) => {
+  expect(await bandWith($, on, '', '{"wake_count": 1, "set_budget_remaining": 1, "set_budget_total": 2}')).toBe(
+    `Cache 59:11 left · Revived 1× · Wakes 1 left (until ${until(1)})`,
+  )
+})
+
+for (const [lang, line] of [
+  ['ja', `キャッシュ残り 59:11 · 2回蘇生 · 残機 3 (${until(3)}まで)`],
+  ['zh', `缓存剩余 59:11 · 已复活 2 次 · 剩余 3 命 (至 ${until(3)})`],
+] as const) {
+  test(`띠 뒤 정보 문구 — ${lang}`, async ($, on) => {
+    const toml = `[general]\nlanguage = "${lang}"\nmax_refresh_count = 5\n[wake]\narm = "always"\n`
+    expect(await bandWith($, on, toml, '{"wake_count": 2}')).toBe(line)
+  })
+}
+
+test('session id 가 marker 파일명 모양이 아니면 읽지 않는다', async ($, on) => {
+  const w = setup(on, undefined, { [CONFIG]: ALWAYS, '/home/t/.cache-necromancer/marker/../x.json': '{}' })
+  w.sid = '../x'
+  await start($)
+  await step($, w)
+  await w.clock.advance(49_000)
+  expect((await shown($))?.text).toBe('캐시 59:11 남음')
+})
+
+// "캐시 59:11 남음"(15칸) · "2번 살림"(+11) · "목숨 3 (HH:MM까지)"(+21). 글자 폭 = bodyColumns - 6
+for (const [columns, tail] of [
+  [53, ` · 2번 살림 · 목숨 3 (${until(3)}까지)`],
+  [52, ` · 목숨 3 (${until(3)}까지)`],
+  [42, ` · 목숨 3 (${until(3)}까지)`],
+  [41, ''],
+] as const) {
+  test(`폭이 좁으면 살린 횟수 → 목숨 순으로 뺀다 (bodyColumns ${columns})`, async ($, on) => {
+    expect(await bandWith($, on, ALWAYS, '{"wake_count": 2}', { bodyColumns: columns })).toBe(`캐시 59:11 남음${tail}`)
+  })
+}
+
+test('만료되면 뒤 정보를 붙이지 않는다', async ($, on) => {
+  const w = setup(on, undefined, { [CONFIG]: ALWAYS, [MARKER]: '{"wake_count": 0}' })
+  await start($)
+  await step($, w)
+  await w.clock.advance(60 * MIN)
+  expect((await shown($))?.text).toBe('캐시 만료')
+})
+
+test('marker 가 바뀌면 5초 안에 띠에 반영한다', async ($, on) => {
+  const files: Record<string, string> = { [CONFIG]: ALWAYS, [MARKER]: '{"wake_count": 0}' }
+  const w = setup(on, undefined, files)
+  await start($)
+  await step($, w)
+  await w.clock.advance(1000)
+  expect((await shown($))?.text).toBe(`캐시 59:59 남음 · 목숨 5 (${until(5)}까지)`)
+  files[MARKER] = '{"wake_count": 1}'
+  await w.clock.advance(5000)
+  expect((await shown($))?.text).toBe(`캐시 59:54 남음 · 1번 살림 · 목숨 4 (${until(4)}까지)`)
+})
+
+test('깨우기를 마치면 다음 tick 에 marker 를 바로 다시 읽는다', async ($, on) => {
+  const files: Record<string, string> = { [CONFIG]: ALWAYS, [MARKER]: '{"wake_count": 0}' }
+  const w = setup(on, undefined, files)
+  w.run = { exitCode: 0, stderr: '' }
+  await start($)
+  await step($, w)
+  await w.clock.advance(50 * MIN - 1000)
+  // refresh.py 가 marker 를 바꾼 것처럼
+  files[MARKER] = '{"wake_count": 1}'
+  await w.clock.advance(1000)
+  await wait(20)
+  expect(w.runs).toHaveLength(1)
+  await w.clock.advance(1000)
+  expect((await shown($))?.text).toBe(`캐시 09:59 남음 · 1번 살림 · 목숨 4 (${until(4)}까지)`)
+})
+
+// ── 리로드: session.start 없이 render·turn.step 만 와도 타이머가 걸린다 (모듈 로드당 1개) ──
+function countTimers(on: On): { timers: number } {
+  const c = { timers: 0 }
+  mock.env(on, { HOME: '/home/t' })
+  on('fs.read', () => ({ value: '[general]\nlanguage = "ko"\n' }))
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('clock.now', () => ({ value: T0 }))
+  // 첫 주기를 풀지 않아 타이머 1개 = 호출 1번
+  on('clock.every', () => {
+    c.timers += 1
+    return new Promise<never>(() => {})
+  })
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>below</Text>
+  })
+  on('turn.step', async function* (_$, e) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as const, usage: CACHED }
+  })
+  return c
+}
+
+async function mountBand($: Engine) {
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: band() })
+  await ui.unmount()
+}
+
+async function stepOnce($: Engine) {
+  for await (const _ of $.turn.step({ turnId: 't', index: 0, model: 'm', messageCount: 1 })) {
+    // 청크 없음
+  }
+}
+
+test('리로드 뒤 띠만 그려져도(render) 타이머를 1개 걸고, 다시 그려도 늘지 않는다', async ($, on) => {
+  const c = countTimers(on)
+  await mountBand($)
+  await mountBand($)
+  expect(c.timers).toBe(1)
+})
+
+test('리로드 뒤 요청(turn.step)만 와도 타이머를 1개 걸고, render·session.start 가 더 와도 늘지 않는다', async ($, on) => {
+  const c = countTimers(on)
+  await stepOnce($)
+  await stepOnce($)
+  expect(c.timers).toBe(1)
+  await mountBand($)
+  await start($)
+  expect(c.timers).toBe(1)
+})
+
+test('session.start 없이 시작해도 첫 tick 이 설정을 읽어 띠·깨우기가 동작한다', async ($, on) => {
+  const w = setup(on)
+  await step($, w)
+  await w.clock.advance(49_000)
+  expect((await shown($))?.text).toBe('캐시 59:11 남음')
+  await w.clock.advance(50 * MIN - 49_000)
+  await wait(20)
+  expect(w.runs).toHaveLength(1)
+  expect(w.submits).toEqual([PING])
+})
+
+test('render 로 먼저 기동한 타이머도 띠를 갱신하고 깨우기(process.run·prompt.submit)를 한다', async ($, on) => {
+  const w = setup(on)
+  expect((await shown($))?.text).toBeUndefined()
+  await step($, w)
+  await w.clock.advance(49_000)
+  expect((await shown($))?.text).toBe('캐시 59:11 남음')
+  await w.clock.advance(50 * MIN - 49_000)
+  await wait(20)
+  expect(w.runs).toHaveLength(1)
+  expect(w.submits).toEqual([PING])
+  expect(w.logs).toEqual([])
+})
+
+// ── 옛 코드(0.10.0)가 남긴 모양의 label 이 host 에 남은 채 리로드 ──
+for (const withStart of [true, false]) {
+  test(`0.10.0 모양 label({text,tone})이 남아 있어도 띠·깨우기가 동작한다 (session.start ${withStart ? '옴' : '안 옴'})`, async ($, on) => {
+    const w = setup(on)
+    let isStale = true
+    // shape 태그 없이 저장된 옛 값을 label 을 새로 쓰기 전까지 돌려준다
+    on('state.get', (_$, e, next) => {
+      if (isStale && e.key === 'label') return { value: { value: { text: '캐시 10:00 남음', tone: 'normal' }, version: 1 } }
+      return next(e)
+    })
+    on('state.set', (_$, e, next) => {
+      if (e.key === 'label') isStale = false
+      return next(e)
+    })
+    if (withStart) await start($)
+    await step($, w)
+    await w.clock.advance(49_000)
+    await wait(20)
+    expect((await shown($))?.text).toBe('캐시 59:11 남음')
+    await w.clock.advance(50 * MIN - 49_000)
+    await wait(30)
+    expect(w.runs).toHaveLength(1)
+    expect(w.logs).toEqual([])
+  })
+}
+
+test('manual: 충전 뒤 사용자가 돌아온 다음의 알림은 살린 횟수로 세지 않는다', async ($, on) => {
+  // /cn:set 3 → 1회 깨움 → 복귀(on_user_prompt: wake_count·remaining·total 0) → 다음 자리비움 알림 1회(wake_count 1)
+  const mark = '{"wake_count": 1, "set_budget_remaining": 0, "set_budget_total": 0, "set_charged_at_ns": 100, "last_user_activity_at_ns": 200}'
+  expect(await bandWith($, on, MANUAL, mark)).toBe('캐시 59:11 남음')
+})
+
+test('manual: /cn:set 직후 "하나만 더" 입력 뒤 떠나 깨우면 소비한 예산만큼 살린 횟수', async ($, on) => {
+  // 충전(100) → 깨우기 전 입력(200, 예산·total 유지, wake_count 0) → 자리비움 중 2회 깨움
+  const mark = '{"wake_count": 2, "set_budget_remaining": 1, "set_budget_total": 3, "set_charged_at_ns": 100, "last_user_activity_at_ns": 200}'
+  expect(await bandWith($, on, MANUAL, mark)).toBe(`캐시 59:11 남음 · 2번 살림 · 깨우기 1회 남음 (${until(1)}까지)`)
+})
+
+// ── 생존 시각의 grace: 알림이 켜져 있으면 깨우기마다 grace 만큼 늦다 (lib/config.py 와 같은 legacy 매핑) ──
+// 모두 always·목숨 4. general·wake 섹션은 각 경우에 맞춰 직접 적는다
+const G = '[general]\nlanguage = "ko"\nmax_refresh_count = 4\n'
+for (const [name, toml, grace] of [
+  ['[notify] enabled = false 면 grace 없음', `${G}[notify]\nenabled = false\n[wake]\narm = "always"\ngrace_seconds = 300\n`, 0],
+  ['[wake] grace_seconds = 300', `${G}[wake]\narm = "always"\ngrace_seconds = 300\n`, 300],
+  ['legacy [refresh] hybrid_wait_seconds', `${G}[wake]\narm = "always"\n[refresh]\nhybrid_wait_seconds = 120\n`, 120],
+  ['[wake] grace_seconds 가 legacy 보다 우선', `${G}[wake]\narm = "always"\ngrace_seconds = 30\n[refresh]\nhybrid_wait_seconds = 120\n`, 30],
+  ['legacy mode = "auto" 는 알림 없음', `${G}mode = "auto"\n`, 0],
+  ['legacy system_notification = false', `${G}mode = "hybrid"\n[notify]\nsystem_notification = false\n`, 0],
+] as const) {
+  test(`생존 시각 grace — ${name}`, async ($, on) => {
+    expect(await bandWith($, on, toml, '{}')).toBe(`캐시 59:11 남음 · 목숨 4 (${until(4, grace)}까지)`)
+  })
+}
+
+// ── 카운트다운 글자색: 남은 시간 10분 구간 6단계 (경계는 위 구간), 뒤 정보는 회청 ──
+for (const [left, color] of [
+  ['59:59', '#b8c4d4'],
+  ['50:00', '#b8c4d4'],
+  ['49:59', '#8ec5ff'],
+  ['40:00', '#8ec5ff'],
+  ['39:59', '#8fe3a1'],
+  ['30:00', '#8fe3a1'],
+  ['29:59', '#f2d16b'],
+  ['20:00', '#f2d16b'],
+  ['19:59', '#ffb454'],
+  ['10:00', '#ffb454'],
+  ['09:59', '#ff7b7b'],
+  ['00:01', '#ff7b7b'],
+] as const) {
+  test(`남은 ${left} 이면 글자색 ${color}`, async ($, on) => {
+    const w = setup(on)
+    await start($)
+    await step($, w)
+    const [mm = 0, ss = 0] = left.split(':').map(Number)
+    await w.clock.advance(60 * MIN - (mm * 60 + ss) * 1000)
+    expect(await shown($)).toMatchObject({ text: `캐시 ${left} 남음`, color })
+  })
+}
+
+test('ttl 이 60분보다 길어도 남은 분으로 색을 정한다 (90분 ttl: 89:00 회청, 45:00 파랑)', async ($, on) => {
+  const w = setup(on, undefined, { [CONFIG]: '[general]\nlanguage = "ko"\ncache_ttl_minutes = 90\nrefresh_interval_minutes = 80\n' })
+  await start($)
+  await step($, w)
+  await w.clock.advance(MIN)
+  expect(await shown($)).toMatchObject({ text: '캐시 89:00 남음', color: '#b8c4d4' })
+  await w.clock.advance(44 * MIN)
+  expect(await shown($)).toMatchObject({ text: '캐시 45:00 남음', color: '#8ec5ff' })
+})
+
+test('뒤 정보는 카운트다운 색과 무관하게 회청(#b8c4d4)', async ($, on) => {
+  const w = setup(on, undefined, { [CONFIG]: ALWAYS, [MARKER]: '{"wake_count": 0}' })
+  await start($)
+  await step($, w)
+  await w.clock.advance(55 * MIN)
+  expect(await shown($)).toMatchObject({ text: `캐시 05:00 남음 · 목숨 5 (${until(5)}까지)`, color: '#ff7b7b', extraColor: '#b8c4d4' })
 })

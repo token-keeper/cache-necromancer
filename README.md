@@ -78,7 +78,7 @@ wake on/off 는 **`arm` 정책 × 예산** 으로 결정:
 ```toml
 [general]
 refresh_interval_minutes = 50         # cache TTL 만료 직전 알림/wake 까지의 sleep
-cache_ttl_minutes = 60                # Anthropic prompt cache TTL (recap 표시용)
+cache_ttl_minutes = 60                # Anthropic prompt cache TTL (띠 카운트다운·생존 시각 기준)
 max_refresh_count = 10                # wake 상한 (always 연쇄 / set 1회 충전 상한)
 language = "en"                       # 메시지 언어: ko | en | ja | zh
 
@@ -90,24 +90,12 @@ arm = "manual"                        # manual = /cn:set 시에만 소생 / alwa
 grace_seconds = 60                    # 알림 후 wake 까지 대기 (notify.enabled=true 일 때)
 
 [display]
-recap_style = "compact"               # compact = 한 줄 / box = 박스로 크게
 countdown = true                      # 프롬프트 위 띠에 캐시 남은 시간 카운트다운 (Claude Code v2.1.286+)
 ```
 
 v0.4.x legacy 키 (`[general].mode`, `[notify].system_notification`, `[refresh].hybrid_wait_seconds`) 는 로드 시 자동 매핑되어 기존 설정 파일도 그대로 동작한다.
 
-## Recap 메시지
-
-매 turn 종료 직후 cache 만료 시각 표시 (예산 있을 때):
-
-```
-Stop says: 🪦 Cache dies at 09:37.
-           🔥 wake 2회 남음 — 최대 11:17까지 생존
-```
-
-예산 0 (또는 `arm = "always"`) 이면 1줄만 표시.
-
-`language` 4종: `ko` / `en` / `ja` / `zh`. 시각 = `now + cache_ttl_minutes`, 사용자 시스템 local time.
+`[display] recap_style` 은 v0.11.0 부터 효과가 없다 (Stop recap 박스 제거). 옛 설정 파일에 남아 있어도 오류 없이 무시된다.
 
 ## 카운트다운 띠 (v0.9.0)
 
@@ -118,18 +106,31 @@ Stop says: 🪦 Cache dies at 09:37.
   Cache 59:11 left       (language = "en", 기본)
 ```
 
+v0.11.0 부터 Stop 때 채팅에 뜨던 recap 박스(만료 시각·목숨·예산)는 없어지고, 그 정보가 카운트다운 뒤에 ` · ` 로 붙는다:
+
+```
+  캐시 52:10 남음 · 목숨 10 (19:47까지)                 arm = "always" — 남은 목숨 = max_refresh_count - 깨운 횟수
+  캐시 52:10 남음 · 깨우기 2회 남음 (12:59까지)          arm = "manual" + /cn:set 예산 남음
+  캐시 52:10 남음                                       arm = "manual" + 예산 없음
+  캐시 59:58 남음 · 2번 살림 · 목숨 8 (18:55까지)        깨우기 turn 직후 (마지막 사용자 입력 뒤 살린 횟수)
+```
+
+- 괄호 안 시각 = 기준 시각 + 남은 횟수 × (`refresh_interval_minutes` + 알림이 켜져 있으면 `grace_seconds`) + `cache_ttl_minutes` — 자리를 비워도 캐시가 살아 있는 최대 시각 (로컬 시각 HH:MM). 사용자가 입력하면 깨운 횟수는 0 으로 돌아간다. manual 은 소비한 예산만큼만 세고, `/cn:set` 충전 뒤 깨운 다음 사용자가 돌아오면(예산 소멸) 그 뒤 알림은 살린 횟수로 세지 않는다.
+- 값은 이 세션의 marker 파일(`~/.cache-necromancer/marker/<session_id>.json`)에서 5초 간격(깨우기 직후엔 바로)으로 읽는다. 파일이 없거나 깨졌으면 카운트다운만 보인다.
+- 띠 폭이 좁으면 살린 횟수 → 목숨·예산 순으로 뺀다. 만료된 뒤에는 붙이지 않는다.
+
 - 기준 시각은 메인 대화에서 캐시를 실제로 읽거나 쓴 마지막 모델 요청이다 (서브에이전트 요청·실패한 요청은 세지 않는다). wake turn 도 메인 대화의 요청이라 다시 60:00 부터 셀 것으로 예상한다 (실측 전).
-- recap 의 만료 시각은 Stop 시각 기준이고 띠는 마지막 캐시 요청의 **시작** 시각 기준이라, 둘이 몇 분 차이 날 수 있다 (긴 답변일수록 띠가 더 이르게 만료를 알린다).
-- `refresh_interval_minutes` 가 지나면(기본 50분 → 남은 10분) 주황(#ffb454) + `캐시 10분 남음` 토스트, `cache_ttl_minutes` 가 지나면 `캐시 만료` 빨강(#ff7b7b) + 토스트. 같은 기준 시각에서는 한 번씩만 알린다.
+- 카운트다운 글자색은 남은 시간 10분 구간마다 바뀐다 (v0.11.0): 60~50분 회청 #b8c4d4 → 50~40 파랑 #8ec5ff → 40~30 초록 #8fe3a1 → 30~20 노랑 #f2d16b → 20~10 주황 #ffb454 → 10~0·만료 빨강 #ff7b7b (경계는 위 구간 — 50:00 은 회청). 뒤 정보는 회청 그대로.
+- `refresh_interval_minutes` 가 지나면(기본 50분 → 남은 10분) `캐시 10분 남음` 토스트, `cache_ttl_minutes` 가 지나면 `캐시 만료` + 토스트. 같은 기준 시각에서는 한 번씩만 알린다.
 - **작업 중에는 숨는다** — 답변 중이거나, 리더 턴이 끝났어도 백그라운드 에이전트(서브에이전트 등)가 실행 중(`pending`·`running`·`waiting`)이면 띠를 그리지 않는다. 캐시 시계는 흐르므로 그동안에도 경고·만료 토스트는 울린다. 설문이 띠를 쓰는 동안에도 숨는다.
   - 별도 터미널 창의 팀메이트는 창이 닫히거나 죽어도 상태가 `running` 으로 남을 수 있고, 그동안 띠가 계속 숨을 수 있다.
 - 세션이 시작된 뒤(또는 `/clear` 뒤) 첫 요청 전에는 아무것도 표시하지 않는다.
 - `/compact` 직후에도 띠를 비우고, 다음 답변에서 캐시를 쓴 요청부터 다시 센다 (v0.9.1). 답변 도중 자동 compact 는 그대로 둔다.
-- `[display] countdown = false` 면 띠와 토스트를 모두 끈다 (만료 임박 알림·wake 는 그대로 동작). 문구는 `[general] language`(ko·en·ja·zh, 기본 en)를 따른다. 설정은 **세션 시작 때 읽으므로 바꾼 뒤 새 chat 세션부터** 적용된다.
-- 설정 파일에 문법 오류가 있으면 Python 쪽(recap·wake)은 파일 전체를 버리고 기본값을 쓰지만, 띠는 읽을 수 있는 줄의 값만 쓴다. 그래서 둘의 TTL·경고 시점이 다를 수 있다.
+- `[display] countdown = false` 면 띠와 토스트를 모두 끈다 (만료 임박 알림·wake 는 그대로 동작). 문구는 `[general] language`(ko·en·ja·zh, 기본 en)를 따른다. 설정은 **세션 시작 때 읽으므로 바꾼 뒤 새 chat 세션부터** 적용된다. `/reload-plugins` 로 mod 가 새로 로드되면 띠·tick 이 첫 요청이나 화면 갱신 때 다시 시작하며 그때 설정을 다시 읽는다 (v0.11.0).
+- 설정 파일에 문법 오류가 있으면 Python 쪽(wake·`/cn:status`)은 파일 전체를 버리고 기본값을 쓰지만, 띠는 읽을 수 있는 줄의 값만 쓴다. 그래서 둘의 TTL·경고 시점이 다를 수 있다.
 - what-did-i-say 플러그인의 띠 박스와 함께 쓰면 이 줄이 위, 요청 박스가 아래로 붙는다.
 
-**요구: Claude Code v2.1.286 이상** (mods = 함수 훅 플러그인, `hooks/hooks.json` 의 `modules` 항목으로 로드). v0.10.0 부터는 만료 임박 알림과 wake 도 mod 가 실행하므로, v2.1.200~v2.1.241 에서는 `modules` 키가 오류 없이 무시되어 띠·알림·wake 가 빠지고 recap·`/cn:*` 만 남는다 (`modules` 무시는 v2.1.200 이상에서 실측, 그 미만은 미확인). v2.1.242~v2.1.285 는 mods 가 서버 롤아웃 플래그 뒤에 있어 환경에 따라 띠·알림·wake 가 동작할 수도 있다 (플래그가 켜진 환경은 추정). 근거: 2026-10-07 격리 설정으로 v2.1.200·v2.1.241·v2.1.242~v2.1.286 실측, v2.1.287·v2.1.290·v2.1.291·v2.1.292 에서 `claude plugin test` 통과.
+**요구: Claude Code v2.1.286 이상** (mods = 함수 훅 플러그인, `hooks/hooks.json` 의 `modules` 항목으로 로드). v0.10.0 부터는 만료 임박 알림과 wake 도 mod 가 실행하므로, v2.1.200~v2.1.241 에서는 `modules` 키가 오류 없이 무시되어 띠·알림·wake 가 빠지고 `/cn:*` 만 남는다 (`modules` 무시는 v2.1.200 이상에서 실측, 그 미만은 미확인). v2.1.242~v2.1.285 는 mods 가 서버 롤아웃 플래그 뒤에 있어 환경에 따라 띠·알림·wake 가 동작할 수도 있다 (플래그가 켜진 환경은 추정). 근거: 2026-10-07 격리 설정으로 v2.1.200·v2.1.241·v2.1.242~v2.1.286 실측, v2.1.287·v2.1.290·v2.1.291·v2.1.292 에서 `claude plugin test` 통과.
 
 ## 어떻게 동작하는가
 

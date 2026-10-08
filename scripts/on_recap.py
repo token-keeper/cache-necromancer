@@ -1,19 +1,16 @@
 #!/usr/bin/env python3
-"""Stop hook 의 sync 본체 — turn 종료 즉시 recap 영역에 다음 wake 시각 표시.
+"""Stop hook 의 sync 본체 — turn 종료 시각을 marker.latest_fire 에 기록한다.
 
-출력 형식:
-  1줄: 🪦 캐시 만료 시각 (항상)
-  2줄: 🔥 set 예산 잔량 + 최대 생존 시한 (set_budget_remaining > 0 일 때만)
+v0.11.0: 채팅에 띄우던 recap 박스(만료 시각·목숨·예산)는 없앴다. 같은 정보는
+mod(hooks/register.tsx)가 프롬프트 위 카운트다운 띠 뒤에 붙인다. 출력 없음.
+첫 Stop 에 config.toml 이 없으면 기본 템플릿을 만든다 (README "첫 hook fire 시 자동 생성").
 
-design spec: docs/superpowers/specs/active/2026-05-23-cache-recap-message-design.md
 PRD 불변: 어떤 실패도 chat 동작 차단 X (silent fail).
 """
 import json
 import os
-import re
 import sys
 import time
-from datetime import datetime, timedelta
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -21,15 +18,7 @@ _PROJECT_ROOT = _HERE.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from lib.box_render import render_box  # noqa: E402
-from lib.config import ensure_config_file, load_config  # noqa: E402
-from lib.i18n import (  # noqa: E402
-    build_lives_recap_line,
-    build_recap_message,
-    build_revived_message,
-    build_set_recap_line,
-    normalize_language,
-)
+from lib.config import ensure_config_file  # noqa: E402
 from lib.install_version import is_latest_install  # noqa: E402
 from lib.logger import log_warn  # noqa: E402
 from lib.marker import Marker  # noqa: E402
@@ -59,61 +48,10 @@ def _resolve_session_id(payload: dict) -> str:
     return os.environ.get("CLAUDE_CODE_SESSION_ID", "")
 
 
-_KEEPALIVE_NM = re.compile(r"[\s,](\d+)/\d+")
-
-
-def _is_tool_result(entry: dict) -> bool:
-    """tool 결과를 담은 user 엔트리 (사람·플러그인이 낸 prompt 가 아님)."""
-    content = (entry.get("message") or {}).get("content")
-    return isinstance(content, list) and any(
-        isinstance(b, dict) and b.get("type") == "tool_result" for b in content
-    )
-
-
-def detect_wake_turn(transcript_path: str) -> tuple[bool, int]:
-    """transcript tail 의 최신 prompt(user 엔트리, tool 결과 제외)가 cn keepalive 면 (True, N).
-
-    판정은 PING_PREFIX 부분일치만 본다 — 실제 transcript 의 wake 엔트리엔
-    isMeta 가 없고(v0.9.1 task-notification 128건 실측), v0.10.0 플러그인 prompt
-    는 "The ... plugin sent a message" 틀이 붙을 수 있다. tool 결과는 grep 출력
-    등에 같은 문자열이 들어올 수 있어 제외.
-    N = ping 의 (N/M) 에서 파싱(없으면 1). 실패/미존재 시 (False, 0).
-    """
-    if not transcript_path:
-        return (False, 0)
-    try:
-        size = os.path.getsize(transcript_path)
-        with open(transcript_path, "rb") as f:
-            f.seek(max(0, size - 65536))
-            data = f.read()
-    except OSError:
-        return (False, 0)
-    last_user: dict | None = None
-    for raw in data.splitlines():
-        line = raw.decode("utf-8", "replace").strip()
-        if not line:
-            continue
-        try:
-            e = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(e, dict) and e.get("type") == "user" and not _is_tool_result(e):
-            last_user = e
-    if last_user is None:
-        return (False, 0)
-    msg = last_user.get("message") or {}
-    content = msg.get("content")
-    text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
-    if "[cn:keepalive" not in text:
-        return (False, 0)
-    m = _KEEPALIVE_NM.search(text)
-    return (True, int(m.group(1)) if m else 1)
-
-
 def _record_stop(sid_hash: str) -> None:
     """marker.latest_fire = 이번 Stop 시각 (ns). cn_status 다음 발동·active 판정과
-    cn_set 의 timer 추정 기준. v0.9.x 까지는 Stop 마다 뜨던 refresh.py 가 기록했다.
-    저장 실패는 silent (recap 출력은 계속).
+    cn_set 의 timer 추정, refresh.py --now 의 사용자 활동 판정 기준.
+    저장 실패는 silent.
     """
     marker = Marker.load(sid_hash)
     marker.latest_fire = time.time_ns()
@@ -126,70 +64,18 @@ def _record_stop(sid_hash: str) -> None:
 def _main_impl() -> int:
     if not is_latest_install():
         return 0
-    payload = _read_hook_input()
-    sid = _resolve_session_id(payload)
+    sid = _resolve_session_id(_read_hook_input())
     if not sid:
         return 0
     try:
         sid_hash = sanitize(sid)
     except ValueError:
         return 0
-
     _record_stop(sid_hash)
-
-    config_path = _resolve_root() / "config.toml"
     try:
-        ensure_config_file(config_path)
-        config = load_config(config_path)
-    except (OSError, ValueError):
-        return 0
-
-    ttl = config.cache_ttl_minutes
-    if not isinstance(ttl, int) or ttl <= 0:
-        return 0
-
-    lang = normalize_language(config.language)
-    now = datetime.now()
-    death_at = now + timedelta(minutes=ttl)
-
-    wake, revive_n = detect_wake_turn(payload.get("transcript_path", ""))
-    if wake:
-        line1 = build_revived_message(lang, revive_n, death_at.hour, death_at.minute)
-    else:
-        line1 = build_recap_message(lang, death_at.hour, death_at.minute)
-    lines = [line1]
-
-    marker = Marker.load(sid_hash)
-    if config.wake.arm == "always":
-        # always: 남은 목숨(max - wake_count) + idle 시 최대 생존 시한
-        lives = max(0, config.max_refresh_count - marker.wake_count)
-        survive_at = now + timedelta(
-            minutes=lives * config.refresh_interval_minutes + ttl
-        )
-        lines.append(
-            build_lives_recap_line(lang, lives, survive_at.hour, survive_at.minute)
-        )
-    elif marker.set_budget_remaining > 0:
-        survive_at = now + timedelta(
-            minutes=marker.set_budget_remaining * config.refresh_interval_minutes + ttl
-        )
-        lines.append(
-            build_set_recap_line(
-                lang, marker.set_budget_remaining, survive_at.hour, survive_at.minute
-            )
-        )
-
-    if config.display.recap_style == "box":
-        # Claude Code 가 systemMessage 첫 줄에 "Stop says: " prefix 를 붙여
-        # top border 만 우측으로 밀려 body 줄과 어긋난다. 선두 개행으로
-        # 박스를 제 줄에서 시작시켜 정렬을 맞춘다.
-        # 2줄(만료 + 목숨/set)이면 가독성 위해 가운데 빈 줄을 끼운다.
-        box_lines = lines if len(lines) == 1 else [lines[0], "", *lines[1:]]
-        message = "\n" + render_box(box_lines)
-    else:
-        message = "\n".join(lines)
-
-    print(json.dumps({"systemMessage": message}, ensure_ascii=False))
+        ensure_config_file(_resolve_root() / "config.toml")
+    except OSError as e:
+        log_warn(f"[on_recap] config.toml 자동 생성 실패: {type(e).__name__}: {e}")
     return 0
 
 

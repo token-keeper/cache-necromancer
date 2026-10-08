@@ -1,4 +1,4 @@
-"""Tests for lib/i18n.py (recap 메시지 4 언어 + fallback)."""
+"""Tests for lib/i18n.py (라벨 4 언어 + fallback)."""
 import re
 import sys
 from pathlib import Path
@@ -14,9 +14,6 @@ from lib.i18n import (  # noqa: E402
     SET_LABELS,
     STATUS_LABELS,
     SUPPORTED_LANGUAGES,
-    build_recap_message,
-    build_revived_message,
-    build_skull,
     normalize_language,
     set_label,
     status_label,
@@ -29,21 +26,6 @@ def test_default_language_is_en():
 
 def test_supported_languages_are_four():
     assert set(SUPPORTED_LANGUAGES) == {"ko", "en", "ja", "zh"}
-
-
-@pytest.mark.parametrize("lang,hh,mm,expected", [
-    ("ko", 10, 50, "🪦 캐시는 10시 50분에 죽어요."),
-    ("en", 10, 50, "🪦 Cache dies at 10:50."),
-    ("ja", 10, 50, "🪦 キャッシュは10時50分に死にます。"),
-    ("zh", 10, 50, "🪦 缓存将在10点50分死亡。"),
-    ("en", 0, 5, "🪦 Cache dies at 00:05."),
-    ("ko", 0, 5, "🪦 캐시는 0시 5분에 죽어요."),
-    ("en", 23, 59, "🪦 Cache dies at 23:59."),
-    ("ja", 0, 0, "🪦 キャッシュは0時0分に死にます。"),
-    ("zh", 23, 59, "🪦 缓存将在23点59分死亡。"),
-])
-def test_build_recap_message(lang, hh, mm, expected):
-    assert build_recap_message(lang, hh, mm) == expected
 
 
 @pytest.mark.parametrize("lang", ["ko", "en", "ja", "zh"])
@@ -101,36 +83,6 @@ class TestStatusLabels:
             assert "notify_warn" not in STATUS_LABELS[lang]
 
 
-class TestSetRecapLine:
-    def test_ko(self):
-        from lib.i18n import build_set_recap_line
-        s = build_set_recap_line("ko", 2, 21, 40)
-        assert "2" in s and "21시 40분" in s and s.startswith("🔥")
-
-    def test_all_languages_nonempty(self):
-        from lib.i18n import build_set_recap_line
-        for lang in ("ko", "en", "ja", "zh"):
-            assert build_set_recap_line(lang, 1, 9, 5)
-
-
-class TestLivesRecapLine:
-    def test_ko_small_shows_skull_count(self):
-        from lib.i18n import build_lives_recap_line
-        s = build_lives_recap_line("ko", 5, 15, 30)
-        assert "☠️ ☠️ ☠️ ☠️ ☠️" in s
-        assert "15시 30분" in s
-
-    def test_large_count_compressed(self):
-        from lib.i18n import build_lives_recap_line
-        s = build_lives_recap_line("ko", 10, 15, 0)
-        assert "☠️×10" in s  # 6 이상은 build_skull 압축
-
-    def test_all_languages_nonempty(self):
-        from lib.i18n import build_lives_recap_line
-        for lang in ("ko", "en", "ja", "zh"):
-            assert build_lives_recap_line(lang, 3, 9, 5)
-
-
 class TestArmLabel:
     def test_manual_and_always_all_langs(self):
         from lib.i18n import arm_label_i18n
@@ -182,30 +134,3 @@ class TestModeLabelI18nRemoved:
         assert not hasattr(i18n_mod, "mode_label_i18n"), (
             "mode_label_i18n 이 아직 i18n 모듈에 남아 있음 — 삭제 필요"
         )
-
-
-# Tests for build_skull and build_revived_message
-@pytest.mark.parametrize("n,expected", [
-    (1, "☠️"),
-    (3, "☠️ ☠️ ☠️"),
-    (5, "☠️ ☠️ ☠️ ☠️ ☠️"),
-    (6, "☠️×6"),
-    (10, "☠️×10"),
-])
-def test_build_skull(n, expected):
-    assert build_skull(n) == expected
-
-
-@pytest.mark.parametrize("lang,expected", [
-    ("ko", "☠️ ☠️ ☠️ 3번째 소생 — 17시 44분에 또 죽어요"),
-    ("en", "☠️ ☠️ ☠️ Revived 3× — dies again at 17:44"),
-    ("ja", "☠️ ☠️ ☠️ 3回目の蘇生 — 17時44分にまた死にます"),
-    ("zh", "☠️ ☠️ ☠️ 第3次复活 — 17点44分再次死亡"),
-])
-def test_build_revived_message(lang, expected):
-    assert build_revived_message(lang, 3, 17, 44) == expected
-
-
-def test_build_revived_message_capped_skull():
-    msg = build_revived_message("en", 7, 0, 5)
-    assert msg == "☠️×7 Revived 7× — dies again at 00:05"

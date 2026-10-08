@@ -446,7 +446,18 @@ class TestBudgetZeroOnReturn:
         # 충전(t=100s) 후 wake(t=200s) 가 일어난 상태
         self._marker(sid_hash, charged_at_ns=100 * 10**9, last_wake_at=200).save()
         _run_with_stdin(monkeypatch, {"session_id": sid, "prompt": "다녀왔어"})
-        assert Marker.load(sid_hash).set_budget_remaining == 0
+        m = Marker.load(sid_hash)
+        assert m.set_budget_remaining == 0
+        assert m.set_budget_total == 0  # 띠가 소비량(total - remaining)을 살린 횟수로 세지 않게
+
+    def test_return_after_exhausted_budget_clears_total(self, cn_root, monkeypatch):
+        """예산을 다 쓴 뒤(remaining 0) 복귀해도 total 을 비운다."""
+        sid = "exhausted-sid"
+        sid_hash = sanitize(sid)
+        Marker(sid_hash=sid_hash, set_budget_remaining=0, set_budget_total=2,
+               set_charged_at_ns=100 * 10**9, last_wake_at=300).save()
+        _run_with_stdin(monkeypatch, {"session_id": sid, "prompt": "다녀왔어"})
+        assert Marker.load(sid_hash).set_budget_total == 0
 
     def test_real_prompt_before_any_wake_keeps_budget(self, cn_root, monkeypatch):
         sid = "stay-sid"
@@ -454,7 +465,8 @@ class TestBudgetZeroOnReturn:
         # 충전(t=200s) 후 아직 wake 없음 (last_wake_at 은 충전 전 값)
         self._marker(sid_hash, charged_at_ns=200 * 10**9, last_wake_at=100).save()
         _run_with_stdin(monkeypatch, {"session_id": sid, "prompt": "하나만 더"})
-        assert Marker.load(sid_hash).set_budget_remaining == 1
+        m = Marker.load(sid_hash)
+        assert (m.set_budget_remaining, m.set_budget_total) == (1, 2)
 
     def test_ping_does_not_zero_budget(self, cn_root, monkeypatch):
         sid = "ping-sid"

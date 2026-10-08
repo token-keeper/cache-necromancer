@@ -1,11 +1,10 @@
-"""Tests for scripts/on_recap.py + hooks/hooks.json 구조 (recap design spec)."""
+"""Tests for scripts/on_recap.py (Stop: latest_fire 기록만) + hooks/hooks.json 구조."""
 import io
 import json
 import sys
 from pathlib import Path
 
 import pytest
-from freezegun import freeze_time
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
@@ -83,425 +82,6 @@ def test_main_top_level_exception_silent_fail(session_stdin, capsys, monkeypatch
     assert captured.out == ""
 
 
-# ---- 메시지 4 언어 (local time, fire=10:00, cache_ttl=50 → 10:50) ----
-
-@freeze_time("2026-05-23 10:00:00")
-def test_recap_message_ko(session_stdin, temp_root, capsys):
-    (temp_root / "config.toml").write_text(
-        '[general]\ncache_ttl_minutes = 50\nlanguage = "ko"\n',
-        encoding="utf-8",
-    )
-    from scripts.on_recap import main
-    rc = main()
-    out = json.loads(capsys.readouterr().out)
-    assert rc == 0
-    assert out["systemMessage"] == "🪦 캐시는 10시 50분에 죽어요."
-
-
-@freeze_time("2026-05-23 10:00:00")
-def test_recap_message_en(session_stdin, temp_root, capsys):
-    (temp_root / "config.toml").write_text(
-        '[general]\ncache_ttl_minutes = 50\nlanguage = "en"\n',
-        encoding="utf-8",
-    )
-    from scripts.on_recap import main
-    main()
-    out = json.loads(capsys.readouterr().out)
-    assert out["systemMessage"] == "🪦 Cache dies at 10:50."
-
-
-@freeze_time("2026-05-23 10:00:00")
-def test_recap_message_ja(session_stdin, temp_root, capsys):
-    (temp_root / "config.toml").write_text(
-        '[general]\ncache_ttl_minutes = 50\nlanguage = "ja"\n',
-        encoding="utf-8",
-    )
-    from scripts.on_recap import main
-    main()
-    out = json.loads(capsys.readouterr().out)
-    assert out["systemMessage"] == "🪦 キャッシュは10時50分に死にます。"
-
-
-@freeze_time("2026-05-23 10:00:00")
-def test_recap_message_zh(session_stdin, temp_root, capsys):
-    (temp_root / "config.toml").write_text(
-        '[general]\ncache_ttl_minutes = 50\nlanguage = "zh"\n',
-        encoding="utf-8",
-    )
-    from scripts.on_recap import main
-    main()
-    out = json.loads(capsys.readouterr().out)
-    assert out["systemMessage"] == "🪦 缓存将在10点50分死亡。"
-
-
-# ---- 자정 넘김 ----
-
-@freeze_time("2026-05-23 23:55:00")
-def test_midnight_rollover_en(session_stdin, temp_root, capsys):
-    """fire=23:55, ttl=30 → 00:25"""
-    (temp_root / "config.toml").write_text(
-        '[general]\ncache_ttl_minutes = 30\nlanguage = "en"\n',
-        encoding="utf-8",
-    )
-    from scripts.on_recap import main
-    main()
-    out = json.loads(capsys.readouterr().out)
-    assert out["systemMessage"] == "🪦 Cache dies at 00:25."
-
-
-@freeze_time("2026-05-23 23:55:00")
-def test_midnight_rollover_ko(session_stdin, temp_root, capsys):
-    (temp_root / "config.toml").write_text(
-        '[general]\ncache_ttl_minutes = 30\nlanguage = "ko"\n',
-        encoding="utf-8",
-    )
-    from scripts.on_recap import main
-    main()
-    out = json.loads(capsys.readouterr().out)
-    assert out["systemMessage"] == "🪦 캐시는 0시 25분에 죽어요."
-
-
-# ---- ttl default (60 min) ----
-
-@freeze_time("2026-05-23 08:37:00")
-def test_recap_uses_cache_ttl_not_refresh_interval(session_stdin, temp_root, capsys):
-    """refresh_interval (wake 주기) 와 cache_ttl (cache 만료) 분리 검증.
-
-    fire=08:37, refresh_interval=50 (무시), cache_ttl=60 → 09:37 표시.
-    """
-    (temp_root / "config.toml").write_text(
-        '[general]\n'
-        'refresh_interval_minutes = 50\n'
-        'cache_ttl_minutes = 60\n'
-        'language = "ko"\n',
-        encoding="utf-8",
-    )
-    from scripts.on_recap import main
-    main()
-    out = json.loads(capsys.readouterr().out)
-    assert out["systemMessage"] == "🪦 캐시는 9시 37분에 죽어요."
-
-
-@freeze_time("2026-05-23 10:00:00")
-def test_recap_default_ttl_is_60_min(session_stdin, temp_root, capsys):
-    """config 에 cache_ttl 미지정 시 default=60 → 11:00 표시."""
-    (temp_root / "config.toml").write_text(
-        '[general]\nlanguage = "en"\n',
-        encoding="utf-8",
-    )
-    from scripts.on_recap import main
-    main()
-    out = json.loads(capsys.readouterr().out)
-    assert out["systemMessage"] == "🪦 Cache dies at 11:00."
-
-
-# ---- language fallback ----
-
-@freeze_time("2026-05-23 10:00:00")
-def test_recap_default_language_en(session_stdin, temp_root, capsys):
-    """config 에 language 없으면 'en'."""
-    (temp_root / "config.toml").write_text(
-        '[general]\ncache_ttl_minutes = 50\n',
-        encoding="utf-8",
-    )
-    from scripts.on_recap import main
-    main()
-    out = json.loads(capsys.readouterr().out)
-    assert out["systemMessage"] == "🪦 Cache dies at 10:50."
-
-
-@freeze_time("2026-05-23 10:00:00")
-def test_recap_invalid_language_falls_back_to_en(session_stdin, temp_root, capsys):
-    (temp_root / "config.toml").write_text(
-        '[general]\ncache_ttl_minutes = 50\nlanguage = "xx"\n',
-        encoding="utf-8",
-    )
-    from scripts.on_recap import main
-    main()
-    out = json.loads(capsys.readouterr().out)
-    assert out["systemMessage"] == "🪦 Cache dies at 10:50."
-
-
-# ---- ttl 가드 ----
-
-@pytest.mark.parametrize("ttl", [0, -1, -100])
-def test_invalid_ttl_silent_fail(session_stdin, temp_root, capsys, ttl):
-    (temp_root / "config.toml").write_text(
-        f'[general]\ncache_ttl_minutes = {ttl}\n'
-        'language = "en"\n',
-        encoding="utf-8",
-    )
-    from scripts.on_recap import main
-    rc = main()
-    assert rc == 0
-    assert capsys.readouterr().out == ""
-
-
-def test_config_invalid_toml_falls_back_to_default(
-    session_stdin, temp_root, capsys
-):
-    """config.toml 이 invalid → lib.config 가 default Config fallback (graceful).
-    on_recap 은 default 값 (ttl=60, language='en') 으로 메시지 출력."""
-    (temp_root / "config.toml").write_text("not valid = = =", encoding="utf-8")
-    from scripts.on_recap import main
-    rc = main()
-    assert rc == 0
-    raw = capsys.readouterr().out
-    parsed = json.loads(raw)
-    assert "systemMessage" in parsed
-    assert "Cache dies at" in parsed["systemMessage"]  # default lang = "en"
-
-
-def test_systemmessage_is_valid_json(session_stdin, temp_root, capsys):
-    """stdout 이 valid JSON + systemMessage key 존재 + emoji raw 출력."""
-    (temp_root / "config.toml").write_text(
-        '[general]\ncache_ttl_minutes = 50\nlanguage = "ko"\n',
-        encoding="utf-8",
-    )
-    from scripts.on_recap import main
-    main()
-    raw = capsys.readouterr().out
-    assert "🪦" in raw  # ensure_ascii=False 확인 (raw emoji)
-    parsed = json.loads(raw)
-    assert "systemMessage" in parsed
-
-
-# ---- set 예산 잔량 2줄째 (spec §8) ----
-
-class TestSetBudgetSecondLine:
-    """set_budget_remaining > 0 이면 recap 2줄째에 최대 생존 시한 표시."""
-
-    def _charge(self, cn_root, sid: str, remaining: int, total: int) -> None:
-        """marker 파일에 set 예산 기록 (테스트 픽스처 헬퍼)."""
-        from lib.marker import Marker
-        from lib.session_id import sanitize
-        m = Marker.load(sanitize(sid))
-        m.set_budget_remaining = remaining
-        m.set_budget_total = total
-        m.save()
-
-    def _run(self, monkeypatch, cn_root, sid: str) -> None:
-        """stdin 에 session_id 주입 후 main() 실행."""
-        import io
-        monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
-        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": sid})))
-        # config.toml 이 없으면 auto-create (defaults: interval=50, ttl=60, language=en)
-        from scripts.on_recap import main
-        main()
-
-    @freeze_time("2026-06-10 19:00:00")
-    def test_two_lines_when_budget_remaining(self, cn_root, monkeypatch, capsys):
-        """set_budget_remaining=2, interval=50, ttl=60 → 생존 시한 21:40 (2줄)."""
-        sid = "recap-sid"
-        self._charge(cn_root, sid, remaining=2, total=2)
-        # config: interval=50, ttl=60, language=en (default)
-        (cn_root / "config.toml").write_text(
-            '[general]\nrefresh_interval_minutes = 50\n'
-            'cache_ttl_minutes = 60\nlanguage = "en"\n',
-            encoding="utf-8",
-        )
-        self._run(monkeypatch, cn_root, sid)
-        out = json.loads(capsys.readouterr().out)
-        lines = out["systemMessage"].split("\n")
-        # 2줄 구성 검증
-        assert len(lines) == 2
-        assert lines[0].startswith("🪦")
-        # 생존 시한 = 19:00 + 2×50m + 60m = 21:40
-        assert lines[1].startswith("🔥")
-        assert "21:40" in lines[1]
-
-    @freeze_time("2026-06-10 19:00:00")
-    def test_one_line_when_no_budget(self, cn_root, monkeypatch, capsys):
-        """set_budget_remaining=0 → 기존 1줄만 출력."""
-        sid = "recap-sid2"
-        # marker 에 예산 없음 (0이 기본값이므로 파일 생성 불필요)
-        (cn_root / "config.toml").write_text(
-            '[general]\ncache_ttl_minutes = 60\nlanguage = "en"\n',
-            encoding="utf-8",
-        )
-        self._run(monkeypatch, cn_root, sid)
-        out = json.loads(capsys.readouterr().out)
-        assert "\n" not in out["systemMessage"]
-
-
-def _write_transcript(tmp_path, entries):
-    p = tmp_path / "transcript.jsonl"
-    p.write_text("\n".join(json.dumps(e, ensure_ascii=False) for e in entries), encoding="utf-8")
-    return str(p)
-
-
-def test_detect_wake_turn_true_with_count(tmp_path):
-    from scripts.on_recap import detect_wake_turn
-    path = _write_transcript(tmp_path, [
-        {"type": "user", "isMeta": False, "message": {"role": "user", "content": "real prompt"}},
-        {"type": "assistant", "message": {"role": "assistant", "content": "..."}},
-        {"type": "user", "isMeta": True, "message": {"role": "user",
-         "content": "Stop hook feedback:\n[refresh.py]: [cn:keepalive @17:44, 3/5] reply ..."}},
-    ])
-    assert detect_wake_turn(path) == (True, 3)
-
-
-def test_detect_wake_turn_false_for_real_prompt(tmp_path):
-    from scripts.on_recap import detect_wake_turn
-    path = _write_transcript(tmp_path, [
-        {"type": "user", "isMeta": False, "message": {"role": "user", "content": "hello"}},
-    ])
-    assert detect_wake_turn(path) == (False, 0)
-
-
-def test_detect_wake_turn_missing_file_returns_false():
-    from scripts.on_recap import detect_wake_turn
-    assert detect_wake_turn("/nonexistent/x.jsonl") == (False, 0)
-    assert detect_wake_turn("") == (False, 0)
-
-
-def test_detect_wake_turn_count_fallback_when_no_nm(tmp_path):
-    from scripts.on_recap import detect_wake_turn
-    path = _write_transcript(tmp_path, [
-        {"type": "user", "isMeta": True, "message": {"role": "user",
-         "content": "Stop hook feedback:\n[cn:keepalive broken ping"}},
-    ])
-    assert detect_wake_turn(path) == (True, 1)
-
-
-def test_detect_wake_turn_real_ping_form(tmp_path):
-    """실제 refresh.py _build_ping 가 만드는 형태 — '@HH:MM, N/M' + 응답 지시의 '(N/M)'
-    둘 다 포함. regex 가 첫 'N/M'(콤마 뒤)에서 N 을 뽑고 시각(콜론)엔 오매칭 없어야."""
-    from scripts.on_recap import detect_wake_turn
-    path = _write_transcript(tmp_path, [
-        {"type": "user", "isMeta": True, "message": {"role": "user",
-         "content": "Stop hook feedback:\n[python3 \"refresh.py\"]: "
-                    "[cn:keepalive 17:44, 3/5] reply with exactly "
-                    "'ok @17:44 (3/5)'. No tools, no analysis."}},
-    ])
-    assert detect_wake_turn(path) == (True, 3)
-
-
-@freeze_time("2026-05-23 10:00:00")
-def test_box_style_normal_turn_wraps_message(temp_root, monkeypatch):
-    import io
-    (temp_root / "config.toml").write_text(
-        '[general]\nlanguage = "en"\ncache_ttl_minutes = 50\n[display]\nrecap_style = "box"\n',
-        encoding="utf-8",
-    )
-    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
-    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": "box-sid"})))
-    monkeypatch.setattr("scripts.on_recap.is_latest_install", lambda: True)
-    from scripts.on_recap import main
-    import sys as _sys
-    out = io.StringIO(); monkeypatch.setattr(_sys, "stdout", out)
-    main()
-    msg = json.loads(out.getvalue())["systemMessage"]
-    # "Stop says: " prefix 와 안 붙도록 선두 개행 → 박스가 제 줄에서 시작.
-    assert msg.startswith("\n╭") and "🪦 Cache dies at 10:50." in msg
-
-
-@freeze_time("2026-05-23 10:00:00")
-def test_always_mode_shows_lives_line(temp_root, monkeypatch):
-    import io
-    (temp_root / "config.toml").write_text(
-        '[general]\nlanguage = "ko"\ncache_ttl_minutes = 50\n'
-        'max_refresh_count = 5\nrefresh_interval_minutes = 30\n'
-        '[wake]\narm = "always"\n',
-        encoding="utf-8",
-    )
-    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
-    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": "always-sid"})))
-    monkeypatch.setattr("scripts.on_recap.is_latest_install", lambda: True)
-    from scripts.on_recap import main
-    import sys as _sys
-    out = io.StringIO(); monkeypatch.setattr(_sys, "stdout", out)
-    main()
-    msg = json.loads(out.getvalue())["systemMessage"]
-    # wake_count=0 → 목숨 5 = 해골 5개(공백 구분), 생존 = 10:00 + 5*30 + 50min = 13:20
-    assert "☠️ ☠️ ☠️ ☠️ ☠️" in msg
-    assert "살림" in msg and "13시 20분" in msg
-
-
-@freeze_time("2026-05-23 10:00:00")
-def test_box_two_lines_has_blank_spacer(temp_root, monkeypatch):
-    import io
-    (temp_root / "config.toml").write_text(
-        '[general]\nlanguage = "ko"\ncache_ttl_minutes = 50\n'
-        'max_refresh_count = 5\nrefresh_interval_minutes = 30\n'
-        '[wake]\narm = "always"\n[display]\nrecap_style = "box"\n',
-        encoding="utf-8",
-    )
-    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
-    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": "spacer-sid"})))
-    monkeypatch.setattr("scripts.on_recap.is_latest_install", lambda: True)
-    from scripts.on_recap import main
-    import sys as _sys
-    out = io.StringIO(); monkeypatch.setattr(_sys, "stdout", out)
-    main()
-    msg = json.loads(out.getvalue())["systemMessage"]
-    box_lines = [ln for ln in msg.split("\n") if ln.startswith("│")]
-    assert len(box_lines) == 3  # 만료 + 빈줄 + 목숨
-    assert box_lines[1].strip("│ ") == ""  # 가운데는 빈 줄
-
-
-@freeze_time("2026-05-23 10:00:00")
-def test_box_single_line_no_spacer(temp_root, monkeypatch):
-    import io
-    # manual + set 없음 → 1줄만 → 빈 줄 삽입 안 함
-    (temp_root / "config.toml").write_text(
-        '[general]\nlanguage = "ko"\ncache_ttl_minutes = 50\n'
-        '[wake]\narm = "manual"\n[display]\nrecap_style = "box"\n',
-        encoding="utf-8",
-    )
-    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
-    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": "single-sid"})))
-    monkeypatch.setattr("scripts.on_recap.is_latest_install", lambda: True)
-    from scripts.on_recap import main
-    import sys as _sys
-    out = io.StringIO(); monkeypatch.setattr(_sys, "stdout", out)
-    main()
-    msg = json.loads(out.getvalue())["systemMessage"]
-    box_lines = [ln for ln in msg.split("\n") if ln.startswith("│")]
-    assert len(box_lines) == 1  # 만료만, 빈 줄 없음
-
-
-@freeze_time("2026-05-23 10:00:00")
-def test_manual_mode_no_lives_line(temp_root, monkeypatch):
-    import io
-    (temp_root / "config.toml").write_text(
-        '[general]\nlanguage = "ko"\ncache_ttl_minutes = 50\n[wake]\narm = "manual"\n',
-        encoding="utf-8",
-    )
-    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
-    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": "manual-sid"})))
-    monkeypatch.setattr("scripts.on_recap.is_latest_install", lambda: True)
-    from scripts.on_recap import main
-    import sys as _sys
-    out = io.StringIO(); monkeypatch.setattr(_sys, "stdout", out)
-    main()
-    msg = json.loads(out.getvalue())["systemMessage"]
-    # manual + set 충전 없음 → 목숨 라인 없음 (만료 라인만)
-    assert "살림" not in msg and "☠️" not in msg
-
-
-@freeze_time("2026-05-23 10:00:00")
-def test_compact_wake_turn_shows_skull(temp_root, monkeypatch):
-    import io
-    (temp_root / "config.toml").write_text(
-        '[general]\nlanguage = "en"\ncache_ttl_minutes = 50\n', encoding="utf-8")
-    tpath = _write_transcript(temp_root, [
-        {"type": "user", "isMeta": True, "message": {"role": "user",
-         "content": "Stop hook feedback:\n[cn:keepalive @10:50, 2/5] reply ..."}},
-    ])
-    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
-    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(
-        {"session_id": "wake-sid", "transcript_path": tpath})))
-    monkeypatch.setattr("scripts.on_recap.is_latest_install", lambda: True)
-    from scripts.on_recap import main
-    import sys as _sys
-    out = io.StringIO(); monkeypatch.setattr(_sys, "stdout", out)
-    main()
-    msg = json.loads(out.getvalue())["systemMessage"]
-    assert msg == "☠️ ☠️ Revived 2× — dies again at 10:50"
-
-
-
 def test_stop_records_latest_fire(session_stdin, temp_root):
     """v0.10.0: Stop(on_recap) 1회 → marker.latest_fire = Stop 시각 (cn_status·cn_set 기준)."""
     import time
@@ -514,36 +94,38 @@ def test_stop_records_latest_fire(session_stdin, temp_root):
     assert before <= m.latest_fire <= time.time_ns()
 
 
-@freeze_time("2026-05-23 10:00:00")
-def test_wake_without_ismeta_shows_revived(temp_root, monkeypatch):
-    """실제 transcript 형식: wake 엔트리에 isMeta 가 없고, 플러그인 prompt 틀이 붙을 수 있다 → Revived."""
-    (temp_root / "config.toml").write_text(
-        '[general]\nlanguage = "en"\ncache_ttl_minutes = 50\n', encoding="utf-8")
-    tpath = _write_transcript(temp_root, [
-        {"type": "user", "message": {"role": "user", "content": "real prompt"}},
-        {"type": "assistant", "message": {"role": "assistant", "content": "..."}},
-        {"type": "user", "message": {"role": "user", "content": [{"type": "text", "text":
-         "The cache-necromancer plugin sent a message: [cn:keepalive 09:10, 2/5] "
-         "reply with exactly 'ok @09:10 (2/5)'."}]}},
-    ])
-    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
-    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(
-        {"session_id": "wake-sid", "transcript_path": tpath})))
-    monkeypatch.setattr("scripts.on_recap.is_latest_install", lambda: True)
+@pytest.mark.parametrize(
+    "toml",
+    [
+        '[general]\nlanguage = "ko"\n',
+        '[general]\nmax_refresh_count = 5\n[wake]\narm = "always"\n[display]\nrecap_style = "box"\n',
+    ],
+)
+def test_stop_prints_nothing(session_stdin, temp_root, capsys, toml):
+    """v0.11.0: recap 박스 없음 — always·예산 있음·recap_style=box 여도 stdout 비고 latest_fire 만 기록."""
+    from lib.marker import Marker
+    from lib.session_id import sanitize
+    (temp_root / "config.toml").write_text(toml, encoding="utf-8")
+    m = Marker.load(sanitize(session_stdin))
+    m.set_budget_remaining = 2
+    m.set_budget_total = 3
+    m.wake_count = 1
+    m.save()
     from scripts.on_recap import main
-    out = io.StringIO()
-    monkeypatch.setattr(sys, "stdout", out)
-    main()
-    assert json.loads(out.getvalue())["systemMessage"] == "☠️ ☠️ Revived 2× — dies again at 10:50"
+    assert main() == 0
+    assert capsys.readouterr().out == ""
+    after = Marker.load(sanitize(session_stdin))
+    assert after.latest_fire > 0
+    # 예산·횟수는 건드리지 않는다
+    assert (after.set_budget_remaining, after.set_budget_total, after.wake_count) == (2, 3, 1)
 
 
-def test_detect_wake_turn_ignores_tool_result_with_ping_text(tmp_path):
-    """tool 결과(grep 출력 등)에 ping 문자열이 있어도 wake turn 이 아니다."""
-    from scripts.on_recap import detect_wake_turn
-    path = _write_transcript(tmp_path, [
-        {"type": "user", "message": {"role": "user", "content": "grep the ping"}},
-        {"type": "assistant", "message": {"role": "assistant", "content": "..."}},
-        {"type": "user", "message": {"role": "user", "content": [
-            {"type": "tool_result", "tool_use_id": "t1", "content": "PING_PREFIX = \"[cn:keepalive\""}]}},
-    ])
-    assert detect_wake_turn(path) == (False, 0)
+def test_stop_creates_config_when_missing(session_stdin, temp_root, capsys):
+    """첫 Stop 에 config.toml 이 없으면 기본 템플릿을 만든다 (출력은 여전히 없음)."""
+    path = temp_root / "config.toml"
+    assert not path.exists()
+    from scripts.on_recap import main
+    assert main() == 0
+    assert path.exists()
+    assert "[general]" in path.read_text(encoding="utf-8")
+    assert capsys.readouterr().out == ""
