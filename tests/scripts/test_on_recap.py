@@ -118,3 +118,14 @@ def test_stop_prints_nothing(session_stdin, temp_root, capsys, toml):
     assert after.latest_fire > 0
     # 예산·횟수는 건드리지 않는다
     assert (after.set_budget_remaining, after.set_budget_total, after.wake_count) == (2, 3, 1)
+
+
+def test_stop_creates_config_when_missing(session_stdin, temp_root, capsys):
+    """첫 Stop 에 config.toml 이 없으면 기본 템플릿을 만든다 (출력은 여전히 없음)."""
+    path = temp_root / "config.toml"
+    assert not path.exists()
+    from scripts.on_recap import main
+    assert main() == 0
+    assert path.exists()
+    assert "[general]" in path.read_text(encoding="utf-8")
+    assert capsys.readouterr().out == ""

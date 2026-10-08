@@ -3,6 +3,7 @@
 
 v0.11.0: 채팅에 띄우던 recap 박스(만료 시각·목숨·예산)는 없앴다. 같은 정보는
 mod(hooks/register.tsx)가 프롬프트 위 카운트다운 띠 뒤에 붙인다. 출력 없음.
+첫 Stop 에 config.toml 이 없으면 기본 템플릿을 만든다 (README "첫 hook fire 시 자동 생성").
 
 PRD 불변: 어떤 실패도 chat 동작 차단 X (silent fail).
 """
@@ -17,10 +18,16 @@ _PROJECT_ROOT = _HERE.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from lib.config import ensure_config_file  # noqa: E402
 from lib.install_version import is_latest_install  # noqa: E402
 from lib.logger import log_warn  # noqa: E402
 from lib.marker import Marker  # noqa: E402
 from lib.session_id import sanitize  # noqa: E402
+
+
+def _resolve_root() -> Path:
+    root = os.environ.get("CN_ROOT")
+    return Path(root) if root else Path.home() / ".cache-necromancer"
 
 
 def _read_hook_input() -> dict:
@@ -65,6 +72,10 @@ def _main_impl() -> int:
     except ValueError:
         return 0
     _record_stop(sid_hash)
+    try:
+        ensure_config_file(_resolve_root() / "config.toml")
+    except OSError as e:
+        log_warn(f"[on_recap] config.toml 자동 생성 실패: {type(e).__name__}: {e}")
     return 0
 
 
