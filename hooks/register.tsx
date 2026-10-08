@@ -413,11 +413,13 @@ export const register: Register = on => {
     return r
   })
 
-  // 대기 상태일 때 프롬프트 위 띠 맨 위에 캐시 줄 한 줄. 아래(다른 플러그인·엔진)가 그린 것은 그 밑에 둔다
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+  // 대기 상태일 때 입력창 아래 힌트 줄 자리에 캐시 줄 한 줄. 아래(다른 플러그인·엔진 힌트 줄)가 그린 것은 그 밑에 둔다.
+  // 입력창 위(AbovePrompt)에 두면 / 명령 목록이 띠 위로 밀려 뜬다
+  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
     ensureTimer($)
-    // 답변이 끝난 대기 상태에서만 표시, 설문에는 양보
-    if (e.props.isWorking || e.props.hasSurvey) return next(e)
+    // 답변이 끝난 대기 상태에서만 표시 (글자 치는 중에는 그대로 둔다). 폭을 모르면(surface 가 아직 안 잼) 그리지 않는다
+    const columns = e.viewport?.columns
+    if (e.props.isWorking || columns === undefined) return next(e)
     const line = await read($, label)
     // 기준 시각이 비었으면(/clear·/compact 직후) 숨긴다. 그 순간 진행 중이던 tick 이 옛 글자를 다시 써도 다음 tick 이 지운다
     if (line === null || (await read($, base)) === null) return next(e)
@@ -425,7 +427,7 @@ export const register: Register = on => {
     const below = await next(e)
     const { Box, Text } = $.ui.resolve(e)
     // what-did-i-say 띠와 같은 규격(marginX 1·폭 W·paddingX 2)이라 위아래로 붙으면 한 사각형이 된다
-    const W = Math.max(1, e.props.bodyColumns - 2)
+    const W = Math.max(1, columns - 2)
     const extra = fit(line, W - 4)
     return (
       <Box flexDirection="column">
