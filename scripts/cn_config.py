@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """cache-necromancer 설정 터미널 TUI (v0.7.0).
 
-설계: docs/superpowers/specs/active/2026-06-24-cn-config-tui-design.md
+설계: docs/superpowers/specs/completed/2026/Q2/2026-06-24-cn-config-tui-design.md
 
 설정 변경을 Claude 와의 LLM 대화가 아니라 터미널 번호 메뉴로 처리한다 →
 LLM turn 0 + context 0. 순수 stdlib (의존성 0).

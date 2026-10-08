@@ -1,8 +1,10 @@
+> 상태: 대체됨 — 현재 구조는 docs/ARCHITECTURE.md (v0.11.0)
+
 # cache-necromancer v0.3.0 — PRD
 
 > **Status**: Draft (작성 2026-05-15)
 > **Author**: brody424
-> **Related**: [TECH_SPEC](2026-05-15-cache-necromancer-v0.3.0-TECH_SPEC.md), [PLAN](../plans/2026-05-15-cache-necromancer-v0.3.0-PLAN.md)
+> **Related**: [TECH_SPEC](2026-05-15-cache-necromancer-v0.3.0-TECH_SPEC.md), [PLAN](../../../../plans/archive/2026/Q2/2026-05-15-cache-necromancer-v0.3.0-PLAN.md)
 > **Supersedes**: v0.2.x daemon-based fire architecture
 
 ## 1. 한 줄 요약
@@ -161,9 +163,9 @@ CHANGELOG + README 의 Migration 섹션에 단계별 안내.
 ## 9. References
 
 - [TECH_SPEC](2026-05-15-cache-necromancer-v0.3.0-TECH_SPEC.md)
-- [PLAN](../plans/2026-05-15-cache-necromancer-v0.3.0-PLAN.md)
-- [진단 doc — v0.2.2 cache investigation](../../handoff/2026-05-15-v0.2.2-cache-investigation.md) (Test 1~8 evidence)
-- [진단 doc — v0.3.0 asyncRewake fix](../../handoff/2026-05-15-v0.3.0-asyncrewake-fix.md)
+- [PLAN](../../../../plans/archive/2026/Q2/2026-05-15-cache-necromancer-v0.3.0-PLAN.md)
+- [진단 doc — v0.2.2 cache investigation](../../../../../handoff/archive/2026/Q2/2026-05-15-v0.2.2-cache-investigation.md) (Test 1~8 evidence)
+- [진단 doc — v0.3.0 asyncRewake fix](../../../../../handoff/archive/2026/Q2/2026-05-15-v0.3.0-asyncrewake-fix.md)
 - [Anthropic prompt caching docs](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
 - [Claude Code hooks docs (asyncRewake field)](https://code.claude.com/docs/en/hooks.md)
 - [Claude Code plugins docs](https://code.claude.com/docs/en/plugins.md)

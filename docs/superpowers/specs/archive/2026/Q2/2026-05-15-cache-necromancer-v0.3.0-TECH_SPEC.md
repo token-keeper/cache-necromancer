@@ -1,8 +1,10 @@
+> 상태: 대체됨 — 현재 구조는 docs/ARCHITECTURE.md (v0.11.0)
+
 # cache-necromancer v0.3.0 — TECH_SPEC
 
 > **Status**: Draft (작성 2026-05-16)
 > **Author**: brody424
-> **Related**: [PRD](2026-05-15-cache-necromancer-v0.3.0-PRD.md), [PLAN](../plans/2026-05-15-cache-necromancer-v0.3.0-PLAN.md)
+> **Related**: [PRD](2026-05-15-cache-necromancer-v0.3.0-PRD.md), [PLAN](../../../../plans/archive/2026/Q2/2026-05-15-cache-necromancer-v0.3.0-PLAN.md)
 > **Supersedes**: v0.2.x daemon-based subprocess fire architecture
 
 ## 1. Architecture overview
@@ -395,8 +397,8 @@ asyncRewake 자체는 자동 테스트 불가능 (Claude Code runtime 필요). �
 ## 12. References
 
 - [PRD](2026-05-15-cache-necromancer-v0.3.0-PRD.md)
-- [PLAN](../plans/2026-05-15-cache-necromancer-v0.3.0-PLAN.md)
-- [POC C — long-sleep cache survival](../../handoff/2026-05-15-v0.3.0-asyncrewake-fix.md)
+- [PLAN](../../../../plans/archive/2026/Q2/2026-05-15-cache-necromancer-v0.3.0-PLAN.md)
+- [POC C — long-sleep cache survival](../../../../../handoff/archive/2026/Q2/2026-05-15-v0.3.0-asyncrewake-fix.md)
 - [Claude Code hooks docs (asyncRewake field)](https://code.claude.com/docs/en/hooks.md)
 - [Claude Code plugin manifest docs](https://code.claude.com/docs/en/plugins.md)
 - [Anthropic prompt caching docs](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
