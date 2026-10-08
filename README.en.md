@@ -90,7 +90,7 @@ arm = "manual"                        # manual = wake only after /cn:set / alway
 grace_seconds = 60                    # delay between notify and wake (when notify.enabled=true)
 
 [display]
-countdown = true                      # cache countdown in the band above the prompt (Claude Code v2.1.286+)
+countdown = true                      # cache countdown in the band below the prompt (Claude Code v2.1.286+)
 ```
 
 v0.4.x legacy keys (`[general].mode`, `[notify].system_notification`, `[refresh].hybrid_wait_seconds`) are auto-mapped on load, so existing config files continue to work.
@@ -99,7 +99,7 @@ v0.4.x legacy keys (`[general].mode`, `[notify].system_notification`, `[refresh]
 
 ## Countdown Band (v0.9.0)
 
-Once all work is done and Claude is waiting for your input, the band right above the prompt shows the time left before the cache dies, ticking down every second.
+Once all work is done and Claude is waiting for your input, the band right below the prompt (above the `? for shortcuts` hint line) shows the time left before the cache dies, ticking down every second.
 
 ```
   Cache 59:11 left       (language = "en", default)
@@ -122,7 +122,7 @@ Since v0.11.0 the recap box that appeared in the chat at Stop (expiry time, live
 - The reference time is the last main-conversation model request that actually read or wrote the cache (subagent requests and failed requests don't count). Wake turns are main-conversation requests too, so they should restart the count from 60:00 (not yet observed).
 - The countdown color changes every 10 minutes of time left (v0.11.0): 60–50 min slate #b8c4d4 → 50–40 blue #8ec5ff → 40–30 green #8fe3a1 → 30–20 yellow #f2d16b → 20–10 orange #ffb454 → 10–0 and expired red #ff7b7b (a boundary belongs to the upper range — 50:00 is slate). The appended info stays slate.
 - After `refresh_interval_minutes` (default 50 → 10 minutes left) a `Cache: 10 min left` toast fires; after `cache_ttl_minutes` it shows `Cache expired` with a toast. Each fires once per reference time.
-- **Hidden while work is running** — while Claude is answering, or while a background agent (subagent etc.) is still `pending`/`running`/`waiting` after the main turn ended. The cache clock keeps running, so warning and expiry toasts still fire meanwhile. Also hidden while a survey holds the band.
+- **Hidden while work is running** — while Claude is answering, or while a background agent (subagent etc.) is still `pending`/`running`/`waiting` after the main turn ended. The cache clock keeps running, so warning and expiry toasts still fire meanwhile. It stays while you are typing (v0.11.1).
   - A teammate in its own terminal window may stay `running` after its window is closed or dies, and the band can stay hidden meanwhile.
 - Nothing is shown before the first request of a session (or after `/clear`).
 - Right after `/compact` the band is cleared too, and counting restarts from the next answer's cache request (v0.9.1). An automatic compact in the middle of an answer leaves it as is.

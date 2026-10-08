@@ -51,7 +51,7 @@ class DisplayConfig:
     """표시 설정."""
 
     recap_style: str = "compact"  # 0.11.0 부터 효과 없음 (Stop recap 박스 제거) — 옛 설정 파일 하위호환으로 읽기만
-    countdown: bool = True  # 프롬프트 위 띠의 캐시 카운트다운 (mod — hooks/register.tsx 가 읽음)
+    countdown: bool = True  # 입력창 아래 띠의 캐시 카운트다운 (mod — hooks/register.tsx 가 읽음)
 
 
 @dataclass(frozen=True)
@@ -250,7 +250,7 @@ arm = "manual"                        # manual = /cn:set 시에만 소생 / alwa
 grace_seconds = 60                    # 알림 후 wake 까지 대기 (notify.enabled=true 일 때)
 
 [display]
-countdown = true                      # 프롬프트 위 띠에 캐시 남은 시간 카운트다운 (Claude Code v2.1.286+)
+countdown = true                      # 입력창 아래 띠에 캐시 남은 시간 카운트다운 (Claude Code v2.1.286+)
 """
 
 

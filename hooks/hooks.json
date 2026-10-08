@@ -1,5 +1,5 @@
 {
-  "description": "v0.11.0 — 알림 기본 + /cn:set 소생 + clear/compact 시 소생 억제 + 프롬프트 위 캐시 카운트다운 띠(뒤에 살린 횟수·목숨·예산과 생존 시각), 캐시 마지막 적중 시각 기준 깨우기 (modules). Stop 훅은 마지막 Stop 시각 기록만",
+  "description": "v0.11.1 — 알림 기본 + /cn:set 소생 + clear/compact 시 소생 억제 + 입력창 아래 캐시 카운트다운 띠(뒤에 살린 횟수·목숨·예산과 생존 시각), 캐시 마지막 적중 시각 기준 깨우기 (modules). Stop 훅은 마지막 Stop 시각 기록만",
   "hooks": {
     "Stop": [
       {

@@ -70,7 +70,7 @@ function setup(on: On, env: Env = { HOME: '/home/t' }, files: Files = KO): World
   on('turn.step', async function* (_$, e) {
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: w.usage ? ('end_turn' as const) : null, usage: w.usage }
   })
-  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+  on('ui.render', { component: 'PromptHint' }, ($, e) => {
     const { Text } = $.ui.resolve(e)
     return <Text>below</Text>
   })
@@ -102,24 +102,27 @@ async function step($: Engine, w: World, opts: { agentId?: string; usage?: TurnU
   }
 }
 
-type BandOver = { isWorking?: boolean; hasSurvey?: boolean; bodyColumns?: number }
+// columns: 터미널 폭(e.viewport.columns), null 이면 viewport 없이 그린다
+type BandOver = { isWorking?: boolean; isDraft?: boolean; columns?: number | null }
 
-const band = (over: BandOver = {}) => ({
-  hasSurvey: false,
-  isWorking: false,
-  maxRows: 20,
-  bodyColumns: 80,
-  scroll: { offset: 0, bodyRows: 19 },
-  view: {},
-  ...over,
-})
+// 입력창 아래 힌트 줄(PromptHint) 자리에 그리는 mount 대상
+const band = (surface: (typeof SURFACES)[number], over: BandOver = {}) => {
+  const { columns = 80, isWorking = false, isDraft = false } = over
+  return {
+    plugin: PLUGIN,
+    surface,
+    component: 'PromptHint' as const,
+    props: { isDraft, isWorking, hint: '? for shortcuts' },
+    ...(columns === null ? {} : { viewport: { columns, rows: 24 } }),
+  }
+}
 
 // 두 surface에 띠를 그려 캐시 줄(글자·색)을 읽는다. 두 surface 결과는 같아야 한다.
 // 줄은 바깥 Text(전체 글자) 안에 카운트다운 Text·뒤 정보 Text 를 중첩한다: text 는 바깥 글자, color 는 카운트다운 색, extraColor 는 뒤 정보 색
 async function shown($: Engine, over: BandOver = {}) {
   const seen = []
   for (const surface of SURFACES) {
-    const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'AbovePrompt', props: band(over) })
+    const ui = await $.ui.mount(band(surface, over))
     const [outer, countdown, extra] = (await ui.findAll({ type: 'Text' })).filter(t => t.text !== 'below')
     seen.push({
       text: outer?.text,
@@ -160,18 +163,30 @@ test('요청 49초 뒤 59:11, 남색 띠(wdis와 같은 규격)가 위·아래 �
   })
 })
 
-test('답변 중엔 표시하지 않고(아래 그대로), 설문이 있으면 양보한다', async ($, on) => {
+test('답변 중·폭을 모를 때(viewport 없음)는 표시하지 않고(아래 그대로), 글자 치는 중에는 표시한다', async ($, on) => {
   const w = setup(on)
   await start($)
   await step($, w)
   await w.clock.advance(1000)
   expect((await shown($))?.text).toBe('캐시 59:59 남음')
-  const working = await shown($, { isWorking: true })
-  expect(working?.text).toBeUndefined()
-  expect(working?.tree).toMatchObject({ type: 'Text', children: ['below'] })
-  const survey = await shown($, { hasSurvey: true })
-  expect(survey?.text).toBeUndefined()
-  expect(survey?.tree).toMatchObject({ type: 'Text', children: ['below'] })
+  for (const over of [{ isWorking: true }, { columns: null }] as const) {
+    const hidden = await shown($, over)
+    expect(hidden?.text).toBeUndefined()
+    expect(hidden?.tree).toMatchObject({ type: 'Text', children: ['below'] })
+  }
+  expect((await shown($, { isDraft: true }))?.text).toBe('캐시 59:59 남음')
+})
+
+test('띠 폭 W 는 터미널 폭 - 2, 엔진 힌트 줄은 띠 아래', async ($, on) => {
+  const w = setup(on)
+  await start($)
+  await step($, w)
+  await w.clock.advance(1000)
+  expect((await shown($, { columns: 120 }))?.tree).toMatchObject({
+    type: 'Box',
+    props: { flexDirection: 'column' },
+    children: [{ type: 'Box', props: { width: 118 } }, { type: 'Text', children: ['below'] }],
+  })
 })
 
 test('50분 경과: 경고 토스트 1회, 이후 중복 없음 (색은 남은 시간 구간대로)', async ($, on) => {
@@ -253,7 +268,7 @@ test('띠가 떠 있는 동안 1초마다 글자가 바뀌어 다시 그려진�
   await start($)
   await step($, w)
   for (const surface of SURFACES) {
-    const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'AbovePrompt', props: band() })
+    const ui = await $.ui.mount(band(surface))
     const before = (await ui.find({ type: 'Text', text: /캐시/ }))?.text
     await w.clock.advance(1000)
     const after = (await ui.find({ type: 'Text', text: /캐시/ }))?.text
@@ -803,15 +818,15 @@ test('session id 가 marker 파일명 모양이 아니면 읽지 않는다', asy
   expect((await shown($))?.text).toBe('캐시 59:11 남음')
 })
 
-// "캐시 59:11 남음"(15칸) · "2번 살림"(+11) · "목숨 3 (HH:MM까지)"(+21). 글자 폭 = bodyColumns - 6
+// "캐시 59:11 남음"(15칸) · "2번 살림"(+11) · "목숨 3 (HH:MM까지)"(+21). 글자 폭 = columns - 6
 for (const [columns, tail] of [
   [53, ` · 2번 살림 · 목숨 3 (${until(3)}까지)`],
   [52, ` · 목숨 3 (${until(3)}까지)`],
   [42, ` · 목숨 3 (${until(3)}까지)`],
   [41, ''],
 ] as const) {
-  test(`폭이 좁으면 살린 횟수 → 목숨 순으로 뺀다 (bodyColumns ${columns})`, async ($, on) => {
-    expect(await bandWith($, on, ALWAYS, '{"wake_count": 2}', { bodyColumns: columns })).toBe(`캐시 59:11 남음${tail}`)
+  test(`폭이 좁으면 살린 횟수 → 목숨 순으로 뺀다 (columns ${columns})`, async ($, on) => {
+    expect(await bandWith($, on, ALWAYS, '{"wake_count": 2}', { columns })).toBe(`캐시 59:11 남음${tail}`)
   })
 }
 
@@ -863,7 +878,7 @@ function countTimers(on: On): { timers: number } {
     c.timers += 1
     return new Promise<never>(() => {})
   })
-  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+  on('ui.render', { component: 'PromptHint' }, ($, e) => {
     const { Text } = $.ui.resolve(e)
     return <Text>below</Text>
   })
@@ -874,7 +889,7 @@ function countTimers(on: On): { timers: number } {
 }
 
 async function mountBand($: Engine) {
-  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: band() })
+  const ui = await $.ui.mount(band('terminal'))
   await ui.unmount()
 }
 
