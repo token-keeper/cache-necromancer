@@ -329,5 +329,5 @@ PR push 직전 또는 직후:
 
 - [PRD](../../../../specs/archive/2026/Q2/2026-05-15-cache-necromancer-v0.3.0-PRD.md)
 - [TECH_SPEC](../../../../specs/archive/2026/Q2/2026-05-15-cache-necromancer-v0.3.0-TECH_SPEC.md)
-- [POC + 진단 doc](../../handoff/2026-05-15-v0.3.0-asyncrewake-fix.md)
-- [v0.2.x 진단 evidence](../../handoff/2026-05-15-v0.2.2-cache-investigation.md)
+- [POC + 진단 doc](../../../../../handoff/archive/2026/Q2/2026-05-15-v0.3.0-asyncrewake-fix.md)
+- [v0.2.x 진단 evidence](../../../../../handoff/archive/2026/Q2/2026-05-15-v0.2.2-cache-investigation.md)
