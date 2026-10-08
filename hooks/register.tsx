@@ -199,7 +199,7 @@ async function applyConfig($: EngineInterface): Promise<void> {
   if (cfg.warnAfterMinutes >= cfg.ttlMinutes) $.ui.toast(TEXT[cfg.language].wakeOff)
 }
 
-// Python(lib/marker.py)이 쓰는 이 세션의 marker 에서 깨우기 횟수·예산·충전/입력 시각만 읽는다. 없음·깨짐·id 모양 밖이면 null
+// Python(lib/marker.py)이 쓰는 이 세션의 marker 에서 깨우기 횟수·예산만 읽는다. 없음·깨짐·id 모양 밖이면 null
 async function loadMarker($: EngineInterface): Promise<CacheNecromancerMarker> {
   try {
     const sid = await $.session.id()
@@ -213,8 +213,6 @@ async function loadMarker($: EngineInterface): Promise<CacheNecromancerMarker> {
       wakeCount: int('wake_count'),
       budgetRemaining: int('set_budget_remaining'),
       budgetTotal: int('set_budget_total'),
-      chargedAtNs: int('set_charged_at_ns'),
-      userActivityAtNs: int('last_user_activity_at_ns'),
     }
   } catch {
     return null
@@ -235,11 +233,9 @@ function extraFor(at: number, cfg: CacheNecromancerConfig, m: CacheNecromancerMa
   const text = TEXT[cfg.language]
   const cycleMs = cfg.warnAfterMinutes * MIN_MS + (cfg.notify ? cfg.graceSeconds * 1000 : 0)
   const until = (n: number) => hhmm(at + n * cycleMs + cfg.ttlMinutes * MIN_MS)
-  // wake_count 는 사용자 입력 때 0 으로 돌아간다. manual 은 예산 없는 알림도 세므로 소비한 예산만큼만 깨운 것이고,
-  // 충전 뒤 사용자가 돌아왔으면(set_budget_total 은 남아 있음) 그 뒤 늘어난 wake_count 는 알림뿐이다
-  const isBackSinceCharge = m.userActivityAtNs > m.chargedAtNs
-  const revived =
-    cfg.arm === 'always' ? m.wakeCount : isBackSinceCharge ? 0 : Math.min(m.wakeCount, m.budgetTotal - m.budgetRemaining)
+  // wake_count 는 사용자 입력 때 0 으로 돌아간다. manual 은 예산 없는 알림도 세므로 소비한 예산만큼만 깨운 것.
+  // 충전 뒤 깨우기가 있은 다음 사용자가 돌아오면 Python(on_user_prompt)이 set_budget_total 도 0 으로 비운다
+  const revived = cfg.arm === 'always' ? m.wakeCount : Math.min(m.wakeCount, m.budgetTotal - m.budgetRemaining)
   const extra = revived > 0 ? [text.revived(revived)] : []
   if (cfg.arm === 'always') {
     const lives = Math.max(0, cfg.maxRefreshCount - m.wakeCount)
@@ -434,8 +430,11 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         <Box backgroundColor={STRIP} marginX={1} paddingX={2} width={W}>
-          <Text color={line.color ?? EXPIRED_COLOR}>{line.text}</Text>
-          {extra.length > 0 ? <Text color={EXTRA_COLOR}>{SEP + extra.join(SEP)}</Text> : null}
+          {/* 한 인라인 흐름으로 그리게 중첩한다 (형제 Text 는 폭이 어긋나면 따로 줄어들고, HTML surface 는 앞 공백을 접을 수 있다) */}
+          <Text>
+            <Text color={line.color ?? EXPIRED_COLOR}>{line.text}</Text>
+            {extra.length > 0 ? <Text color={EXTRA_COLOR}>{SEP + extra.join(SEP)}</Text> : null}
+          </Text>
         </Box>
         {below}
       </Box>

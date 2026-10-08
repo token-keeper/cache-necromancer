@@ -115,16 +115,16 @@ const band = (over: BandOver = {}) => ({
 })
 
 // 두 surface에 띠를 그려 캐시 줄(글자·색)을 읽는다. 두 surface 결과는 같아야 한다.
-// 줄은 카운트다운 Text 와 뒤 정보 Text 로 나뉜다: text 는 이어 붙인 것, color 는 카운트다운 색, extraColor 는 뒤 정보 색
+// 줄은 바깥 Text(전체 글자) 안에 카운트다운 Text·뒤 정보 Text 를 중첩한다: text 는 바깥 글자, color 는 카운트다운 색, extraColor 는 뒤 정보 색
 async function shown($: Engine, over: BandOver = {}) {
   const seen = []
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'AbovePrompt', props: band(over) })
-    const parts = (await ui.findAll({ type: 'Text' })).filter(t => t.text !== 'below')
+    const [outer, countdown, extra] = (await ui.findAll({ type: 'Text' })).filter(t => t.text !== 'below')
     seen.push({
-      text: parts.length > 0 ? parts.map(t => t.text).join('') : undefined,
-      color: parts[0]?.props['color'],
-      extraColor: parts[1]?.props['color'],
+      text: outer?.text,
+      color: countdown?.props['color'],
+      extraColor: extra?.props['color'],
       tree: await ui.drawn(),
     })
     await ui.unmount()
@@ -952,13 +952,14 @@ for (const withStart of [true, false]) {
 }
 
 test('manual: 충전 뒤 사용자가 돌아온 다음의 알림은 살린 횟수로 세지 않는다', async ($, on) => {
-  // /cn:set 3 → 1회 깨움 → 복귀(wake_count·remaining 0, total 3 유지) → 다음 자리비움 알림 1회(wake_count 1)
-  const mark = '{"wake_count": 1, "set_budget_remaining": 0, "set_budget_total": 3, "set_charged_at_ns": 100, "last_user_activity_at_ns": 200}'
+  // /cn:set 3 → 1회 깨움 → 복귀(on_user_prompt: wake_count·remaining·total 0) → 다음 자리비움 알림 1회(wake_count 1)
+  const mark = '{"wake_count": 1, "set_budget_remaining": 0, "set_budget_total": 0, "set_charged_at_ns": 100, "last_user_activity_at_ns": 200}'
   expect(await bandWith($, on, MANUAL, mark)).toBe('캐시 59:11 남음')
 })
 
-test('manual: 충전 뒤 아직 안 돌아왔으면 소비한 예산만큼 살린 횟수', async ($, on) => {
-  const mark = '{"wake_count": 2, "set_budget_remaining": 1, "set_budget_total": 3, "set_charged_at_ns": 200, "last_user_activity_at_ns": 100}'
+test('manual: /cn:set 직후 "하나만 더" 입력 뒤 떠나 깨우면 소비한 예산만큼 살린 횟수', async ($, on) => {
+  // 충전(100) → 깨우기 전 입력(200, 예산·total 유지, wake_count 0) → 자리비움 중 2회 깨움
+  const mark = '{"wake_count": 2, "set_budget_remaining": 1, "set_budget_total": 3, "set_charged_at_ns": 100, "last_user_activity_at_ns": 200}'
   expect(await bandWith($, on, MANUAL, mark)).toBe(`캐시 59:11 남음 · 2번 살림 · 깨우기 1회 남음 (${until(1)}까지)`)
 })
 

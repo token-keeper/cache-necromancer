@@ -13,12 +13,8 @@ export type CacheNecromancerMarker = {
   wakeCount: number
   /** set_budget_remaining */
   budgetRemaining: number
-  /** set_budget_total */
+  /** set_budget_total — 충전량. 충전 뒤 깨우기가 있은 다음 사용자가 돌아오면 Python 이 0 으로 비운다 */
   budgetTotal: number
-  /** set_charged_at_ns — 마지막 /cn:set 충전 시각 */
-  chargedAtNs: number
-  /** last_user_activity_at_ns — 마지막 진짜 사용자 입력 시각 */
-  userActivityAtNs: number
 } | null
 
 /** ~/.cache-necromancer/config.toml 에서 세션 시작 때 읽은 값 */
