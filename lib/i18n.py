@@ -1,7 +1,6 @@
 """다국어 메시지 / 라벨 (ko/en/ja/zh).
 
 용도:
-  - recap 메시지 (Stop hook sync) — `build_recap_message`, `build_set_recap_line`
   - /cn:status 박스 라벨 + arm 한 줄 설명 — `STATUS_LABELS`, `arm_label_i18n`
   - /cn:set 응답 / 상태 문구 — `SET_LABELS`, `set_label`
   - arm 정책 한 줄 설명 — `arm_label_i18n`
@@ -12,84 +11,6 @@ from typing import Literal
 Language = Literal["ko", "en", "ja", "zh"]
 DEFAULT_LANGUAGE: Language = "en"
 SUPPORTED_LANGUAGES: tuple[Language, ...] = ("ko", "en", "ja", "zh")
-
-
-def _format_time(lang: Language, hh: int, mm: int) -> str:
-    if lang == "ko":
-        return f"{hh}시 {mm}분"
-    if lang == "en":
-        return f"{hh:02d}:{mm:02d}"
-    if lang == "ja":
-        return f"{hh}時{mm}分"
-    if lang == "zh":
-        return f"{hh}点{mm}分"
-    return f"{hh:02d}:{mm:02d}"
-
-
-def build_recap_message(lang: Language, hh: int, mm: int) -> str:
-    time_str = _format_time(lang, hh, mm)
-    if lang == "ko":
-        return f"🪦 캐시는 {time_str}에 죽어요."
-    if lang == "en":
-        return f"🪦 Cache dies at {time_str}."
-    if lang == "ja":
-        return f"🪦 キャッシュは{time_str}に死にます。"
-    if lang == "zh":
-        return f"🪦 缓存将在{time_str}死亡。"
-    return f"🪦 Cache dies at {time_str}."
-
-
-def build_set_recap_line(lang: Language, remaining: int, hh: int, mm: int) -> str:
-    """recap 2줄째 — set 예산 잔량 + 최대 생존 시한 (spec §8)."""
-    time_str = _format_time(lang, hh, mm)
-    if lang == "ko":
-        return f"🔥 wake {remaining}회 남음 — 최대 {time_str}까지 생존"
-    if lang == "en":
-        return f"🔥 {remaining} wake(s) left — alive until {time_str} at most"
-    if lang == "ja":
-        return f"🔥 wake 残り{remaining}回 — 最大{time_str}まで生存"
-    if lang == "zh":
-        return f"🔥 剩余 {remaining} 次 wake — 最长存活至{time_str}"
-    return f"🔥 {remaining} wake(s) left — alive until {time_str} at most"
-
-
-def build_skull(n: int) -> str:
-    """소생 횟수 → 해골 문자열. N≤5 는 해골 N개(공백 구분), 초과는 폭 보호로 '☠️×N'."""
-    return " ".join(["☠️"] * n) if n <= 5 else f"☠️×{n}"
-
-
-def build_lives_recap_line(lang: Language, lives: int, hh: int, mm: int) -> str:
-    """recap 2줄째 (always 모드) — 남은 목숨(해골) + 최대 생존 시한.
-
-    lives = max_refresh_count - wake_count. build_skull 로 ≤5 개수 / >5 압축.
-    manual+set 의 build_set_recap_line(🔥) 과 대칭 (always 는 ☠️ 목숨).
-    """
-    skull = build_skull(lives)
-    time_str = _format_time(lang, hh, mm)
-    if lang == "ko":
-        return f"{skull} 최대 {time_str}까지 살림"
-    if lang == "en":
-        return f"{skull} kept alive until {time_str} at most"
-    if lang == "ja":
-        return f"{skull} 最大{time_str}まで延命"
-    if lang == "zh":
-        return f"{skull} 最长存活至{time_str}"
-    return f"{skull} kept alive until {time_str} at most"
-
-
-def build_revived_message(lang: Language, n: int, hh: int, mm: int) -> str:
-    """wake turn recap 1줄째 — 소생 횟수(해골) + 새 만료 시각. 죽음 라인을 대체."""
-    skull = build_skull(n)
-    time_str = _format_time(lang, hh, mm)
-    if lang == "ko":
-        return f"{skull} {n}번째 소생 — {time_str}에 또 죽어요"
-    if lang == "en":
-        return f"{skull} Revived {n}× — dies again at {time_str}"
-    if lang == "ja":
-        return f"{skull} {n}回目の蘇生 — {time_str}にまた死にます"
-    if lang == "zh":
-        return f"{skull} 第{n}次复活 — {time_str}再次死亡"
-    return f"{skull} Revived {n}× — dies again at {time_str}"
 
 
 def normalize_language(value: object) -> Language:

@@ -22,7 +22,7 @@ from scripts.cn_config import (  # noqa: E402
 )
 
 _ARM = next(i for i in SCHEMA if i["key"] == "arm")
-_RECAP = next(i for i in SCHEMA if i["key"] == "recap_style")
+_COUNTDOWN = next(i for i in SCHEMA if i["key"] == "countdown")
 
 
 def test_update_replaces_value_preserving_comment():
@@ -94,12 +94,13 @@ def test_schema_covers_user_keys():
         ("notify", "enabled"),
         ("general", "refresh_interval_minutes"),
         ("general", "max_refresh_count"),
-        ("display", "recap_style"),
         ("display", "countdown"),
         ("general", "language"),
         ("general", "cache_ttl_minutes"),
     }
     assert keys == expected
+    # recap_style 은 0.11.0 부터 효과 없음 (recap 박스 제거) — 메뉴에서 뺀다
+    assert ("display", "recap_style") not in keys
     # grace_seconds 는 advanced — 제외
     assert ("wake", "grace_seconds") not in keys
 
@@ -122,11 +123,11 @@ def test_apply_changes_creates_file_and_writes(tmp_path):
 def test_apply_changes_preserves_user_edits(tmp_path):
     path = tmp_path / "config.toml"
     path.write_text(
-        '[wake]\narm = "manual"\ngrace_seconds = 99\n\n[display]\nrecap_style = "compact"\n'
+        '[wake]\narm = "manual"\ngrace_seconds = 99\n\n[display]\ncountdown = true\n'
     )
-    apply_changes(path, [(_RECAP, "box")])
+    apply_changes(path, [(_COUNTDOWN, "false")])
     text = path.read_text()
-    assert 'recap_style = "box"' in text
+    assert "countdown = false" in text
     assert "grace_seconds = 99" in text  # 사용자 편집 advanced 키 보존
 
 
@@ -217,7 +218,6 @@ def test_main_hint_prints_launch_command(capsys):
 
 def test_apply_changes_adds_countdown_to_old_display_section(tmp_path):
     """countdown 키가 없는 구버전 파일에도 [display] 안에 추가되고 다른 키는 보존."""
-    _COUNTDOWN = next(i for i in SCHEMA if i["key"] == "countdown")
     path = tmp_path / "config.toml"
     path.write_text('[display]\nrecap_style = "box"\n')
     apply_changes(path, [(_COUNTDOWN, "false")])

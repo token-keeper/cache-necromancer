@@ -51,11 +51,6 @@ SCHEMA: list[dict] = [
         "options": [("5", "보수"), ("10", "기본"), ("20", "여유"), ("50", "거의무제한")],
     },
     {
-        "section": "display", "key": "recap_style", "label": "만료 표시 방식",
-        "type": "choice", "default": "compact",
-        "options": [("box", "박스로 크게"), ("compact", "한 줄")],
-    },
-    {
         "section": "display", "key": "countdown",
         "label": "프롬프트 위 캐시 카운트다운 (새 세션부터 적용)",
         "type": "bool", "default": True,
@@ -68,7 +63,7 @@ SCHEMA: list[dict] = [
     },
     {
         "section": "general", "key": "cache_ttl_minutes",
-        "label": "캐시 수명(분) — recap 만료시각 계산 기준",
+        "label": "캐시 수명(분) — 띠 카운트다운·생존 시각 기준",
         "type": "int", "default": 60,
         "options": [("60", "기본(1h)"), ("5", "테스트")],
     },
