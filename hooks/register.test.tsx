@@ -26,6 +26,8 @@ type World = {
   runError?: Error
   submits: string[]
   logs: string[]
+  // $.session.id 가 돌려줄 id (marker 파일명)
+  sid: string
 }
 type Env = Readonly<Record<string, string>>
 type Files = Readonly<Record<string, string>>
@@ -46,6 +48,7 @@ function setup(on: On, env: Env = { HOME: '/home/t' }, files: Files = KO): World
     run: { exitCode: 2, stderr: `${PING}\n` },
     submits: [],
     logs: [],
+    sid: 'sid-1',
   }
   on('agent.list', async () => {
     await w.gate
@@ -71,7 +74,7 @@ function setup(on: On, env: Env = { HOME: '/home/t' }, files: Files = KO): World
     const { Text } = $.ui.resolve(e)
     return <Text>below</Text>
   })
-  on('session.id', () => ({ value: 'sid-1' }))
+  on('session.id', () => ({ value: w.sid }))
   on('process.run', async (_$, e) => {
     w.runs.push({ argv: e.argv, stdin: e.init?.stdin, timeoutMs: e.init?.timeoutMs })
     await w.runGate
@@ -99,7 +102,9 @@ async function step($: Engine, w: World, opts: { agentId?: string; usage?: TurnU
   }
 }
 
-const band = (over: { isWorking?: boolean; hasSurvey?: boolean } = {}) => ({
+type BandOver = { isWorking?: boolean; hasSurvey?: boolean; bodyColumns?: number }
+
+const band = (over: BandOver = {}) => ({
   hasSurvey: false,
   isWorking: false,
   maxRows: 20,
@@ -110,7 +115,7 @@ const band = (over: { isWorking?: boolean; hasSurvey?: boolean } = {}) => ({
 })
 
 // 두 surface에 띠를 그려 캐시 줄(글자·색)을 읽는다. 두 surface 결과는 같아야 한다
-async function shown($: Engine, over: { isWorking?: boolean; hasSurvey?: boolean } = {}) {
+async function shown($: Engine, over: BandOver = {}) {
   const seen = []
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'AbovePrompt', props: band(over) })
@@ -624,29 +629,49 @@ for (const exitCode of [0, 1] as const) {
   })
 }
 
-test('캐시가 이미 만료된 기준 시각(ttl 경과 후 첫 tick)이면 깨우지 않는다', async ($, on) => {
-  const w = setup(on)
-  // 타이머가 걸리기 전에 기준 시각을 잡고 시계를 ttl 너머로 옮긴 뒤 시작 (리로드 직후 오래된 기준 시각) → 첫 tick
-  await step($, w)
-  await w.clock.set(T0 + 60 * MIN)
-  await start($)
-  await w.clock.advance(1000)
-  await wait(20)
-  expect(w.runs).toEqual([])
-  await w.clock.advance(5 * MIN)
-  await wait(20)
-  expect(w.runs).toEqual([])
-})
+// 시계를 직접 쥔다: 주기는 테스트가 하나씩 풀고, 그 사이 시각은 tick 없이 옮긴다 (리로드·잠자기 복귀 뒤 첫 tick 재현)
+function heldClock(on: On) {
+  const c = { now: T0, periods: [] as (() => void)[], runs: 0 }
+  mock.env(on, { HOME: '/home/t' })
+  on('fs.read', () => ({ value: '[general]\nlanguage = "ko"\n' }))
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('session.id', () => ({ value: 'sid-1' }))
+  on('agent.list', () => ({ value: [] }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('clock.now', () => ({ value: c.now }))
+  on('clock.every', () => new Promise(resolve => c.periods.push(() => resolve({ value: undefined }))))
+  on('process.run', () => {
+    c.runs += 1
+    return { value: { stdout: '', stderr: '', exitCode: 0, isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('turn.step', async function* (_$, e) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as const, usage: CACHED }
+  })
+  const fire = async () => {
+    c.periods.shift()?.()
+    await wait(30)
+  }
+  return { c, fire }
+}
 
-test('첫 tick 이 정확히 ttl 이면(경계) 깨우지 않는다', async ($, on) => {
-  const w = setup(on)
-  await step($, w)
-  await w.clock.set(T0 + 60 * MIN - 1000)
-  await start($)
-  await w.clock.advance(1000)
-  await wait(20)
-  expect(w.runs).toEqual([])
-})
+for (const [name, gap, runs] of [
+  ['캐시가 이미 만료된 기준 시각(ttl 경과 후 첫 tick)이면 깨우지 않는다', 61 * MIN, 0],
+  ['첫 tick 이 정확히 ttl 이면(경계) 깨우지 않는다', 60 * MIN, 0],
+  ['첫 tick 이 깨우기 창(경고 ~ 만료) 안이면 깨운다 (대조군)', 55 * MIN, 1],
+] as const) {
+  test(name, async ($, on) => {
+    const { c, fire } = heldClock(on)
+    await start($)
+    const s = $.turn.step({ turnId: 't', index: 0, model: 'm', messageCount: 1 })
+    for await (const _ of s) {
+      // 청크 없음
+    }
+    c.now = T0 + gap
+    await fire()
+    await fire()
+    expect(c.runs).toBe(runs)
+  })
+}
 
 test('process.run 이 실패해도 tick·띠는 계속 돌고 디버그 로그는 1회만 남긴다', async ($, on) => {
   const w = setup(on)
@@ -706,4 +731,176 @@ test('refresh_interval_minutes ≥ cache_ttl_minutes 면 세션 시작 때 "깨�
   await wait(20)
   expect(w.runs).toEqual([])
   expect(w.toasts).toEqual(['캐시 깨우기 꺼짐 — refresh_interval_minutes 가 cache_ttl_minutes 이상', EXPIRED])
+})
+
+// ── 띠 뒤 정보: 살린 횟수·목숨·예산 (Python 이 쓰는 marker 를 읽음) ──
+const MARKER = '/home/t/.cache-necromancer/marker/sid-1.json'
+// 기대 시각은 런타임 로컬 시각대로 계산한다 (mod 와 같은 Date 기준)
+const hhmm = (ms: number) => {
+  const d = new Date(ms)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+// 기준 시각(step 시점 T0) + n × 50분 + 60분
+const until = (n: number) => hhmm(T0 + (n * 50 + 60) * MIN)
+const ALWAYS = '[general]\nlanguage = "ko"\nmax_refresh_count = 5\n[wake]\narm = "always"\n'
+const MANUAL = '[general]\nlanguage = "ko"\n[wake]\narm = "manual"\n'
+
+async function bandWith($: Engine, on: On, toml: string, mark: string | undefined, over: BandOver = {}) {
+  const w = setup(on, undefined, { [CONFIG]: toml, ...(mark === undefined ? {} : { [MARKER]: mark }) })
+  await start($)
+  await step($, w)
+  await w.clock.advance(49_000)
+  return (await shown($, over))?.text
+}
+
+for (const [name, toml, mark, tail] of [
+  ['always: 목숨 = max_refresh_count - wake_count', ALWAYS, '{"wake_count": 0}', ` · 목숨 5 (${until(5)}까지)`],
+  ['always 깨운 직후: 살린 횟수 + 줄어든 목숨', ALWAYS, '{"wake_count": 2}', ` · 2번 살림 · 목숨 3 (${until(3)}까지)`],
+  ['always 목숨 0', ALWAYS, '{"wake_count": 7}', ` · 7번 살림 · 목숨 0 (${until(0)}까지)`],
+  ['manual 예산 있음', MANUAL, '{"set_budget_remaining": 3, "set_budget_total": 3}', ` · 깨우기 3회 남음 (${until(3)}까지)`],
+  ['manual 예산 소비 중', MANUAL, '{"wake_count": 1, "set_budget_remaining": 2, "set_budget_total": 3}', ` · 1번 살림 · 깨우기 2회 남음 (${until(2)}까지)`],
+  ['manual 예산 없음(알림만 센 wake_count 는 살린 횟수 아님)', MANUAL, '{"wake_count": 2}', ''],
+  ['legacy [general] mode = "hybrid" 는 always', '[general]\nlanguage = "ko"\nmode = "hybrid"\nmax_refresh_count = 5\n', '{}', ` · 목숨 5 (${until(5)}까지)`],
+  ['[wake] arm 이 legacy mode 보다 우선', '[general]\nlanguage = "ko"\nmode = "auto"\n[wake]\narm = "manual"\n', '{}', ''],
+  ['marker 없음', ALWAYS, undefined, ''],
+  ['marker 깨짐', ALWAYS, '{"wake_count": ', ''],
+  ['marker 가 객체 아님', ALWAYS, '[1, 2]', ''],
+] as const) {
+  test(`띠 뒤 정보 — ${name}`, async ($, on) => {
+    expect(await bandWith($, on, toml, mark)).toBe(`캐시 59:11 남음${tail}`)
+  })
+}
+
+test('기본 설정(en·manual)·예산 있음 문구', async ($, on) => {
+  expect(await bandWith($, on, '', '{"wake_count": 1, "set_budget_remaining": 1, "set_budget_total": 2}')).toBe(
+    `Cache 59:11 left · Revived 1× · Wakes 1 left (until ${until(1)})`,
+  )
+})
+
+for (const [lang, line] of [
+  ['ja', `キャッシュ残り 59:11 · 2回蘇生 · 残機 3 (${until(3)}まで)`],
+  ['zh', `缓存剩余 59:11 · 已复活 2 次 · 剩余 3 命 (至 ${until(3)})`],
+] as const) {
+  test(`띠 뒤 정보 문구 — ${lang}`, async ($, on) => {
+    const toml = `[general]\nlanguage = "${lang}"\nmax_refresh_count = 5\n[wake]\narm = "always"\n`
+    expect(await bandWith($, on, toml, '{"wake_count": 2}')).toBe(line)
+  })
+}
+
+test('session id 가 marker 파일명 모양이 아니면 읽지 않는다', async ($, on) => {
+  const w = setup(on, undefined, { [CONFIG]: ALWAYS, '/home/t/.cache-necromancer/marker/../x.json': '{}' })
+  w.sid = '../x'
+  await start($)
+  await step($, w)
+  await w.clock.advance(49_000)
+  expect((await shown($))?.text).toBe('캐시 59:11 남음')
+})
+
+// "캐시 59:11 남음"(15칸) · "2번 살림"(+11) · "목숨 3 (HH:MM까지)"(+21). 글자 폭 = bodyColumns - 6
+for (const [columns, tail] of [
+  [53, ` · 2번 살림 · 목숨 3 (${until(3)}까지)`],
+  [52, ` · 목숨 3 (${until(3)}까지)`],
+  [42, ` · 목숨 3 (${until(3)}까지)`],
+  [41, ''],
+] as const) {
+  test(`폭이 좁으면 살린 횟수 → 목숨 순으로 뺀다 (bodyColumns ${columns})`, async ($, on) => {
+    expect(await bandWith($, on, ALWAYS, '{"wake_count": 2}', { bodyColumns: columns })).toBe(`캐시 59:11 남음${tail}`)
+  })
+}
+
+test('만료되면 뒤 정보를 붙이지 않는다', async ($, on) => {
+  const w = setup(on, undefined, { [CONFIG]: ALWAYS, [MARKER]: '{"wake_count": 0}' })
+  await start($)
+  await step($, w)
+  await w.clock.advance(60 * MIN)
+  expect((await shown($))?.text).toBe('캐시 만료')
+})
+
+test('marker 가 바뀌면 5초 안에 띠에 반영한다', async ($, on) => {
+  const files: Record<string, string> = { [CONFIG]: ALWAYS, [MARKER]: '{"wake_count": 0}' }
+  const w = setup(on, undefined, files)
+  await start($)
+  await step($, w)
+  await w.clock.advance(1000)
+  expect((await shown($))?.text).toBe(`캐시 59:59 남음 · 목숨 5 (${until(5)}까지)`)
+  files[MARKER] = '{"wake_count": 1}'
+  await w.clock.advance(5000)
+  expect((await shown($))?.text).toBe(`캐시 59:54 남음 · 1번 살림 · 목숨 4 (${until(4)}까지)`)
+})
+
+test('깨우기를 마치면 다음 tick 에 marker 를 바로 다시 읽는다', async ($, on) => {
+  const files: Record<string, string> = { [CONFIG]: ALWAYS, [MARKER]: '{"wake_count": 0}' }
+  const w = setup(on, undefined, files)
+  w.run = { exitCode: 0, stderr: '' }
+  await start($)
+  await step($, w)
+  await w.clock.advance(50 * MIN - 1000)
+  // refresh.py 가 marker 를 바꾼 것처럼
+  files[MARKER] = '{"wake_count": 1}'
+  await w.clock.advance(1000)
+  await wait(20)
+  expect(w.runs).toHaveLength(1)
+  await w.clock.advance(1000)
+  expect((await shown($))?.text).toBe(`캐시 09:59 남음 · 1번 살림 · 목숨 4 (${until(4)}까지)`)
+})
+
+// ── 리로드: session.start 없이 render·turn.step 만 와도 타이머가 걸린다 (모듈 로드당 1개) ──
+function countTimers(on: On): { timers: number } {
+  const c = { timers: 0 }
+  mock.env(on, { HOME: '/home/t' })
+  on('fs.read', () => ({ value: '[general]\nlanguage = "ko"\n' }))
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('clock.now', () => ({ value: T0 }))
+  // 첫 주기를 풀지 않아 타이머 1개 = 호출 1번
+  on('clock.every', () => {
+    c.timers += 1
+    return new Promise<never>(() => {})
+  })
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>below</Text>
+  })
+  on('turn.step', async function* (_$, e) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as const, usage: CACHED }
+  })
+  return c
+}
+
+async function mountBand($: Engine) {
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: band() })
+  await ui.unmount()
+}
+
+async function stepOnce($: Engine) {
+  for await (const _ of $.turn.step({ turnId: 't', index: 0, model: 'm', messageCount: 1 })) {
+    // 청크 없음
+  }
+}
+
+test('리로드 뒤 띠만 그려져도(render) 타이머를 1개 걸고, 다시 그려도 늘지 않는다', async ($, on) => {
+  const c = countTimers(on)
+  await mountBand($)
+  await mountBand($)
+  expect(c.timers).toBe(1)
+})
+
+test('리로드 뒤 요청(turn.step)만 와도 타이머를 1개 걸고, render·session.start 가 더 와도 늘지 않는다', async ($, on) => {
+  const c = countTimers(on)
+  await stepOnce($)
+  await stepOnce($)
+  expect(c.timers).toBe(1)
+  await mountBand($)
+  await start($)
+  expect(c.timers).toBe(1)
+})
+
+test('session.start 없이 시작해도 첫 tick 이 설정을 읽어 띠·깨우기가 동작한다', async ($, on) => {
+  const w = setup(on)
+  await step($, w)
+  await w.clock.advance(49_000)
+  expect((await shown($))?.text).toBe('캐시 59:11 남음')
+  await w.clock.advance(50 * MIN - 49_000)
+  await wait(20)
+  expect(w.runs).toHaveLength(1)
+  expect(w.submits).toEqual([PING])
 })
