@@ -16,4 +16,4 @@ arm = "manual"                        # manual = /cn:set 시에만 소생 / alwa
 grace_seconds = 60                    # 알림 후 wake 까지 대기 (notify.enabled=true 일 때)
 
 [display]
-countdown = true                      # 프롬프트 위 띠에 캐시 남은 시간 카운트다운 (Claude Code v2.1.286+)
+countdown = true                      # 입력창 아래 띠에 캐시 남은 시간 카운트다운 (Claude Code v2.1.286+)

@@ -52,7 +52,7 @@ SCHEMA: list[dict] = [
     },
     {
         "section": "display", "key": "countdown",
-        "label": "프롬프트 위 캐시 카운트다운 (새 세션부터 적용)",
+        "label": "입력창 아래 캐시 카운트다운 (새 세션부터 적용)",
         "type": "bool", "default": True,
         "options": [("true", "표시"), ("false", "숨김")],
     },

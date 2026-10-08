@@ -2,7 +2,7 @@
 """Stop hook 의 sync 본체 — turn 종료 시각을 marker.latest_fire 에 기록한다.
 
 v0.11.0: 채팅에 띄우던 recap 박스(만료 시각·목숨·예산)는 없앴다. 같은 정보는
-mod(hooks/register.tsx)가 프롬프트 위 카운트다운 띠 뒤에 붙인다. 출력 없음.
+mod(hooks/register.tsx)가 입력창 아래 카운트다운 띠 뒤에 붙인다. 출력 없음.
 첫 Stop 에 config.toml 이 없으면 기본 템플릿을 만든다 (README "첫 hook fire 시 자동 생성").
 
 PRD 불변: 어떤 실패도 chat 동작 차단 X (silent fail).
