@@ -13,7 +13,7 @@
 
 **Tech Stack:** Python 3.11+, pytest, freezegun, uv
 
-**Spec:** `docs/superpowers/specs/active/2026-05-23-cache-recap-message-design.md`
+**Spec:** `docs/superpowers/specs/completed/2026/Q2/2026-05-23-cache-recap-message-design.md`
 
 **완료 task (이전 plan 에서):**
 - Task 1: hooks.json sync hook 등록 ✅ (commit `91b24c9`)
@@ -559,7 +559,7 @@ gh pr create --title "feat(v0.3.12): cache recap message (local time, 4 lang i18
 - refresh.py PING 도 local time + KST suffix 제거
 - 신규: lib/i18n.py + scripts/on_recap.py + 테스트
 
-Spec: docs/superpowers/specs/active/2026-05-23-cache-recap-message-design.md
+Spec: docs/superpowers/specs/completed/2026/Q2/2026-05-23-cache-recap-message-design.md
 
 ## Test plan
 

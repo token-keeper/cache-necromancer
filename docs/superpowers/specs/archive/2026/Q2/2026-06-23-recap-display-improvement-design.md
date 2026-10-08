@@ -1,3 +1,5 @@
+> 상태: 대체됨 — 현재 구조는 docs/ARCHITECTURE.md (v0.11.0)
+
 # Recap 표시 개선 — 박스 모드 + 소생 해골 (v0.6.0)
 
 - 상태: active

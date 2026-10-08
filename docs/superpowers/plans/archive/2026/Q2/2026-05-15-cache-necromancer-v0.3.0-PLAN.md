@@ -2,7 +2,7 @@
 
 > **Status**: Draft (작성 2026-05-16)
 > **Author**: brody424
-> **Related**: [PRD](../specs/2026-05-15-cache-necromancer-v0.3.0-PRD.md), [TECH_SPEC](../specs/2026-05-15-cache-necromancer-v0.3.0-TECH_SPEC.md)
+> **Related**: [PRD](../../../../specs/archive/2026/Q2/2026-05-15-cache-necromancer-v0.3.0-PRD.md), [TECH_SPEC](../../../../specs/archive/2026/Q2/2026-05-15-cache-necromancer-v0.3.0-TECH_SPEC.md)
 > **PR strategy**: 단일 PR (docs + 구현 + README), 10 commits, 사용자 결정 (300줄 룰 deviate)
 
 ## 1. 한 줄 요약
@@ -27,8 +27,8 @@ v0.2.x daemon-based architecture 를 v0.3.0 asyncRewake hook architecture 로 �
 ### Commit 1 — `docs(v0.3.0): PRD + TECH_SPEC + handoff 문서 추가`
 
 **파일**:
-- `docs/superpowers/specs/active/2026-05-15-cache-necromancer-v0.3.0-PRD.md`
-- `docs/superpowers/specs/active/2026-05-15-cache-necromancer-v0.3.0-TECH_SPEC.md`
+- `docs/superpowers/specs/archive/2026/Q2/2026-05-15-cache-necromancer-v0.3.0-PRD.md`
+- `docs/superpowers/specs/archive/2026/Q2/2026-05-15-cache-necromancer-v0.3.0-TECH_SPEC.md`
 - `docs/superpowers/plans/archive/2026/Q2/2026-05-15-cache-necromancer-v0.3.0-PLAN.md` (이 파일)
 - `docs/handoff/archive/2026/Q2/2026-05-15-v0.2.2-cache-investigation.md`
 - `docs/handoff/archive/2026/Q2/2026-05-15-v0.3.0-asyncrewake-fix.md`
@@ -327,7 +327,7 @@ PR push 직전 또는 직후:
 
 ## 8. References
 
-- [PRD](../specs/2026-05-15-cache-necromancer-v0.3.0-PRD.md)
-- [TECH_SPEC](../specs/2026-05-15-cache-necromancer-v0.3.0-TECH_SPEC.md)
-- [POC + 진단 doc](../../handoff/2026-05-15-v0.3.0-asyncrewake-fix.md)
-- [v0.2.x 진단 evidence](../../handoff/2026-05-15-v0.2.2-cache-investigation.md)
+- [PRD](../../../../specs/archive/2026/Q2/2026-05-15-cache-necromancer-v0.3.0-PRD.md)
+- [TECH_SPEC](../../../../specs/archive/2026/Q2/2026-05-15-cache-necromancer-v0.3.0-TECH_SPEC.md)
+- [POC + 진단 doc](../../../../../handoff/archive/2026/Q2/2026-05-15-v0.3.0-asyncrewake-fix.md)
+- [v0.2.x 진단 evidence](../../../../../handoff/archive/2026/Q2/2026-05-15-v0.2.2-cache-investigation.md)

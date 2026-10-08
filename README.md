@@ -134,6 +134,8 @@ v0.11.0 부터 Stop 때 채팅에 뜨던 recap 박스(만료 시각·목숨·예
 
 ## 어떻게 동작하는가
 
+구성요소·상태 저장소·알려진 제약은 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 에 정리했다.
+
 mod(`hooks/register.tsx`)가 메인 대화에서 캐시를 마지막으로 읽거나 쓴 요청의 시작 시각부터 1초 tick 으로 센다 (띠와 같은 기준 시각).
 
 `refresh_interval_minutes` 가 지나면 `scripts/refresh.py --now` 를 1회 실행한다. 마지막 Stop 뒤 user input 이 없고(turn 진행 중이면 건너뜀) **예산이 있으면** 알림 → `grace_seconds` 대기 → 재확인 후 ping 을 내고, mod 가 그 ping 을 프롬프트로 제출해 chat 세션이 **자기 자신을 wake** — 짧은 ping turn → 모델 `ok` 1 token. 예산이 없으면 알림만 띄운다.

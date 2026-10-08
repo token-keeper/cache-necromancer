@@ -12,6 +12,11 @@
 
 ### 작업 순서
 
+0. 버전을 올린다 — 네 곳을 같은 값으로:
+   - `.claude-plugin/plugin.json` 의 `version`
+   - `hooks/hooks.json` 의 `description` 앞 `vX.Y.Z`
+   - `CHANGELOG.md` 새 항목
+   - `pyproject.toml` 의 `version`
 1. 이 repo 의 `main` 에 commit + push (`origin/main`)
 2. marketplace repo (`token-keeper/plugins`) clone 위치로 이동
 3. submodule 갱신 + commit + push:
@@ -49,14 +54,15 @@ marketplace submodule pointer 를 bump 해도 **사용자 머신에서 실제로
 - **활성 버전의 진짜 소스는 `~/.claude/plugins/installed_plugins.json`** 의 `installPath` / `version`. `/plugin` UI 가 보여주는 "Version: X" 는 marketplace catalog 의 최신 버전일 뿐, 활성 버전과 다를 수 있다.
 - hook 의 `${CLAUDE_PLUGIN_ROOT}` 는 **세션 시작 시점에 활성 install 경로로 고정**된다. `/reload-plugins` 로는 이미 떠있는 세션의 경로가 안 바뀐다 → 재시작 필수.
 - 따라서 새 버전을 사용자 머신에 실제 반영하려면 **`/plugin update` → Claude Code 재시작** 이 둘 다 필요하다.
+- mod(`hooks/register.tsx`)는 다르다: v0.11.0 부터 `/reload-plugins` 로 다시 로드되면 첫 tick(`ui.render`·`turn.step`) 에 타이머를 걸고 설정을 읽는다. 다만 settings 훅(`hooks.json` 의 Python 훅) 경로는 위대로 재시작해야 바뀐다.
 
 ### 진단 시 확인 명령
 
 ```bash
 # 활성 버전 (진짜 소스)
 python3 -c "import json; d=json.load(open('$HOME/.claude/plugins/installed_plugins.json')); print([v for k,v in d['plugins'].items() if 'cache-necromancer' in k])"
-# 실제 실행 중인 refresh.py 버전 분포
-ps -ef | grep 'cache-necromancer.*refresh.py' | grep -v grep | grep -oE 'cache-necromancer/[0-9.]+/scripts' | sort | uniq -c
+# 깨우기 판정 기록 (오늘 로그)
+grep '\[refresh\]' ~/.cache-necromancer/cn.log.$(date +%F)
 ```
 
-이 둘이 최신 버전으로 일치해야 반영 완료. 옛날 버전 잔존 process 는 `pkill -f "cache-necromancer/<옛버전>/scripts/refresh.py"` 로 정리 (v0.4.2+ 는 새 fire 시 자동 정리).
+v0.10.0 부터 깨우기는 mod 가 `refresh.py --now` 를 짧게 실행하는 방식이라 상주하는 refresh.py 프로세스가 없다 (예전 Stop 훅 asyncRewake 대기 프로세스는 사라졌다). 깨우기가 안 될 때는 활성 버전을 확인한 뒤 `~/.cache-necromancer/cn.log.*` 의 `[refresh]` 줄(wake·notify·skip 사유)로 판정 결과를 본다. 구조는 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).

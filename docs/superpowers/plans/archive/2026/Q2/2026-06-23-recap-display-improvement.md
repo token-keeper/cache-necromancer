@@ -1,3 +1,5 @@
+> 상태: 대체됨 — 현재 구조는 docs/ARCHITECTURE.md (v0.11.0)
+
 # Recap 표시 개선 (박스 모드 + 소생 해골) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
