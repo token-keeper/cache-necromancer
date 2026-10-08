@@ -6,7 +6,7 @@
 
 | 구성요소 | 위치 | 하는 일 |
 |---|---|---|
-| mod | `hooks/register.tsx` (`hooks.json` 의 `modules`) | 프롬프트 위 띠(카운트다운·10분 구간 6단계 색·뒤 정보: 살린 횟수·목숨·예산과 생존 시각), 경고·만료 토스트, 1초 tick 의 깨우기 타이머 |
+| mod | `hooks/register.tsx` (`hooks.json` 의 `modules`) | 입력창 아래 띠(`PromptHint` 자리, 엔진 힌트 줄 위 — 카운트다운·10분 구간 6단계 색·뒤 정보: 살린 횟수·목숨·예산과 생존 시각), 경고·만료 토스트, 1초 tick 의 깨우기 타이머 |
 | Stop 훅 | `scripts/on_recap.py` | `marker.latest_fire`(마지막 Stop 시각) 기록, config.toml 없으면 기본 템플릿 생성. 출력 없음 |
 | UserPromptSubmit 훅 | `scripts/on_user_prompt.py` | 진짜 사용자 입력이면 `wake_count` 0·`last_user_activity_at_ns` 갱신, 복귀 판정 시 `/cn:set` 예산 소멸. ping·`<task-notification>`·`/cn:*` 는 활동으로 안 셈 |
 | SessionStart 훅 (`clear\|compact`) | `scripts/on_session_start.py` | `suppressed_at_ns` 기록 — 다음 진짜 입력 전까지 깨우기·알림 억제 |
