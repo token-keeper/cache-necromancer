@@ -1,8 +1,11 @@
 /** epoch ms, 없으면 null */
 export type CacheNecromancerTime = number | null
 
-/** 띠에 그릴 캐시 줄 (tick이 계산, render는 읽기만). extra 는 카운트다운 뒤에 ' · ' 로 붙는 정보 (폭이 좁으면 앞에서부터 생략) */
-export type CacheNecromancerLabel = { text: string; tone: 'normal' | 'warning' | 'error'; extra: string[] } | null
+/**
+ * 띠에 그릴 캐시 줄 (tick이 계산, render는 읽기만). tone 은 토스트 판정, color 는 남은 시간 10분 구간 글자색,
+ * extra 는 카운트다운 뒤에 ' · ' 로 붙는 정보 (폭이 좁으면 앞에서부터 생략)
+ */
+export type CacheNecromancerLabel = { text: string; tone: 'normal' | 'warning' | 'error'; color: string; extra: string[] } | null
 
 /** Python 이 쓰는 이 세션의 marker 파일에서 읽은 값. 없음·깨짐이면 null */
 export type CacheNecromancerMarker = {
@@ -12,6 +15,10 @@ export type CacheNecromancerMarker = {
   budgetRemaining: number
   /** set_budget_total */
   budgetTotal: number
+  /** set_charged_at_ns — 마지막 /cn:set 충전 시각 */
+  chargedAtNs: number
+  /** last_user_activity_at_ns — 마지막 진짜 사용자 입력 시각 */
+  userActivityAtNs: number
 } | null
 
 /** ~/.cache-necromancer/config.toml 에서 세션 시작 때 읽은 값 */
@@ -28,6 +35,10 @@ export type CacheNecromancerConfig = {
   arm: 'manual' | 'always'
   /** [general] max_refresh_count — always 의 목숨 상한 */
   maxRefreshCount: number
+  /** [notify] enabled (없으면 legacy 매핑) — 켜지면 깨우기 전에 grace 만큼 기다린다 */
+  notify: boolean
+  /** [wake] grace_seconds (없으면 legacy [refresh] hybrid_wait_seconds) */
+  graceSeconds: number
 }
 
 export type CacheNecromancerLanguage = 'ko' | 'en' | 'ja' | 'zh'
@@ -44,9 +55,9 @@ declare module 'claude-code' {
       /** refresh.py --now 를 실행한 기준 시각 (기준 시각당 1회) */
       wokeFor: CacheNecromancerTime
       /** 지금 띠에 그릴 줄 */
-      label: CacheNecromancerLabel
+      label: Shaped<CacheNecromancerLabel>
       /** 세션 시작 때 읽은 설정 */
-      config: CacheNecromancerConfig
+      config: Shaped<CacheNecromancerConfig>
       /** 마지막으로 읽은 marker (띠 뒤 정보용) */
       marker: CacheNecromancerMarker
       /** marker 를 마지막으로 읽은 시각 (null = 다음 tick 에 다시 읽음) */

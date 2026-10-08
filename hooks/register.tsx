@@ -16,14 +16,18 @@ const DEFAULT_CONFIG: CacheNecromancerConfig = {
   language: 'en',
   arm: 'manual',
   maxRefreshCount: 10,
+  notify: true,
+  graceSeconds: 60,
 }
 
 const base = atom({ plugin: 'cache-necromancer', key: 'base' } as const, null as CacheNecromancerTime)
 const warnedFor = atom({ plugin: 'cache-necromancer', key: 'warnedFor' } as const, null as CacheNecromancerTime)
 const expiredFor = atom({ plugin: 'cache-necromancer', key: 'expiredFor' } as const, null as CacheNecromancerTime)
 const wokeFor = atom({ plugin: 'cache-necromancer', key: 'wokeFor' } as const, null as CacheNecromancerTime)
-const label = atom({ plugin: 'cache-necromancer', key: 'label' } as const, null as CacheNecromancerLabel)
-const config = atom({ plugin: 'cache-necromancer', key: 'config' } as const, DEFAULT_CONFIG)
+// label·config 는 v0.11.0 에서 모양이 바뀌었다(extra·color / arm·notify 등). shape 태그가 다르면 리로드 전(옛 코드)이 남긴 값은
+// 없는 것으로 읽혀 초기값에서 시작한다. 모양을 다시 바꾸면 태그도 올린다
+const label = atom({ plugin: 'cache-necromancer', key: 'label' } as const, null as CacheNecromancerLabel, { shape: 'v0.11' })
+const config = atom({ plugin: 'cache-necromancer', key: 'config' } as const, DEFAULT_CONFIG, { shape: 'v0.11' })
 const marker = atom({ plugin: 'cache-necromancer', key: 'marker' } as const, null as CacheNecromancerMarker)
 const markerReadAt = atom({ plugin: 'cache-necromancer', key: 'markerReadAt' } as const, null as CacheNecromancerTime)
 const tickErrorLogged = atom({ plugin: 'cache-necromancer', key: 'tickErrorLogged' } as const, false)
@@ -32,9 +36,14 @@ const wakeErrorLogged = atom({ plugin: 'cache-necromancer', key: 'wakeErrorLogge
 const MIN_MS = 60 * 1000
 // scripts/refresh.py 의 PING_PREFIX 와 같다 (on_user_prompt.py 도 이 문자열로 ping 을 거른다)
 const PING_PREFIX = '[cn:keepalive'
-// 띠 배경과 글자색. 배경 #1f2d3d 대비: 기본 7.9:1, 경고 7.9:1, 만료 5.6:1 (모두 4.5:1 이상)
+// 띠 배경과 카운트다운 글자색. 남은 시간 10분 구간마다 한 색 (60~50분 회청 → 파랑 → 초록 → 노랑 → 주황 → 10~0분·만료 빨강).
+// 배경 #1f2d3d 대비(WCAG): 7.92 · 7.72 · 9.11 · 9.40 · 7.93 · 5.58 :1 — 모두 4.5:1 이상.
+// 경계는 표시 초 기준으로 위 구간에 넣는다 (50:00 은 회청, 49:59 부터 파랑). ttl 이 60분이 아니어도 남은 분으로만 정한다
 const STRIP = '#1f2d3d'
-const TONE_COLOR = { normal: '#b8c4d4', warning: '#ffb454', error: '#ff7b7b' } as const
+const LEVEL_COLOR = ['#ff7b7b', '#ffb454', '#f2d16b', '#8fe3a1', '#8ec5ff', '#b8c4d4'] as const
+const EXPIRED_COLOR = '#ff7b7b'
+// 뒤 정보(살린 횟수·목숨·예산)는 남은 시간과 무관해 회청 그대로 둔다 (7.92:1)
+const EXTRA_COLOR = '#b8c4d4'
 // 띠가 숨는 백그라운드 에이전트 상태 (idle·종료는 사용자 입력을 막지 않으므로 제외)
 const BUSY_AGENT = new Set(['pending', 'running', 'waiting'])
 // 띠 뒤 정보(살린 횟수·목숨·예산)의 구분자와, marker 파일을 다시 읽는 간격
@@ -109,12 +118,17 @@ const pad = (n: number) => String(n).padStart(2, '0')
 // Python 쪽 lib/config.py 와 같은 파일에서 필요한 키만 읽는 최소 TOML 파서.
 // 분은 1 이상 정수, max_refresh_count 는 0 이상 정수, countdown 은 불리언, language 는 4종 문자열만 받고,
 // 그 밖의 값·다른 섹션의 같은 키는 무시해 기본값을 둔다.
-// arm 은 [wake] arm 이 있으면 그것(always 아니면 manual), 없으면 legacy [general] mode (hybrid·auto → always)
+// arm·notify·grace 는 lib/config.py 의 _resolve_axes 와 같게: 신 키([wake] arm·grace_seconds, [notify] enabled)가 우선,
+// 없으면 legacy([general] mode: hybrid·auto → always, auto 는 알림 없음 / [notify] system_notification / [refresh] hybrid_wait_seconds)
 function parseConfig(text: string): CacheNecromancerConfig {
   const cfg = { ...DEFAULT_CONFIG }
   let section = ''
   let arm: string | undefined
   let mode: string | undefined
+  let enabled: boolean | undefined
+  let systemNotification: boolean | undefined
+  let grace: number | undefined
+  let legacyGrace: number | undefined
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.replace(/#.*/, '').trim()
     const header = /^\[\s*([A-Za-z0-9_.-]+)\s*\]$/.exec(line)
@@ -142,8 +156,19 @@ function parseConfig(text: string): CacheNecromancerConfig {
     const str = /^(["'])(.*)\1$/.exec(value)?.[2]
     if (section === 'wake' && key === 'arm') arm = str ?? value
     if (section === 'general' && key === 'mode') mode = str
+    const bool = value === 'true' || value === 'false' ? value === 'true' : undefined
+    if (section === 'notify' && key === 'enabled') enabled = bool
+    if (section === 'notify' && key === 'system_notification') systemNotification = bool
+    const seconds = /^\d+$/.test(value) ? Number(value) : undefined
+    if (section === 'wake' && key === 'grace_seconds') grace = seconds
+    if (section === 'refresh' && key === 'hybrid_wait_seconds') legacyGrace = seconds
   }
+  const isLegacyMode = mode === 'hybrid' || mode === 'auto' || mode === 'notify'
   cfg.arm = (arm ?? (mode === 'hybrid' || mode === 'auto' ? 'always' : 'manual')) === 'always' ? 'always' : 'manual'
+  // 구 auto 는 system_notification 과 무관하게 알림 없음
+  const legacyEnabled = mode === 'auto' ? false : (systemNotification ?? (isLegacyMode ? true : undefined))
+  cfg.notify = enabled ?? legacyEnabled ?? true
+  cfg.graceSeconds = grace ?? legacyGrace ?? 60
   return cfg
 }
 
@@ -174,7 +199,7 @@ async function applyConfig($: EngineInterface): Promise<void> {
   if (cfg.warnAfterMinutes >= cfg.ttlMinutes) $.ui.toast(TEXT[cfg.language].wakeOff)
 }
 
-// Python(lib/marker.py)이 쓰는 이 세션의 marker 에서 깨우기 횟수·예산만 읽는다. 없음·깨짐·id 모양 밖이면 null
+// Python(lib/marker.py)이 쓰는 이 세션의 marker 에서 깨우기 횟수·예산·충전/입력 시각만 읽는다. 없음·깨짐·id 모양 밖이면 null
 async function loadMarker($: EngineInterface): Promise<CacheNecromancerMarker> {
   try {
     const sid = await $.session.id()
@@ -184,7 +209,13 @@ async function loadMarker($: EngineInterface): Promise<CacheNecromancerMarker> {
     if (typeof data !== 'object' || data === null || Array.isArray(data)) return null
     const fields = data as Record<string, unknown>
     const int = (key: string) => (Number.isInteger(fields[key]) ? (fields[key] as number) : 0)
-    return { wakeCount: int('wake_count'), budgetRemaining: int('set_budget_remaining'), budgetTotal: int('set_budget_total') }
+    return {
+      wakeCount: int('wake_count'),
+      budgetRemaining: int('set_budget_remaining'),
+      budgetTotal: int('set_budget_total'),
+      chargedAtNs: int('set_charged_at_ns'),
+      userActivityAtNs: int('last_user_activity_at_ns'),
+    }
   } catch {
     return null
   }
@@ -197,13 +228,18 @@ function hhmm(ms: number): string {
 }
 
 // 띠 카운트다운 뒤에 붙일 것: 마지막 사용자 입력 뒤 살린 횟수, 그리고 always 면 남은 목숨, manual 이면 남은 예산.
-// 생존 시각 = 기준 시각 + 남은 횟수 × refresh_interval + ttl (Python on_recap 의 계산을 기준 시각으로 옮김)
+// 생존 시각 = 기준 시각 + 남은 횟수 × (refresh_interval + 알림 켜짐이면 grace) + ttl.
+// 깨우기마다 refresh.py 가 알림 뒤 grace 만큼 기다렸다 ping 하므로 다음 기준 시각이 그만큼 늦다
 function extraFor(at: number, cfg: CacheNecromancerConfig, m: CacheNecromancerMarker): string[] {
   if (m === null) return []
   const text = TEXT[cfg.language]
-  const until = (n: number) => hhmm(at + (n * cfg.warnAfterMinutes + cfg.ttlMinutes) * MIN_MS)
-  // wake_count 는 사용자 입력 때 0 으로 돌아간다. manual 은 예산 없는 알림도 세므로 소비한 예산만큼만 깨운 것
-  const revived = cfg.arm === 'always' ? m.wakeCount : Math.min(m.wakeCount, m.budgetTotal - m.budgetRemaining)
+  const cycleMs = cfg.warnAfterMinutes * MIN_MS + (cfg.notify ? cfg.graceSeconds * 1000 : 0)
+  const until = (n: number) => hhmm(at + n * cycleMs + cfg.ttlMinutes * MIN_MS)
+  // wake_count 는 사용자 입력 때 0 으로 돌아간다. manual 은 예산 없는 알림도 세므로 소비한 예산만큼만 깨운 것이고,
+  // 충전 뒤 사용자가 돌아왔으면(set_budget_total 은 남아 있음) 그 뒤 늘어난 wake_count 는 알림뿐이다
+  const isBackSinceCharge = m.userActivityAtNs > m.chargedAtNs
+  const revived =
+    cfg.arm === 'always' ? m.wakeCount : isBackSinceCharge ? 0 : Math.min(m.wakeCount, m.budgetTotal - m.budgetRemaining)
   const extra = revived > 0 ? [text.revived(revived)] : []
   if (cfg.arm === 'always') {
     const lives = Math.max(0, cfg.maxRefreshCount - m.wakeCount)
@@ -217,25 +253,28 @@ function extraFor(at: number, cfg: CacheNecromancerConfig, m: CacheNecromancerMa
 // 터미널 칸 수 (한글·CJK·전각은 2칸)
 const WIDE = /[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]/
 const cols = (s: string) => [...s].reduce((n, ch) => n + (WIDE.test(ch) ? 2 : 1), 0)
-const joined = (line: NonNullable<CacheNecromancerLabel>) => [line.text, ...line.extra].join(SEP)
+// extra 가 없는 값(shape 태그 이전 코드가 남긴 것 등)도 카운트다운만으로 다룬다
+const joined = (line: NonNullable<CacheNecromancerLabel>) => [line.text, ...(line.extra ?? [])].join(SEP)
 
-// 폭 안에 들어오게 뒤 정보를 앞에서부터(살린 횟수 → 목숨·예산) 뺀다. 카운트다운은 남긴다
-function fit(line: NonNullable<CacheNecromancerLabel>, width: number): string {
-  const extra = [...line.extra]
+// 폭 안에 들어오게 뒤 정보를 앞에서부터(살린 횟수 → 목숨·예산) 뺀다. 카운트다운은 남기고, 남은 뒤 정보를 돌려준다
+function fit(line: NonNullable<CacheNecromancerLabel>, width: number): string[] {
+  const extra = [...(line.extra ?? [])]
   while (extra.length > 0 && cols(joined({ ...line, extra })) > width) extra.shift()
-  return joined({ ...line, extra })
+  return extra
 }
 
 // 만료 뒤에는 뒤 정보를 붙이지 않는다 (생존 시각이 이미 지난 값이라)
 function labelFor(at: number, now: number, cfg: CacheNecromancerConfig, m: CacheNecromancerMarker): CacheNecromancerLabel {
   const left = cfg.ttlMinutes * MIN_MS - (now - at)
   const text = TEXT[cfg.language]
-  if (left <= 0) return { text: text.expired, tone: 'error', extra: [] }
+  if (left <= 0) return { text: text.expired, tone: 'error', color: EXPIRED_COLOR, extra: [] }
   const sec = Math.ceil(left / 1000)
+  // 토스트 시점은 색과 별개로 refresh_interval 기준 그대로
   const isWarning = left <= (cfg.ttlMinutes - cfg.warnAfterMinutes) * MIN_MS
   return {
     text: text.left(`${pad(Math.floor(sec / 60))}:${pad(sec % 60)}`),
     tone: isWarning ? 'warning' : 'normal',
+    color: LEVEL_COLOR[Math.min(LEVEL_COLOR.length - 1, Math.floor(sec / 600))] ?? EXPIRED_COLOR,
     extra: extraFor(at, cfg, m),
   }
 }
@@ -391,10 +430,12 @@ export const register: Register = on => {
     const { Box, Text } = $.ui.resolve(e)
     // what-did-i-say 띠와 같은 규격(marginX 1·폭 W·paddingX 2)이라 위아래로 붙으면 한 사각형이 된다
     const W = Math.max(1, e.props.bodyColumns - 2)
+    const extra = fit(line, W - 4)
     return (
       <Box flexDirection="column">
         <Box backgroundColor={STRIP} marginX={1} paddingX={2} width={W}>
-          <Text color={TONE_COLOR[line.tone]}>{fit(line, W - 4)}</Text>
+          <Text color={line.color ?? EXPIRED_COLOR}>{line.text}</Text>
+          {extra.length > 0 ? <Text color={EXTRA_COLOR}>{SEP + extra.join(SEP)}</Text> : null}
         </Box>
         {below}
       </Box>
