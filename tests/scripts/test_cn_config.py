@@ -391,3 +391,121 @@ def test_main_hint_defaults_to_english(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "new terminal" in out
     assert not (tmp_path / "config.toml").exists()  # --hint 는 파일을 만들지 않음
+
+
+# ── v0.13.0: --json · --set · 원자 저장 ─────────────────────────────
+
+import json  # noqa: E402
+import os  # noqa: E402
+import stat  # noqa: E402
+
+
+def _run_json(cn_root, capsys):
+    assert main(["--json"]) == 0
+    out = capsys.readouterr().out
+    assert out.count("\n") == 1  # stdout JSON 한 줄
+    return json.loads(out)
+
+
+def test_json_defaults_without_file_and_does_not_create(cn_root, capsys):
+    data = _run_json(cn_root, capsys)
+    assert data["config"] == {"ttlMinutes": 60, "warnAfterMinutes": 50, "autoWakes": 2,
+                              "countdown": True, "language": "en"}
+    assert [i["id"] for i in data["items"]] == [
+        "general.auto_wakes", "general.refresh_interval_minutes",
+        "display.countdown", "general.language"]
+    assert not (cn_root / "config.toml").exists()
+
+
+def test_json_items_follow_language_and_current(cn_root, capsys):
+    (cn_root / "config.toml").write_text(
+        '[general]\nlanguage = "ko"\nauto_wakes = 7\n[display]\ncountdown = false\n', encoding="utf-8")
+    data = _run_json(cn_root, capsys)
+    auto, _, countdown, _ = data["items"]
+    assert auto["label"] == "자동 깨우기 — 자리비움마다 최대 횟수"
+    assert auto["current"] == "7"  # 옵션 밖 값 — options 는 그대로
+    assert [o["value"] for o in auto["options"]] == ["0", "1", "2", "3"]
+    assert auto["options"][0]["text"] == "0 · 끔 (띠·토스트만)"
+    assert countdown["current"] == "false"
+
+
+def test_json_invalid_value_warns_and_exit_0(cn_root, capsys):
+    (cn_root / "config.toml").write_text("[general]\nauto_wakes = 99\n", encoding="utf-8")
+    assert main(["--json"]) == 0
+    cap = capsys.readouterr()
+    assert json.loads(cap.out)["config"]["autoWakes"] == 2
+    assert "[cn:warn]" in cap.err
+
+
+def test_set_saves_with_0600_and_one_line(cn_root, capsys):
+    path = cn_root / "config.toml"
+    assert main(["--set", "general.auto_wakes=3", "display.countdown=false"]) == 0
+    cap = capsys.readouterr()
+    assert cap.out == "Saved · applies to every open session right away\n" and cap.err == ""
+    cfg = load_config(path)
+    assert (cfg.auto_wakes, cfg.display.countdown) == (3, False)
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    assert [p.name for p in cn_root.iterdir()] == ["config.toml"]  # 임시 파일 안 남음
+
+
+def test_set_keeps_0600_after_overwrite(cn_root, capsys):
+    path = cn_root / "config.toml"
+    path.write_text("[general]\nauto_wakes = 1\n", encoding="utf-8")
+    os.chmod(path, 0o644)
+    assert main(["--set", "general.language=ja"]) == 0
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    assert "auto_wakes = 1" in path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("arg", [
+    "general.auto_wakes=11", "general.auto_wakes=-1", "general.auto_wakes=abc",
+    "general.refresh_interval_minutes=0", "display.countdown=yes", "general.language=fr",
+    "general.cache_ttl_minutes=30", "nope", "general.refresh_interval_minutes=60",
+])
+def test_set_rejects_bad_key_or_value(cn_root, capsys, arg):
+    path = cn_root / "config.toml"
+    path.write_text('[general]\nlanguage = "ko"\n', encoding="utf-8")
+    before = path.read_text(encoding="utf-8")
+    assert main(["--set", "general.auto_wakes=1", arg]) == 1  # 하나라도 틀리면 아무것도 저장 안 함
+    cap = capsys.readouterr()
+    assert cap.out == "" and cap.err.count("\n") == 1
+    assert path.read_text(encoding="utf-8") == before
+
+
+def test_set_interval_must_be_below_ttl(cn_root, capsys):
+    (cn_root / "config.toml").write_text("[general]\ncache_ttl_minutes = 40\n", encoding="utf-8")
+    assert main(["--set", "general.refresh_interval_minutes=45"]) == 1
+    assert "40" in capsys.readouterr().err
+    assert main(["--set", "general.refresh_interval_minutes=39"]) == 0
+
+
+def test_set_save_failure_exit_1_stderr(cn_root, capsys):
+    (cn_root / "config.toml").write_text("[general\nbroken", encoding="utf-8")
+    assert main(["--set", "general.auto_wakes=1"]) == 1
+    cap = capsys.readouterr()
+    assert cap.out == "" and cap.err.startswith("Save cancelled") and cap.err.count("\n") == 1
+
+
+def test_set_ignores_other_invalid_value_warnings(cn_root, capsys):
+    (cn_root / "config.toml").write_text('[general]\nlanguage = "xx"\n', encoding="utf-8")
+    assert main(["--set", "general.auto_wakes=3"]) == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_set_without_args_fails(cn_root, capsys):
+    assert main(["--set"]) == 1
+    assert capsys.readouterr().err.count("\n") == 1
+
+
+def test_atomic_write_failure_leaves_original(tmp_path, monkeypatch):
+    (tmp_path / "d").mkdir()
+    path = tmp_path / "d" / "config.toml"
+    path.write_text("[general]\nauto_wakes = 1\n", encoding="utf-8")
+
+    def boom(*_a):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(os, "replace", boom)
+    assert apply_changes(path, [(_AUTO, "3")]) is None
+    assert path.read_text(encoding="utf-8") == "[general]\nauto_wakes = 1\n"
+    assert [p.name for p in path.parent.iterdir()] == ["config.toml"]
