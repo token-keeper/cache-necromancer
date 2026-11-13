@@ -3,13 +3,9 @@ from datetime import date
 
 
 def _reload_logger_with(cn_root, monkeypatch):
-    """logger 모듈을 reload하면서 LOG_DIR을 cn_root로 override."""
-    import importlib
-
+    """logger 는 쓸 때마다 CN_ROOT 를 읽는다 — autouse cn_root fixture 가 이미 설정."""
     import lib.logger
 
-    importlib.reload(lib.logger)
-    monkeypatch.setattr(lib.logger, "LOG_DIR", cn_root)
     return lib.logger
 
 
@@ -45,7 +41,7 @@ def test_log_appends_multiple_lines(cn_root, monkeypatch):
 def test_log_silent_on_oserror(cn_root, monkeypatch, capsys):
     """logger 실패는 caller crash를 일으키면 안 된다 (PRD 불변: hook 실패가 Claude Code에 영향 없음)."""
     logger = _reload_logger_with(cn_root, monkeypatch)
-    monkeypatch.setattr(logger, "LOG_DIR", cn_root / "nonexistent_parent" / "subdir")
+    monkeypatch.setenv("CN_ROOT", str(cn_root / "nonexistent_parent" / "subdir"))
 
     def boom(*args, **kwargs):
         raise OSError("disk full")
@@ -64,3 +60,19 @@ def test_log_file_permissions_are_private(cn_root, monkeypatch):
     p = cn_root / f"cn.log.{date.today().isoformat()}"
     mode = stat.S_IMODE(p.stat().st_mode)
     assert mode == 0o600, f"log file mode {oct(mode)}, expected 0o600"
+
+
+def test_cn_root_resolved_on_every_write(tmp_path, monkeypatch):
+    """import 뒤 CN_ROOT 를 바꿔도 새 경로에 쓴다 — 테스트가 실제 사용자 로그에 새지 않게."""
+    import lib.logger as logger
+
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    monkeypatch.setenv("CN_ROOT", str(a))
+    logger.log_info("to a")
+    monkeypatch.setenv("CN_ROOT", str(b))
+    logger.log_info("to b")
+    name = f"cn.log.{date.today().isoformat()}"
+    assert "to a" in (a / name).read_text()
+    assert "to b" in (b / name).read_text()
+    assert "to b" not in (a / name).read_text()

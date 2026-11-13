@@ -3,26 +3,24 @@
 - ``cn.log.YYYY-MM-DD``: info/warn (refresh.py / on_user_prompt / on_session_end).
 
 민감정보(프롬프트 내용, 응답 본문, cwd, 절대경로) 절대 기록 안 함.
-sid_hash와 토큰 수만 기록.
+세션 id 는 sanitize 를 통과한 원문 그대로 기록한다 (해시·마스크 아님).
 
 파일 권한 0600, 디렉토리 0700 (다른 로컬 사용자가 읽지 못하도록).
 ``OSError`` 는 silent 처리 (logger 실패가 caller crash를 일으키지 않도록).
 
-7일 후 자동 삭제는 사용자 수동 (README 안내).
+로그는 자동 삭제하지 않는다 (README 안내).
+로그 경로는 쓸 때마다 `CN_ROOT`/HOME 으로 해석한다 — import 뒤 바뀐 `CN_ROOT` 도 따른다.
 """
 import os
 from datetime import date, datetime, timezone
 from pathlib import Path
 
 
-def _resolve_log_dir() -> Path:
+def _log_dir() -> Path:
     root = os.environ.get("CN_ROOT")
     if root:
         return Path(root)
     return Path.home() / ".cache-necromancer"
-
-
-LOG_DIR: Path = _resolve_log_dir()
 
 
 def _today_suffix() -> str:
@@ -40,12 +38,13 @@ def _append(filename_prefix: str, line: str) -> None:
     실패 시 silent (PRD 불변 조건: hook 실패가 Claude Code에 영향 없음).
     """
     try:
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        log_dir = _log_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
         try:
-            os.chmod(LOG_DIR, 0o700)
+            os.chmod(log_dir, 0o700)
         except OSError:
             pass
-        path = LOG_DIR / f"{filename_prefix}.{_today_suffix()}"
+        path = log_dir / f"{filename_prefix}.{_today_suffix()}"
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         try:
             os.fchmod(fd, 0o600)

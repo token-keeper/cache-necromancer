@@ -19,8 +19,8 @@ class TestLoadSave:
         assert m.latest_fire == 0
         assert m.wake_count == 0
         assert m.last_wake_at == 0
-        # 빈 marker 도 session_started_at 은 현재 시각으로 초기화
-        assert m.session_started_at > 0
+        assert m.last_wake_at_ns == 0
+        assert m.wake_off is False
 
     def test_save_then_load_round_trip(self, cn_root):
         m = Marker(
@@ -28,7 +28,8 @@ class TestLoadSave:
             latest_fire=1000,
             wake_count=3,
             last_wake_at=999,
-            session_started_at=500,
+            last_wake_at_ns=999_000_000_123,
+            wake_off=True,
             last_prompt="진행 중인 작업 메모",
             cwd="/Users/x/projects/y",
             last_user_activity_at_ns=1234567890,
@@ -39,7 +40,8 @@ class TestLoadSave:
         assert loaded.latest_fire == 1000
         assert loaded.wake_count == 3
         assert loaded.last_wake_at == 999
-        assert loaded.session_started_at == 500
+        assert loaded.last_wake_at_ns == 999_000_000_123
+        assert loaded.wake_off is True
         assert loaded.last_prompt == "진행 중인 작업 메모"
         assert loaded.cwd == "/Users/x/projects/y"
         assert loaded.last_user_activity_at_ns == 1234567890
@@ -161,7 +163,7 @@ class TestAtomicWrite:
         n_writers = 5
         n_iterations = 50  # 각 writer 가 진행할 라운드
         n_readers = 5
-        required_fields = {"latest_fire", "wake_count", "last_wake_at", "session_started_at"}
+        required_fields = {"latest_fire", "wake_count", "last_wake_at", "last_wake_at_ns", "wake_off"}
 
         errors: list = []
         invalid_reads: list = []
@@ -352,3 +354,39 @@ class TestSetBudgetFields:
         assert loaded.set_budget_remaining == 0
         assert loaded.set_budget_total == 0
         assert loaded.set_charged_at_ns == 0
+
+
+class TestV012Fields:
+    def test_old_marker_with_session_started_at_loads_and_drops_it(self, cn_root):
+        """옛 marker 의 session_started_at 은 무시, 저장 시 사라진다. 새 필드는 기본값."""
+        marker_dir().mkdir(parents=True, exist_ok=True)
+        marker_path("old012").write_text(
+            json.dumps({"latest_fire": 5, "wake_count": 1, "last_wake_at": 3,
+                        "session_started_at": 10}),
+            encoding="utf-8",
+        )
+        m = Marker.load("old012")
+        assert (m.latest_fire, m.wake_count, m.wake_off) == (5, 1, False)
+        assert m.last_wake_at_ns == 3 * 1_000_000_000   # 초 값으로 백필
+        m.save()
+        assert "session_started_at" not in json.loads(marker_path("old012").read_text())
+
+    def test_last_wake_at_ns_kept_when_present(self, cn_root):
+        """키가 있으면 0 이어도 그대로 — 초 값으로 덮지 않는다."""
+        marker_dir().mkdir(parents=True, exist_ok=True)
+        marker_path("ns0").write_text(
+            json.dumps({"last_wake_at": 7, "last_wake_at_ns": 0}), encoding="utf-8")
+        assert Marker.load("ns0").last_wake_at_ns == 0
+        marker_path("ns1").write_text(
+            json.dumps({"last_wake_at": 7, "last_wake_at_ns": 7_000_000_123}), encoding="utf-8")
+        assert Marker.load("ns1").last_wake_at_ns == 7_000_000_123
+
+    def test_turn_start_roundtrip_and_default(self, cn_root):
+        Marker(sid_hash="ts", last_turn_start_at_ns=42).save()
+        assert Marker.load("ts").last_turn_start_at_ns == 42
+        assert Marker.load("none-ts").last_turn_start_at_ns == 0
+
+    def test_wake_off_only_true_literal(self, cn_root):
+        marker_dir().mkdir(parents=True, exist_ok=True)
+        marker_path("woff").write_text(json.dumps({"wake_off": "yes"}), encoding="utf-8")
+        assert Marker.load("woff").wake_off is False

@@ -30,44 +30,41 @@ def marker_path(sid_hash: str) -> Path:
 class Marker:
     """Marker file 의 in-memory representation.
 
-    Fields (TECH_SPEC §3.1):
-      - latest_fire: 가장 최근 Stop hook fire 시각 (ns). on_recap.py(Stop)와
-        refresh.py 진입부(mod 의 --now 실행 시각)가 갱신. cn_status 의 "next fire"
-        시각 계산 기준이라 user prompt 시점은 포함하지 않는다 (의미 흐려짐 방지).
-        refresh.py 는 grace 후 이 값이 자기 진입 시각보다 크면(그 사이 Stop) wake 취소.
-      - wake_count: 누적 wake 또는 notify 횟수 (mode 무관)
-      - last_wake_at: 직전 wake/notify 시각
-      - session_started_at: 세션 시작 시각
+    Fields (v0.12.0):
+      - latest_fire: 마지막 Stop 시각 (ns). on_recap.py 만 기록. refresh.py 의 사용자
+        활동·억제 판정과 cn_set·cn_status 생존 시각의 기준 (Python 은 mod 의 base 를 모름).
+      - wake_count: 이번 자리비움에 실제로 깨운 횟수. 진짜 사용자 입력 때 0.
+      - last_wake_at: 마지막 깨우기 (초, 표시·복귀 로그용)
+      - last_wake_at_ns: 마지막 깨우기 (ns) — 복귀 판정은 이걸로
       - last_prompt: 가장 최근 user prompt (40자 truncate, /cn:status 의
         세션 식별용). PRD §8 도구 정신 예외: marker 0600 권한 +
         본인 환경 한정 노출 (single-user alpha 가정).
-      - cwd: 가장 최근 user prompt 의 작업 디렉터리 (Claude Code hook
-        stdin payload 의 `cwd`). /cn:status 의 다른 세션 식별용.
-      - last_user_activity_at_ns: 가장 최근 진짜 user prompt 시각 (ns).
-        on_user_prompt.py 가 system event (PING/task-notification) 가 아닌
-        진짜 input 일 때만 갱신. refresh.py 의 supersede 체크에서
-        latest_fire 와 OR 로 묶임 — model 응답이 50분 넘게 진행되는 동안
-        사용자가 활발히 활동하고 있는 경우에도 wake 가 안 일어나도록 보장.
-      - set_budget_remaining: 남은 wake 예산 (/cn:set 충전, wake 시 차감)
-      - set_budget_total: 직전 충전량 — ping (N/M) 의 M. 사용자 복귀 판정 시
-        (on_user_prompt) 0 으로 비워짐
-      - set_charged_at_ns: 마지막 충전 시각 (ns) — 복귀 판정 기준
-      - suppressed_at_ns: SessionStart(clear|compact) hook 이 기록하는 소생 억제
-        시각 (ns). last_user_activity_at_ns 보다 크면 refresh.py 가 wake/notify
-        를 skip — compact 로 컨텍스트가 재작성된 뒤의 옛 cache 소생은 낭비다.
-        진짜 user prompt 가 오면 last_user_activity_at_ns 가 더 커져 자동 해제.
+      - cwd: 가장 최근 user prompt 의 작업 디렉터리 (/cn:status 의 다른 세션 식별용).
+      - last_user_activity_at_ns: 마지막 진짜 사용자 입력 시각 (ns). PING·
+        task-notification·피어/팀메이트 메시지·/cn: 명령은 제외.
+      - last_turn_start_at_ns: 마지막 turn 시작 시각 (ns). PING·/cn: 명령을 뺀 모든
+        prompt(task-notification·피어/팀메이트 메시지 포함). refresh.py 의 "진행 중
+        turn" 판정용 — 사용자 활동이 아니어도 turn 은 돈다.
+      - set_budget_remaining / set_budget_total / set_charged_at_ns: /cn:set N —
+        이번 자리비움 깨우기 횟수 덮어쓰기 (남은 수 / 충전량 / 충전 시각 ns).
+        충전 뒤 깨운 적이 있으면 사용자 복귀 때 0 으로 비워진다.
+      - wake_off: /cn:set 0·off — 세션 끝까지 깨우기 끔. /cn:set N(≥1) 만 해제.
+      - suppressed_at_ns: SessionStart(clear|compact) 가 기록하는 억제 시각 (ns).
+        max(last_user_activity_at_ns, latest_fire) 보다 크면 refresh.py 가 skip.
     """
     sid_hash: str
     latest_fire: int = 0
     wake_count: int = 0
     last_wake_at: int = 0
-    session_started_at: int = 0
+    last_wake_at_ns: int = 0
     last_prompt: str = ""
     cwd: str = ""
     last_user_activity_at_ns: int = 0
+    last_turn_start_at_ns: int = 0
     set_budget_remaining: int = 0
     set_budget_total: int = 0
     set_charged_at_ns: int = 0
+    wake_off: bool = False
     suppressed_at_ns: int = 0
 
     @classmethod
@@ -75,7 +72,7 @@ class Marker:
         """marker file 에서 로드. 없거나 corrupt (JSON syntax/schema) 시 빈 marker."""
         path = marker_path(sid_hash)
         if not path.exists():
-            return cls(sid_hash=sid_hash, session_started_at=int(time.time()))
+            return cls(sid_hash=sid_hash)
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             return cls(
@@ -83,21 +80,25 @@ class Marker:
                 latest_fire=int(data.get("latest_fire", 0)),
                 wake_count=int(data.get("wake_count", 0)),
                 last_wake_at=int(data.get("last_wake_at", 0)),
-                session_started_at=int(
-                    data.get("session_started_at", int(time.time()))
+                # v0.11 marker 는 초 단위 last_wake_at 만 있다 — 키가 없을 때만 초로 채움
+                last_wake_at_ns=(
+                    int(data["last_wake_at_ns"]) if "last_wake_at_ns" in data
+                    else int(data.get("last_wake_at", 0)) * 1_000_000_000
                 ),
                 last_prompt=str(data.get("last_prompt", "")),
                 cwd=str(data.get("cwd", "")),
                 last_user_activity_at_ns=int(
                     data.get("last_user_activity_at_ns", 0)
                 ),
+                last_turn_start_at_ns=int(data.get("last_turn_start_at_ns", 0)),
                 set_budget_remaining=int(data.get("set_budget_remaining", 0)),
                 set_budget_total=int(data.get("set_budget_total", 0)),
                 set_charged_at_ns=int(data.get("set_charged_at_ns", 0)),
+                wake_off=data.get("wake_off") is True,
                 suppressed_at_ns=int(data.get("suppressed_at_ns", 0)),
             )
-        except (json.JSONDecodeError, OSError, ValueError, TypeError):
-            return cls(sid_hash=sid_hash, session_started_at=int(time.time()))
+        except (json.JSONDecodeError, OSError, ValueError, TypeError, AttributeError):
+            return cls(sid_hash=sid_hash)
 
     def save(self) -> None:
         """Atomic write — `tempfile + os.replace()` POSIX 원자성 보장.
@@ -113,13 +114,15 @@ class Marker:
             "latest_fire": self.latest_fire,
             "wake_count": self.wake_count,
             "last_wake_at": self.last_wake_at,
-            "session_started_at": self.session_started_at,
+            "last_wake_at_ns": self.last_wake_at_ns,
             "last_prompt": self.last_prompt,
             "cwd": self.cwd,
             "last_user_activity_at_ns": self.last_user_activity_at_ns,
+            "last_turn_start_at_ns": self.last_turn_start_at_ns,
             "set_budget_remaining": self.set_budget_remaining,
             "set_budget_total": self.set_budget_total,
             "set_charged_at_ns": self.set_charged_at_ns,
+            "wake_off": self.wake_off,
             "suppressed_at_ns": self.suppressed_at_ns,
         }
         tmp_path: str | None = None
