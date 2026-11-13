@@ -3,9 +3,11 @@ import type { EngineInterface, ProcessRunResult, Register } from 'claude-code'
 
 import type {
   CacheNecromancerConfig,
+  CacheNecromancerItem,
   CacheNecromancerLabel,
   CacheNecromancerLanguage,
   CacheNecromancerMarker,
+  CacheNecromancerNote,
   CacheNecromancerTime,
 } from '../types'
 
@@ -32,6 +34,10 @@ const tickErrorLogged = atom({ plugin: 'cache-necromancer', key: 'tickErrorLogge
 const wakeErrorLogged = atom({ plugin: 'cache-necromancer', key: 'wakeErrorLogged' } as const, false)
 const commandErrorLogged = atom({ plugin: 'cache-necromancer', key: 'commandErrorLogged' } as const, false)
 const configErrorLogged = atom({ plugin: 'cache-necromancer', key: 'configErrorLogged' } as const, false)
+// 설정 패널: 전체 설정 항목(--json 의 items), 이 세션 상태 줄(cn_set.py 무인자), 알림 줄(저장됨·실패)
+const items = atom({ plugin: 'cache-necromancer', key: 'items' } as const, [] as CacheNecromancerItem[])
+const sessionLine = atom({ plugin: 'cache-necromancer', key: 'sessionLine' } as const, '')
+const paneNote = atom({ plugin: 'cache-necromancer', key: 'paneNote' } as const, null as CacheNecromancerNote)
 
 const MIN_MS = 60 * 1000
 // scripts/refresh.py 의 PING_PREFIX 와 같다 (on_user_prompt.py 도 이 문자열로 ping 을 거른다)
@@ -49,6 +55,8 @@ const BUSY_AGENT = new Set(['pending', 'running', 'waiting'])
 // 띠 뒤 정보(살린 횟수·남은 깨우기)의 구분자와, marker 파일을 다시 읽는 간격
 const SEP = ' · '
 const MARKER_EVERY_MS = 5000
+// 띠 오른쪽 설정 버튼이 차지하는 칸: 앞 1칸 + 터미널의 `[ ⚙ ]` (⚙ 는 터미널에 따라 1~2칸이라 2칸으로 잡는다)
+const GEAR_COLS = 7
 // lib/session_id.py 의 _VALID_PATTERN — 이 모양이 아닌 id 는 Python 이 해시한 파일명을 쓰므로 읽지 않는다
 const SID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
 
@@ -72,6 +80,14 @@ const TEXT: Record<
     revived: (n: number) => string
     remaining: (n: number, hhmm: string) => string
     off: string
+    // 설정 패널 (/cn:config·띠 ⚙). 항목 라벨·옵션 글자는 cn_config.py --json 이 언어별로 준다
+    title: string
+    session: string
+    sessionButtons: readonly [string, string, string, string, string]
+    settings: string
+    saved: string
+    failed: string
+    opened: string
   }
 > = {
   ko: {
@@ -83,6 +99,13 @@ const TEXT: Record<
     revived: n => `${n}번 살림`,
     remaining: (n, t) => `깨우기 ${n}회 남음 (${t}까지)`,
     off: '깨우기 꺼짐',
+    title: 'Cache Necromancer 설정',
+    session: '이 세션',
+    sessionButtons: ['끄기', '자동', '1시간', '2시간', '4시간'],
+    settings: '전체 설정',
+    saved: '저장됨 · 열린 세션 모두에 바로 반영',
+    failed: '실패',
+    opened: '설정 패널을 열었습니다',
   },
   en: {
     left: t => `Cache ${t} left`,
@@ -93,6 +116,13 @@ const TEXT: Record<
     revived: n => `Revived ${n}×`,
     remaining: (n, t) => `${n} ${n === 1 ? 'wake' : 'wakes'} left (until ${t})`,
     off: 'Wake off',
+    title: 'Cache Necromancer settings',
+    session: 'This session',
+    sessionButtons: ['Off', 'Auto', '1 hour', '2 hours', '4 hours'],
+    settings: 'Settings',
+    saved: 'Saved · applied to every open session right away',
+    failed: 'Failed',
+    opened: 'Opened the settings panel',
   },
   ja: {
     left: t => `キャッシュ残り ${t}`,
@@ -103,6 +133,13 @@ const TEXT: Record<
     revived: n => `${n}回蘇生`,
     remaining: (n, t) => `残り${n}回 (${t}まで)`,
     off: '自動延長オフ',
+    title: 'Cache Necromancer 設定',
+    session: 'このセッション',
+    sessionButtons: ['オフ', '自動', '1時間', '2時間', '4時間'],
+    settings: '全体設定',
+    saved: '保存しました · 開いているすべてのセッションにすぐ反映',
+    failed: '失敗',
+    opened: '設定パネルを開きました',
   },
   zh: {
     left: t => `缓存剩余 ${t}`,
@@ -113,6 +150,13 @@ const TEXT: Record<
     revived: n => `已复活 ${n} 次`,
     remaining: (n, t) => `还剩 ${n} 次唤醒 (至 ${t})`,
     off: '唤醒已关闭',
+    title: 'Cache Necromancer 设置',
+    session: '本会话',
+    sessionButtons: ['关闭', '自动', '1小时', '2小时', '4小时'],
+    settings: '全局设置',
+    saved: '已保存 · 立即应用到所有打开的会话',
+    failed: '失败',
+    opened: '已打开设置面板',
   },
 }
 
@@ -138,6 +182,17 @@ function toConfig(data: unknown): CacheNecromancerConfig | null {
   return { ttlMinutes, warnAfterMinutes, autoWakes: autoWakes as number, countdown, language: language as CacheNecromancerLanguage }
 }
 
+// --json 의 items 중 패널 한 줄 모양인 것만 (없으면 빈 목록)
+function toItems(data: unknown): CacheNecromancerItem[] {
+  const list: unknown[] = isRecord(data) && Array.isArray(data['items']) ? data['items'] : []
+  const isText = (v: unknown): v is string => typeof v === 'string'
+  const isOption = (o: unknown) => isRecord(o) && isText(o['value']) && isText(o['text'])
+  return list.filter(
+    (it): it is CacheNecromancerItem =>
+      isRecord(it) && isText(it['id']) && isText(it['label']) && isText(it['current']) && Array.isArray(it['options']) && it['options'].every(isOption),
+  )
+}
+
 // 설정 파일 텍스트, 없거나 못 읽으면 ''
 async function readConfigText($: EngineInterface): Promise<string> {
   try {
@@ -156,10 +211,12 @@ async function loadConfig($: EngineInterface, force: boolean): Promise<void> {
   try {
     const r = await $.process.run(['python3', `${$.plugin.root}/scripts/cn_config.py`, '--json'], { timeoutMs: 10_000 })
     if (r.exitCode !== 0) throw new Error(`exit ${r.exitCode}`)
-    const cfg = toConfig(JSON.parse(r.stdout))
+    const data: unknown = JSON.parse(r.stdout)
+    const cfg = toConfig(data)
     if (cfg === null) throw new Error('unexpected --json output')
     const isFirst = configText === null
     configText = text
+    await update($, items, () => toItems(data))
     await applyConfig($, cfg, isFirst)
   } catch (error) {
     await logConfigOnce($, `config load failed (${errorText(error)})`)
@@ -415,7 +472,7 @@ for (const prefix of ['', 'cache-necromancer:']) {
   // cn:set 은 첫 토큰만 (나머지는 무시)
   COMMANDS[`${prefix}cn:set`] = args => ['cn_set.py', ...args.trim().split(/\s+/).filter(Boolean).slice(0, 1)]
   COMMANDS[`${prefix}cn:status`] = () => ['cn_status.py']
-  // 설정 메뉴(TUI)는 터미널 입력이 필요해 여기선 못 띄운다 → 실행 방법 안내만
+  // 설정은 패널(Pane)로 연다. 못 열 때만 TUI 실행 방법 안내
   COMMANDS[`${prefix}cn:config`] = () => ['cn_config.py', '--hint']
 }
 // 스크립트 출력 끝의 stderr 는 이만큼만 붙인다
@@ -424,17 +481,89 @@ const STDERR_LINES = 10
 // /cn:* 를 Python 스크립트로 직접 실행해 그 출력을 명령 결과로 답한다 (next 를 부르지 않아 명령 본문·모델 turn 없음).
 // 세션 id 는 스크립트가 읽는 CLAUDE_CODE_SESSION_ID 로 넘긴다 (process.run 의 env 는 host 환경 위에 덧씌움 — HOME·PATH·CN_ROOT 는 그대로).
 // exit≠0 이면 stdout 뒤에 exit 코드와 stderr 끝부분을 붙인다
-async function runCommand($: EngineInterface, argv: string[]): Promise<string> {
+async function runScript($: EngineInterface, argv: readonly string[]): Promise<ProcessRunResult> {
   const [script = '', ...args] = argv
-  const r = await $.process.run(['python3', `${$.plugin.root}/scripts/${script}`, ...args], {
+  return $.process.run(['python3', `${$.plugin.root}/scripts/${script}`, ...args], {
     env: { CLAUDE_CODE_SESSION_ID: await $.session.id() },
     timeoutMs: 10_000,
   })
+}
+
+async function runCommand($: EngineInterface, argv: readonly string[]): Promise<string> {
+  const r = await runScript($, argv)
   const out = r.stdout.trimEnd() || '(empty)'
   if (r.exitCode === 0) return out
   const err = r.stderr.trimEnd().split(/\r?\n/).slice(-STDERR_LINES).join('\n')
   return `${out}\n\n[exit ${r.exitCode}]${err ? `\n[stderr]\n${err}` : ''}`
 }
+
+// ── 설정 패널 (Pane): 이 세션 깨우기(cn_set.py)와 전체 설정(cn_config.py --set) ──
+const PANE = 'cn-config'
+const SESSION_ARGS = ['off', 'auto', '1h', '2h', '4h'] as const
+const SAVED_MS = 2000
+const firstLine = (text: string) => text.trim().split(/\r?\n/)[0] ?? ''
+
+// 알림 줄을 쓴다. clearAfterMs 가 있으면 그 뒤 지운다 (그새 다른 알림으로 바뀌었으면 그대로)
+async function showNote($: EngineInterface, note: NonNullable<CacheNecromancerNote>, clearAfterMs?: number): Promise<void> {
+  await update($, paneNote, () => note)
+  if (clearAfterMs === undefined) return
+  $.clock.after(clearAfterMs, () => void update($, paneNote, n => (n?.text === note.text ? null : n)).catch(() => undefined))
+}
+
+// 이 세션 상태 줄 = cn_set.py(무인자) 출력
+async function refreshSession($: EngineInterface): Promise<void> {
+  const r = await runScript($, ['cn_set.py'])
+  const line = r.exitCode === 0 ? r.stdout.trim() : firstLine(r.stderr) || r.stdout.trim()
+  await update($, sessionLine, () => line)
+}
+
+// 패널을 연다. 그려졌으면 설정(항목)과 상태 줄을 새로 받는다. 그려지지 못하면(surface 없음 등) 닫고 false, 열기 거부는 throw
+async function openPanel($: EngineInterface): Promise<boolean> {
+  await update($, paneNote, () => null)
+  await update($, sessionLine, () => '')
+  const opened = await $.ui.open({ id: PANE, title: TEXT[(await read($, config)).language].title, focus: true, closeOnEscape: true })
+  if (!opened.isPlaced) {
+    await $.ui.close({ id: PANE })
+    return false
+  }
+  // 상태 줄을 못 받아도(python3 없음 등) 패널은 열린 채 둔다
+  await Promise.all([syncConfig($, true), refreshSession($).catch(() => undefined)])
+  return true
+}
+
+// 패널 열기 실패는 첫 1회만 디버그 로그 (/cn:config 는 그 뒤 --hint 로 넘어간다)
+const tryOpenPanel = ($: EngineInterface) =>
+  openPanel($).catch(async error => {
+    await logCommandOnce($, `panel open failed (${errorText(error)})`)
+    return false
+  })
+
+// 이 세션 버튼: cn_set.py <인자> → 상태 줄 다시 받기 + 다음 tick 에 marker 다시 읽기(띠 반영). 실패는 빨간 줄
+async function pressSession($: EngineInterface, arg: (typeof SESSION_ARGS)[number]): Promise<void> {
+  const r = await runScript($, ['cn_set.py', arg])
+  if (r.exitCode !== 0) {
+    await showNote($, { text: firstLine(r.stderr) || TEXT[(await read($, config)).language].failed, isError: true })
+  } else {
+    await update($, paneNote, () => null)
+  }
+  await update($, markerReadAt, () => null)
+  await refreshSession($)
+}
+
+// 전체 설정 버튼: cn_config.py --set → 성공이면 바로 다시 읽어 이 세션에 반영하고(다른 세션은 5초 안에) 2초 "저장됨", 실패면 빨간 줄
+async function pressSetting($: EngineInterface, id: string, value: string): Promise<void> {
+  const r = await runScript($, ['cn_config.py', '--set', `${id}=${value}`])
+  if (r.exitCode !== 0) {
+    await showNote($, { text: firstLine(r.stderr) || TEXT[(await read($, config)).language].failed, isError: true })
+    return
+  }
+  await syncConfig($, true)
+  await showNote($, { text: TEXT[(await read($, config)).language].saved, isError: false }, SAVED_MS)
+}
+
+// 버튼 작업이 throw 하면(python3 없음 등) 그 사유를 빨간 줄로
+const pressed = ($: EngineInterface, job: Promise<unknown>) =>
+  void job.catch(error => showNote($, { text: errorText(error), isError: true }).catch(() => undefined))
 
 export const register: Register = on => {
   // /cn:* 를 mod 가 먼저 처리한다. Python 훅(decision=block)으로 막으면 막힌 명령이 입력창에 다시 들어가 매번 지워야 했다.
@@ -444,6 +573,8 @@ export const register: Register = on => {
       const argv = COMMANDS[e.command]?.(e.args)
       if (argv === undefined) return next(e)
       try {
+        // /cn:config 는 설정 패널을 연다. 못 열면 지금처럼 실행 방법 안내(--hint)
+        if (e.command.endsWith('cn:config') && (await tryOpenPanel($))) return { text: TEXT[(await read($, config)).language].opened }
         return { text: await runCommand($, argv) }
       } catch (error) {
         await logCommandOnce($, `/${e.command} failed (${errorText(error)}), falling back`).catch(() => undefined)
@@ -503,20 +634,59 @@ export const register: Register = on => {
     if (line === null || (await read($, base)) === null) return next(e)
 
     const below = await next(e)
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
     // what-did-i-say 띠와 같은 규격(marginX 1·폭 W·paddingX 2)이라 위아래로 붙으면 한 사각형이 된다
     const W = Math.max(1, columns - 2)
-    const extra = fit(line, W - 4)
+    const extra = fit(line, W - 4 - GEAR_COLS)
     return (
       <Box flexDirection="column">
-        <Box backgroundColor={STRIP} marginX={1} paddingX={2} width={W}>
+        <Box backgroundColor={STRIP} marginX={1} paddingX={2} width={W} justifyContent="space-between">
           {/* 한 인라인 흐름으로 그리게 중첩한다 (형제 Text 는 폭이 어긋나면 따로 줄어들고, HTML surface 는 앞 공백을 접을 수 있다) */}
           <Text>
             <Text color={line.color ?? EXPIRED_COLOR}>{line.text}</Text>
             {extra.length > 0 ? <Text color={EXTRA_COLOR}>{SEP + extra.join(SEP)}</Text> : null}
           </Text>
+          <Button key="cn-gear" label="⚙" onPress={() => pressed($, tryOpenPanel($))} />
         </Box>
         {below}
+      </Box>
+    )
+  })
+
+  // 설정 패널 본문: 이 세션(상태 줄 + 버튼) → 전체 설정(항목마다 라벨 + 옵션 버튼, 지금 값은 primary) → 알림 줄
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const text = TEXT[(await read($, config)).language]
+    const rows = await read($, items)
+    const note = await read($, paneNote)
+    return (
+      <Box flexDirection="column">
+        <Text bold>{text.session}</Text>
+        <Text>{await read($, sessionLine)}</Text>
+        <Box flexWrap="wrap" columnGap={1}>
+          {SESSION_ARGS.map((arg, i) => (
+            <Button key={`session:${arg}`} label={text.sessionButtons[i] ?? arg} onPress={() => pressed($, pressSession($, arg))} />
+          ))}
+        </Box>
+        <Box marginTop={1}>
+          <Text bold>{text.settings}</Text>
+        </Box>
+        {rows.map(item => (
+          <Box key={item.id} flexDirection="column">
+            <Text>{item.label}</Text>
+            <Box flexWrap="wrap" columnGap={1}>
+              {item.options.map(o => (
+                <Button
+                  key={`${item.id}=${o.value}`}
+                  label={o.text}
+                  {...(o.value === item.current ? { variant: 'primary' as const } : {})}
+                  onPress={() => pressed($, pressSetting($, item.id, o.value))}
+                />
+              ))}
+            </Box>
+          </Box>
+        ))}
+        {note === null ? null : <Text color={note.isError ? 'error' : 'success'}>{note.text}</Text>}
       </Box>
     )
   })

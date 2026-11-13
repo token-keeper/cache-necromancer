@@ -37,6 +37,19 @@ export type CacheNecromancerConfig = {
 
 export type CacheNecromancerLanguage = 'ko' | 'en' | 'ja' | 'zh'
 
+/** cn_config.py --json 의 items 한 줄 — 설정 패널 "전체 설정"의 항목 (문구는 Python 이 언어별로 준다) */
+export type CacheNecromancerItem = {
+  /** section.key — cn_config.py --set 에 그대로 넘긴다 */
+  id: string
+  label: string
+  /** 지금 값 (bool 은 "true"/"false"). 옵션 밖 값이면 어떤 버튼도 강조하지 않는다 */
+  current: string
+  options: { value: string; text: string }[]
+}
+
+/** 설정 패널 아래 알림 줄 (저장됨은 2초 뒤 지움, 실패는 빨강) */
+export type CacheNecromancerNote = { text: string; isError: boolean } | null
+
 declare module 'claude-code' {
   interface PluginState {
     'cache-necromancer': {
@@ -66,6 +79,12 @@ declare module 'claude-code' {
       commandErrorLogged: boolean
       /** 설정 읽기(cn_config.py --json) 실패를 디버그 로그에 이미 남겼는지 (첫 1회만 남긴다) */
       configErrorLogged: boolean
+      /** 설정 패널 전체 설정 항목 (마지막 --json 의 items) */
+      items: CacheNecromancerItem[]
+      /** 설정 패널 "이 세션" 상태 줄 (cn_set.py 무인자 출력) */
+      sessionLine: string
+      /** 설정 패널 알림 줄 */
+      paneNote: CacheNecromancerNote
     }
   }
 }
