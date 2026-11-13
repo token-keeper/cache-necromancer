@@ -1,297 +1,147 @@
-"""Tests for lib.config (v0.5.0 — 2축(notify/wake) + legacy 매핑)."""
+"""Tests for lib.config (v0.12.0 — 키 5개, 옛 키 무시, 값 검증)."""
 import pytest
 
-from lib.config import Config, load_config
+from lib.config import (
+    OBSOLETE_KEYS,
+    SET_CAP,
+    Config,
+    detect_obsolete_keys,
+    load_config,
+    parse_config_file,
+)
 
 
-def test_load_defaults_when_file_missing(tmp_path):
-    """존재하지 않는 path → 기본값 Config."""
+def _load(tmp_path, body: str) -> Config:
+    p = tmp_path / "c.toml"
+    p.write_text(body, encoding="utf-8")
+    return load_config(p)
+
+
+def test_defaults_when_file_missing(tmp_path):
     c = load_config(tmp_path / "nonexistent.toml")
-    # v0.5.0: 기본 arm=manual, notify on
-    assert c.wake.arm == "manual"
-    assert c.notify.enabled is True
-    assert c.refresh_interval_minutes == 50  # v0.2.x 55 → 50
-    assert c.cache_ttl_minutes == 60  # Anthropic 1h ext cache 기본
-    assert c.max_refresh_count == 10
-    assert c.wake.grace_seconds == 60
+    assert c == Config()
+    assert c.auto_wakes == 2
+    assert c.refresh_interval_minutes == 50
+    assert c.cache_ttl_minutes == 60
+    assert c.language == "en"
+    assert c.display.countdown is True
 
 
-def test_load_partial_overrides_keeps_defaults(tmp_path):
-    p = tmp_path / "c.toml"
-    p.write_text(
-        '[general]\nmode = "auto"\nmax_refresh_count = 20\n'
-    )
-    c = load_config(p)
-    # legacy mode=auto → arm=always, notify=off
-    assert c.wake.arm == "always"
-    assert c.notify.enabled is False
-    assert c.max_refresh_count == 20
-    assert c.refresh_interval_minutes == 50  # default
-    assert c.wake.grace_seconds == 60  # default
-
-
-def test_load_full_v030_config(tmp_path):
-    p = tmp_path / "c.toml"
-    p.write_text(
-        """
-[general]
-mode = "notify"
-refresh_interval_minutes = 30
-max_refresh_count = 5
-
-[notify]
-system_notification = false
-
-[refresh]
-hybrid_wait_seconds = 90
-"""
-    )
-    c = load_config(p)
-    # legacy mode=notify → arm=manual; system_notification=false → enabled=false
-    assert c.wake.arm == "manual"
-    assert c.notify.enabled is False
-    assert c.refresh_interval_minutes == 30
-    assert c.max_refresh_count == 5
-    assert c.wake.grace_seconds == 90
-
-
-def test_invalid_mode_warns_and_returns_default(tmp_path, capsys):
-    """v0.5.0: invalid mode → ValueError 아닌 stderr 경고 + 기본값 반환."""
-    p = tmp_path / "c.toml"
-    p.write_text('[general]\nmode = "invalid"\n')
-    cfg = load_config(p)
-    assert cfg.wake.arm == "manual"
-    err = capsys.readouterr().err
-    assert "invalid" in err
+def test_set_cap_is_10():
+    assert SET_CAP == 10
 
 
 def test_empty_file_uses_defaults(tmp_path):
-    p = tmp_path / "empty.toml"
-    p.write_text("")
-    c = load_config(p)
-    assert c == Config()
+    assert _load(tmp_path, "") == Config()
 
 
 def test_syntax_error_falls_back_to_defaults(tmp_path, capsys):
-    """TOML syntax error → 기본값 + stderr 경고."""
-    p = tmp_path / "broken.toml"
-    p.write_text("[general\nmode = bad")  # 닫는 ] 없음
-    c = load_config(p)
+    c = _load(tmp_path, "[general\nauto_wakes = 5")
     assert c == Config()
-    err = capsys.readouterr().err
-    assert "syntax error" in err
+    assert "syntax error" in capsys.readouterr().err
 
 
-def test_deprecated_options_detected_and_ignored(tmp_path, capsys):
-    """v0.2.x 폐기 옵션 → stderr 경고 + load 성공 (옵션 무시)."""
-    p = tmp_path / "c.toml"
-    p.write_text(
-        """
-[general]
-mode = "auto"
-
-[refresh]
-hybrid_wait_seconds = 70
-prompt = "ping"
-fire_timeout_seconds = 120
-
-[notify]
-system_notification = false
-terminal_bell = true
-imminent_threshold_minutes = 5
-
-[advanced]
-daemon_poll_max_seconds = 30
-"""
+def test_all_keys_loaded(tmp_path):
+    c = _load(
+        tmp_path,
+        '[general]\nauto_wakes = 3\nrefresh_interval_minutes = 45\n'
+        'cache_ttl_minutes = 5\nlanguage = "ko"\n[display]\ncountdown = false\n',
     )
-    c = load_config(p)
-    # 호환 옵션은 정상 로드 (legacy mode=auto → arm=always, notify=off)
-    assert c.wake.arm == "always"
-    assert c.notify.enabled is False
-    assert c.wake.grace_seconds == 70
-    # 폐기 옵션 무시 — WakeConfig/NotifyConfig 가 받지 않음
-    assert not hasattr(c.wake, "prompt")
-    assert not hasattr(c.notify, "terminal_bell")
-    # stderr 경고
-    err = capsys.readouterr().err
-    assert "deprecated" in err
-    assert "refresh.prompt" in err
-    assert "refresh.fire_timeout_seconds" in err
-    assert "notify.terminal_bell" in err
-    assert "notify.imminent_threshold_minutes" in err
-    assert "[advanced]" in err
-
-
-def test_no_warning_when_no_deprecated_options(tmp_path, capsys):
-    p = tmp_path / "clean.toml"
-    p.write_text(
-        '[general]\nmode = "auto"\n[refresh]\nhybrid_wait_seconds = 30\n'
-    )
-    load_config(p)
-    err = capsys.readouterr().err
-    assert "deprecated" not in err
-
-
-def test_config_language_default_is_en(tmp_path):
-    """config 에 language 미지정 시 default = 'en'."""
-    p = tmp_path / "c.toml"
-    p.write_text('[general]\nmode = "auto"\n')
-    c = load_config(p)
-    assert c.language == "en"
-
-
-def test_config_language_loaded_from_toml(tmp_path):
-    """[general].language 값이 Config 에 반영."""
-    p = tmp_path / "c.toml"
-    p.write_text('[general]\nmode = "auto"\nlanguage = "ko"\n')
-    c = load_config(p)
+    assert (c.auto_wakes, c.refresh_interval_minutes, c.cache_ttl_minutes) == (3, 45, 5)
     assert c.language == "ko"
+    assert c.display.countdown is False
 
 
-def test_config_language_unknown_value_loaded_as_is(tmp_path):
-    """load 단계는 validate X (normalize_language 단계에서 fallback)."""
-    p = tmp_path / "c.toml"
-    p.write_text('[general]\nmode = "auto"\nlanguage = "xx"\n')
-    c = load_config(p)
-    assert c.language == "xx"
+def test_auto_wakes_0_allowed(tmp_path):
+    assert _load(tmp_path, "[general]\nauto_wakes = 0\n").auto_wakes == 0
 
 
-def test_config_cache_ttl_default_60(tmp_path):
-    """config 에 cache_ttl_minutes 미지정 시 default = 60 (1h ext cache)."""
-    p = tmp_path / "c.toml"
-    p.write_text('[general]\nmode = "auto"\n')
-    c = load_config(p)
-    assert c.cache_ttl_minutes == 60
-
-
-def test_config_cache_ttl_loaded_from_toml(tmp_path):
-    """[general].cache_ttl_minutes 값이 Config 에 반영 (5min cache 케이스)."""
-    p = tmp_path / "c.toml"
-    p.write_text('[general]\nmode = "auto"\ncache_ttl_minutes = 5\n')
-    c = load_config(p)
-    assert c.cache_ttl_minutes == 5
-
-
-class TestWakeNotifyAxes:
-    def test_defaults_are_manual_notify_on(self, tmp_path):
-        cfg = load_config(tmp_path / "none.toml")
-        assert cfg.wake.arm == "manual"
-        assert cfg.wake.grace_seconds == 60
-        assert cfg.notify.enabled is True
-
-    def test_new_keys_loaded(self, tmp_path):
-        p = tmp_path / "c.toml"
-        p.write_text('[wake]\narm = "always"\ngrace_seconds = 30\n'
-                     "[notify]\nenabled = false\n")
-        cfg = load_config(p)
-        assert cfg.wake.arm == "always"
-        assert cfg.wake.grace_seconds == 30
-        assert cfg.notify.enabled is False
-
-    def test_invalid_arm_falls_back_to_manual(self, tmp_path, capsys):
-        p = tmp_path / "c.toml"
-        p.write_text('[wake]\narm = "banana"\n')
-        cfg = load_config(p)
-        assert cfg.wake.arm == "manual"
-        assert "banana" in capsys.readouterr().err
-
-
-class TestLegacyModeMapping:
-    def _load(self, tmp_path, body):
-        p = tmp_path / "c.toml"
-        p.write_text(body)
-        return load_config(p)
-
-    def test_hybrid_maps_to_always_notify_on(self, tmp_path):
-        cfg = self._load(tmp_path, '[general]\nmode = "hybrid"\n')
-        assert cfg.wake.arm == "always"
-        assert cfg.notify.enabled is True
-
-    def test_auto_maps_to_always_notify_off(self, tmp_path):
-        # 구 auto 는 system_notification=true 여도 알림 없이 즉시 wake 였음
-        cfg = self._load(
+class TestObsoleteKeysIgnored:
+    def test_old_keys_ignored_default_auto_wakes_2(self, tmp_path, capsys):
+        """옛 max_refresh_count = 10 · always 는 auto_wakes 로 이어지지 않는다 — 기본 2."""
+        c = _load(
             tmp_path,
-            '[general]\nmode = "auto"\n[notify]\nsystem_notification = true\n',
+            '[general]\nmode = "hybrid"\nmax_refresh_count = 10\n'
+            '[wake]\narm = "always"\ngrace_seconds = 60\n'
+            '[notify]\nenabled = true\nsystem_notification = false\n'
+            '[refresh]\nhybrid_wait_seconds = 90\n'
+            '[advanced]\nx = 1\n[display]\nrecap_style = "box"\n',
         )
-        assert cfg.wake.arm == "always"
-        assert cfg.notify.enabled is False
+        assert c == Config()
+        assert capsys.readouterr().err == ""   # 경고 없이 로드
 
-    def test_notify_maps_to_manual_notify_on(self, tmp_path):
-        cfg = self._load(tmp_path, '[general]\nmode = "notify"\n')
-        assert cfg.wake.arm == "manual"
-        assert cfg.notify.enabled is True
-
-    def test_system_notification_false_maps_to_disabled(self, tmp_path):
-        cfg = self._load(
-            tmp_path,
-            '[general]\nmode = "hybrid"\n[notify]\nsystem_notification = false\n',
-        )
-        assert cfg.notify.enabled is False
-
-    def test_hybrid_wait_seconds_maps_to_grace(self, tmp_path):
-        cfg = self._load(
-            tmp_path,
-            '[general]\nmode = "hybrid"\n[refresh]\nhybrid_wait_seconds = 90\n',
-        )
-        assert cfg.wake.grace_seconds == 90
-
-    def test_new_keys_win_over_legacy(self, tmp_path):
-        cfg = self._load(
-            tmp_path,
-            '[general]\nmode = "hybrid"\n[wake]\narm = "manual"\n',
-        )
-        assert cfg.wake.arm == "manual"
-
-    def test_invalid_legacy_mode_warns_and_uses_default(self, tmp_path, capsys):
-        cfg = self._load(tmp_path, '[general]\nmode = "banana"\n')
-        assert cfg.wake.arm == "manual"
-        assert "banana" in capsys.readouterr().err
-
-    def test_detect_legacy_keys(self):
-        from lib.config import detect_legacy_keys
+    def test_detect_obsolete_keys_key_level(self):
         data = {
-            "general": {"mode": "hybrid"},
-            "notify": {"system_notification": True},
-            "refresh": {"hybrid_wait_seconds": 60},
+            "general": {"mode": "hybrid", "max_refresh_count": 5, "auto_wakes": 2},
+            "wake": {"arm": "always", "grace_seconds": 60},
+            "notify": {"enabled": True},
+            "refresh": {"prompt": "x"},
+            "advanced": {"daemon_poll_max_seconds": 30},
+            "display": {"recap_style": "box", "countdown": True},
         }
-        found = detect_legacy_keys(data)
-        assert "general.mode" in found
-        assert "notify.system_notification" in found
-        assert "refresh.hybrid_wait_seconds" in found
-        assert detect_legacy_keys({}) == []
+        found = detect_obsolete_keys(data)
+        assert sorted(found) == sorted([
+            "general.mode", "general.max_refresh_count", "wake.arm", "wake.grace_seconds",
+            "notify.enabled", "refresh.prompt", "advanced.daemon_poll_max_seconds",
+            "display.recap_style",
+        ])
+
+    def test_detect_obsolete_keys_clean(self):
+        assert detect_obsolete_keys({}) == []
+        assert detect_obsolete_keys({"general": {"auto_wakes": 2}}) == []
+
+    def test_obsolete_keys_format(self):
+        assert "general.mode" in OBSOLETE_KEYS
+        assert "wake.*" in OBSOLETE_KEYS
+        assert "display.recap_style" in OBSOLETE_KEYS
 
 
-def test_display_default_is_compact(tmp_path):
-    from lib.config import load_config
-    cfg = load_config(tmp_path / "none.toml")  # 파일 없음 → 기본값
-    assert cfg.display.recap_style == "compact"
+class TestInvalidValues:
+    @pytest.mark.parametrize("body,key", [
+        ('auto_wakes = 11', "general.auto_wakes"),
+        ('auto_wakes = -1', "general.auto_wakes"),
+        ('auto_wakes = "3"', "general.auto_wakes"),
+        ('auto_wakes = 2.5', "general.auto_wakes"),
+        ('auto_wakes = true', "general.auto_wakes"),
+        ('refresh_interval_minutes = 0', "general.refresh_interval_minutes"),
+        ('refresh_interval_minutes = "30"', "general.refresh_interval_minutes"),
+        ('cache_ttl_minutes = 0', "general.cache_ttl_minutes"),
+        ('language = "xx"', "general.language"),
+    ])
+    def test_invalid_key_falls_back_with_warning(self, tmp_path, capsys, body, key):
+        c = _load(tmp_path, f"[general]\n{body}\n")
+        assert c == Config()
+        err = capsys.readouterr().err
+        assert f"[cn:warn] invalid {key}:" in err
+        assert "기본값" in err
+
+    def test_only_bad_key_is_reset(self, tmp_path, capsys):
+        c = _load(tmp_path, '[general]\nauto_wakes = 99\nrefresh_interval_minutes = 45\n')
+        assert c.auto_wakes == 2
+        assert c.refresh_interval_minutes == 45
+
+    def test_countdown_non_bool(self, tmp_path, capsys):
+        c = _load(tmp_path, '[display]\ncountdown = "no"\n')
+        assert c.display.countdown is True
+        assert "display.countdown" in capsys.readouterr().err
+
+    def test_non_table_section_ignored(self, tmp_path):
+        assert _load(tmp_path, 'general = 5\n') == Config()
 
 
-def test_display_box_parsed(tmp_path):
-    from lib.config import load_config
-    p = tmp_path / "config.toml"
-    p.write_text('[display]\nrecap_style = "box"\n', encoding="utf-8")
-    cfg = load_config(p)
-    assert cfg.display.recap_style == "box"
+def test_parse_config_file_missing_and_error(tmp_path):
+    assert parse_config_file(tmp_path / "none.toml") == ({}, None)
+    p = tmp_path / "bad.toml"
+    p.write_text("[x\n")
+    data, err = parse_config_file(p)
+    assert data == {} and err
 
 
-def test_display_invalid_falls_back_to_compact(tmp_path, capsys):
-    from lib.config import load_config
-    p = tmp_path / "config.toml"
-    p.write_text('[display]\nrecap_style = "huge"\n', encoding="utf-8")
-    cfg = load_config(p)
-    assert cfg.display.recap_style == "compact"
-    assert "recap_style" in capsys.readouterr().err
-
-
-def test_display_countdown_default_true(tmp_path):
-    cfg = load_config(tmp_path / "none.toml")  # 파일 없음 → 기본값
-    assert cfg.display.countdown is True
-
-
-def test_display_countdown_false_parsed(tmp_path):
-    p = tmp_path / "config.toml"
-    p.write_text('[display]\nrecap_style = "box"\ncountdown = false\n', encoding="utf-8")
-    cfg = load_config(p)
-    assert cfg.display.countdown is False
-    assert cfg.display.recap_style == "box"  # 기존 키 동작 불변
+def test_non_utf8_config_falls_back(tmp_path, capsys):
+    """비 UTF-8 바이트 → 예외 없이 기본값 + 경고 (refresh·cn_set 이 traceback 으로 죽지 않게)."""
+    p = tmp_path / "c.toml"
+    p.write_bytes(b'[general]\nlanguage = "\xff\xfe"\n')
+    data, err = parse_config_file(p)
+    assert data == {} and err
+    assert load_config(p) == Config()
+    assert "syntax error" in capsys.readouterr().err

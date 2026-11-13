@@ -9,12 +9,16 @@ export type CacheNecromancerLabel = { text: string; tone: 'normal' | 'warning' |
 
 /** Python 이 쓰는 이 세션의 marker 파일에서 읽은 값. 없음·깨짐이면 null */
 export type CacheNecromancerMarker = {
-  /** wake_count — 마지막 사용자 입력 뒤 깨우기(manual 은 예산 없는 알림 포함) 횟수 */
+  /** wake_count — 이번 자리비움(마지막 사용자 입력 뒤)에 실제로 깨운 횟수 */
   wakeCount: number
   /** set_budget_remaining */
   budgetRemaining: number
-  /** set_budget_total — 충전량. 충전 뒤 깨우기가 있은 다음 사용자가 돌아오면 Python 이 0 으로 비운다 */
+  /** set_budget_total — /cn:set N 충전량 (>0 이면 덮어쓰기 중). 충전 뒤 깨우기가 있은 다음 사용자가 돌아오면 Python 이 0 으로 비운다 */
   budgetTotal: number
+  /** wake_off === true — /cn:set 0·off 로 이 세션 깨우기를 끔 */
+  wakeOff: boolean
+  /** set_charged_at_ns (없으면 0) — 충전이 바뀌었는지 보는 데만 쓴다 (Number 정밀도 손실 무관) */
+  chargedAt: number
 } | null
 
 /** ~/.cache-necromancer/config.toml 에서 세션 시작 때 읽은 값 */
@@ -27,14 +31,8 @@ export type CacheNecromancerConfig = {
   countdown: boolean
   /** [general] language — 띠·토스트 문구 언어 (Python 쪽 lib/i18n.py 와 같은 4종, 기본 en) */
   language: CacheNecromancerLanguage
-  /** [wake] arm (없으면 legacy [general] mode — hybrid·auto 는 always) */
-  arm: 'manual' | 'always'
-  /** [general] max_refresh_count — always 의 목숨 상한 */
-  maxRefreshCount: number
-  /** [notify] enabled (없으면 legacy 매핑) — 켜지면 깨우기 전에 grace 만큼 기다린다 */
-  notify: boolean
-  /** [wake] grace_seconds (없으면 legacy [refresh] hybrid_wait_seconds) */
-  graceSeconds: number
+  /** [general] auto_wakes — 자리비움마다 자동 깨우기 최대 횟수 (0~10, 아니면 2) */
+  autoWakes: number
 }
 
 export type CacheNecromancerLanguage = 'ko' | 'en' | 'ja' | 'zh'
@@ -48,13 +46,15 @@ declare module 'claude-code' {
       warnedFor: CacheNecromancerTime
       /** 만료 토스트를 보낸 기준 시각 */
       expiredFor: CacheNecromancerTime
-      /** refresh.py --now 를 실행한 기준 시각 (기준 시각당 1회) */
+      /** refresh.py --now 를 실행한 기준 시각 (기준 시각당 1회, 충전이 바뀌면 재판정) */
       wokeFor: CacheNecromancerTime
+      /** 이 기준 시각으로 마지막 깨우기가 끝난 뒤 marker 의 chargedAt — 달라지면 1회 더 판정한다. null = 실행 중·리로드 직후 (재판정 안 함) */
+      wokeCharge: number | null
       /** 지금 띠에 그릴 줄 */
       label: Shaped<CacheNecromancerLabel>
       /** 세션 시작 때 읽은 설정 */
       config: Shaped<CacheNecromancerConfig>
-      /** 마지막으로 읽은 marker (띠 뒤 정보용) */
+      /** 마지막으로 읽은 marker (띠 뒤 정보·충전 재판정용) */
       marker: CacheNecromancerMarker
       /** marker 를 마지막으로 읽은 시각 (null = 다음 tick 에 다시 읽음) */
       markerReadAt: CacheNecromancerTime
@@ -62,6 +62,8 @@ declare module 'claude-code' {
       tickErrorLogged: boolean
       /** 깨우기 실패를 디버그 로그에 이미 남겼는지 (첫 1회만 남긴다) */
       wakeErrorLogged: boolean
+      /** /cn:* 명령 실행 실패를 디버그 로그에 이미 남겼는지 (첫 1회만 남긴다) */
+      commandErrorLogged: boolean
     }
   }
 }

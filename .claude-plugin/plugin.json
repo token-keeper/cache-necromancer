@@ -1,8 +1,8 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "cache-necromancer",
-  "version": "0.11.1",
-  "description": "Cache death notifier + on-demand revive (/cn:set), timed from the last cache hit by a mod, with a cache countdown band below the prompt input",
+  "version": "0.12.0",
+  "description": "Keeps the prompt cache alive while you are away — wakes the session up to N times per absence (auto_wakes, default 2; /cn:set to override or turn off), timed from the last cache hit by a mod, with a cache countdown band below the prompt input",
   "author": {"name": "brody424"},
   "license": "MIT",
   "keywords": ["cache", "cost", "macos"],

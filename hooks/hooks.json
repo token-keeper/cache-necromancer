@@ -1,7 +1,18 @@
 {
-  "description": "v0.11.1 — 알림 기본 + /cn:set 소생 + clear/compact 시 소생 억제 + 입력창 아래 캐시 카운트다운 띠(뒤에 살린 횟수·목숨·예산과 생존 시각), 캐시 마지막 적중 시각 기준 깨우기 (modules). Stop 훅은 마지막 Stop 시각 기록만",
+  "description": "v0.12.0 — 자리비움마다 자동 깨우기 최대 N회(auto_wakes, 기본 2) + /cn:set N 이번 자리비움 덮어쓰기·/cn:set 0|off 이 세션 끄기 + clear/compact 시 깨우기 억제 + 입력창 아래 캐시 카운트다운 띠(뒤에 살린 횟수·남은 깨우기와 생존 시각), 캐시 마지막 적중 시각 기준 깨우기 (modules). Stop·StopFailure 훅은 마지막 turn 끝 시각 기록만",
   "hooks": {
     "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/on_recap.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
       {
         "hooks": [
           {

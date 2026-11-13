@@ -72,31 +72,41 @@ class TestStatusLabels:
         # 알 수 없는 키는 en fallback 도 없어 → key 그대로
         assert status_label("en", "totally-unknown-key") == "totally-unknown-key"
 
-    def test_mode_key_absent(self):
-        """v0.5.0: mode 키는 STATUS_LABELS 에서 제거됨."""
-        for lang in ("ko", "en", "ja", "zh"):
-            assert "mode" not in STATUS_LABELS[lang]
-
-    def test_notify_warn_key_absent(self):
-        """v0.5.0: notify_warn 키는 STATUS_LABELS 에서 제거됨."""
-        for lang in ("ko", "en", "ja", "zh"):
-            assert "notify_warn" not in STATUS_LABELS[lang]
+    def test_status_labels_placeholder_consistency(self):
+        placeholder_re = re.compile(r"\{(\w+)\}")
+        for key, en_val in STATUS_LABELS["en"].items():
+            expect = set(placeholder_re.findall(en_val))
+            for lang in ("ko", "ja", "zh"):
+                got = set(placeholder_re.findall(STATUS_LABELS[lang][key]))
+                assert got == expect, f"STATUS_LABELS[{lang!r}][{key!r}]"
 
 
-class TestArmLabel:
-    def test_manual_and_always_all_langs(self):
-        from lib.i18n import arm_label_i18n
-        for lang in ("ko", "en", "ja", "zh"):
-            assert "manual" in arm_label_i18n(lang, "manual", True, 60)
-            assert "always" in arm_label_i18n(lang, "always", False, 60)
+# 옛 용어 — ko 는 "깨우기·살림"으로 통일 (v0.12.0)
+_BANNED_KO = ("소생", "목숨", "예산", "arm", "fire", "발동", "repeat count")
+
+
+class TestKoTerms:
+    def test_ko_labels_use_unified_terms(self):
+        for table in (STATUS_LABELS["ko"], SET_LABELS["ko"]):
+            for key, val in table.items():
+                for word in _BANNED_KO:
+                    assert word not in val, f"ko {key!r} 에 옛 용어 {word!r}"
+
+
+class TestRemovedApi:
+    def test_arm_label_removed(self):
+        import lib.i18n as i18n_mod
+        assert not hasattr(i18n_mod, "arm_label_i18n")
+        assert not hasattr(i18n_mod, "mode_label_i18n")
 
 
 class TestSetLabels:
     def test_known_keys_all_langs(self):
-        keys = ("charged", "capped_note", "session_only", "first_turn_note",
-                "cancelled", "status_armed", "status_none", "always_noop",
-                "usage")
+        keys = ("status_off", "status_set", "status_auto", "status_auto_disabled",
+                "turned_off", "charged", "capped_note", "session_only", "usage",
+                "save_failed", "no_session", "until_time", "until_expired")
         for lang in ("ko", "en", "ja", "zh"):
+            assert set(SET_LABELS[lang].keys()) == set(keys)
             for k in keys:
                 assert set_label(lang, k)
 
@@ -116,21 +126,3 @@ class TestSetLabels:
                     f"SET_LABELS[{lang!r}][{key!r}] placeholder 불일치: "
                     f"en={en_placeholders}, {lang}={lang_placeholders}"
                 )
-
-
-class TestNewStatusLabels:
-    def test_arm_set_budget_legacy_warn_all_langs(self):
-        for lang in ("ko", "en", "ja", "zh"):
-            assert status_label(lang, "arm")
-            assert status_label(lang, "set_budget")
-            assert "{keys}" in status_label(lang, "legacy_warn")
-
-
-class TestModeLabelI18nRemoved:
-    """v0.5.0: mode_label_i18n 은 lib/i18n.py 에서 삭제됨."""
-
-    def test_mode_label_i18n_not_exported(self):
-        import lib.i18n as i18n_mod
-        assert not hasattr(i18n_mod, "mode_label_i18n"), (
-            "mode_label_i18n 이 아직 i18n 모듈에 남아 있음 — 삭제 필요"
-        )

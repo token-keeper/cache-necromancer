@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, ProcessRunResult, Register } from 'claude-code'
 
 import type {
   CacheNecromancerConfig,
@@ -14,24 +14,23 @@ const DEFAULT_CONFIG: CacheNecromancerConfig = {
   warnAfterMinutes: 50,
   countdown: true,
   language: 'en',
-  arm: 'manual',
-  maxRefreshCount: 10,
-  notify: true,
-  graceSeconds: 60,
+  autoWakes: 2,
 }
 
 const base = atom({ plugin: 'cache-necromancer', key: 'base' } as const, null as CacheNecromancerTime)
 const warnedFor = atom({ plugin: 'cache-necromancer', key: 'warnedFor' } as const, null as CacheNecromancerTime)
 const expiredFor = atom({ plugin: 'cache-necromancer', key: 'expiredFor' } as const, null as CacheNecromancerTime)
 const wokeFor = atom({ plugin: 'cache-necromancer', key: 'wokeFor' } as const, null as CacheNecromancerTime)
-// label·config 는 v0.11.0 에서 모양이 바뀌었다(extra·color / arm·notify 등). shape 태그가 다르면 리로드 전(옛 코드)이 남긴 값은
+const wokeCharge = atom({ plugin: 'cache-necromancer', key: 'wokeCharge' } as const, null as number | null)
+// label·config 는 v0.12.0 에서 모양이 바뀌었다(arm·notify·grace 삭제, autoWakes 추가). shape 태그가 다르면 리로드 전(옛 코드)이 남긴 값은
 // 없는 것으로 읽혀 초기값에서 시작한다. 모양을 다시 바꾸면 태그도 올린다
-const label = atom({ plugin: 'cache-necromancer', key: 'label' } as const, null as CacheNecromancerLabel, { shape: 'v0.11' })
-const config = atom({ plugin: 'cache-necromancer', key: 'config' } as const, DEFAULT_CONFIG, { shape: 'v0.11' })
+const label = atom({ plugin: 'cache-necromancer', key: 'label' } as const, null as CacheNecromancerLabel, { shape: 'v0.12' })
+const config = atom({ plugin: 'cache-necromancer', key: 'config' } as const, DEFAULT_CONFIG, { shape: 'v0.12' })
 const marker = atom({ plugin: 'cache-necromancer', key: 'marker' } as const, null as CacheNecromancerMarker)
 const markerReadAt = atom({ plugin: 'cache-necromancer', key: 'markerReadAt' } as const, null as CacheNecromancerTime)
 const tickErrorLogged = atom({ plugin: 'cache-necromancer', key: 'tickErrorLogged' } as const, false)
 const wakeErrorLogged = atom({ plugin: 'cache-necromancer', key: 'wakeErrorLogged' } as const, false)
+const commandErrorLogged = atom({ plugin: 'cache-necromancer', key: 'commandErrorLogged' } as const, false)
 
 const MIN_MS = 60 * 1000
 // scripts/refresh.py 의 PING_PREFIX 와 같다 (on_user_prompt.py 도 이 문자열로 ping 을 거른다)
@@ -42,11 +41,11 @@ const PING_PREFIX = '[cn:keepalive'
 const STRIP = '#1f2d3d'
 const LEVEL_COLOR = ['#ff7b7b', '#ffb454', '#f2d16b', '#8fe3a1', '#8ec5ff', '#b8c4d4'] as const
 const EXPIRED_COLOR = '#ff7b7b'
-// 뒤 정보(살린 횟수·목숨·예산)는 남은 시간과 무관해 회청 그대로 둔다 (7.92:1)
+// 뒤 정보(살린 횟수·남은 깨우기)는 남은 시간과 무관해 회청 그대로 둔다 (7.92:1)
 const EXTRA_COLOR = '#b8c4d4'
 // 띠가 숨는 백그라운드 에이전트 상태 (idle·종료는 사용자 입력을 막지 않으므로 제외)
 const BUSY_AGENT = new Set(['pending', 'running', 'waiting'])
-// 띠 뒤 정보(살린 횟수·목숨·예산)의 구분자와, marker 파일을 다시 읽는 간격
+// 띠 뒤 정보(살린 횟수·남은 깨우기)의 구분자와, marker 파일을 다시 읽는 간격
 const SEP = ' · '
 const MARKER_EVERY_MS = 5000
 // lib/session_id.py 의 _VALID_PATTERN — 이 모양이 아닌 id 는 Python 이 해시한 파일명을 쓰므로 읽지 않는다
@@ -65,10 +64,10 @@ const TEXT: Record<
     warn: (minutes: number) => string
     expired: string
     expiredToast: string
-    wakeOff: string
+    noWindow: string
     revived: (n: number) => string
-    lives: (n: number, hhmm: string) => string
-    budget: (n: number, hhmm: string) => string
+    remaining: (n: number, hhmm: string) => string
+    off: string
   }
 > = {
   ko: {
@@ -76,59 +75,51 @@ const TEXT: Record<
     warn: n => `캐시 ${n}분 남음`,
     expired: '캐시 만료',
     expiredToast: '캐시 만료 — 다음 입력은 캐시를 새로 만듦',
-    wakeOff: '캐시 깨우기 꺼짐 — refresh_interval_minutes 가 cache_ttl_minutes 이상',
+    noWindow: '캐시 깨우기 꺼짐 — refresh_interval_minutes 가 cache_ttl_minutes 이상',
     revived: n => `${n}번 살림`,
-    lives: (n, t) => `목숨 ${n} (${t}까지)`,
-    budget: (n, t) => `깨우기 ${n}회 남음 (${t}까지)`,
+    remaining: (n, t) => `깨우기 ${n}회 남음 (${t}까지)`,
+    off: '깨우기 꺼짐',
   },
   en: {
     left: t => `Cache ${t} left`,
     warn: n => `Cache: ${n} min left`,
     expired: 'Cache expired',
     expiredToast: 'Cache expired — your next input rebuilds it',
-    wakeOff: 'Cache wake off — refresh_interval_minutes is not below cache_ttl_minutes',
+    noWindow: 'Cache wake off — refresh_interval_minutes is not below cache_ttl_minutes',
     revived: n => `Revived ${n}×`,
-    lives: (n, t) => `Lives ${n} (until ${t})`,
-    budget: (n, t) => `Wakes ${n} left (until ${t})`,
+    remaining: (n, t) => `${n} ${n === 1 ? 'wake' : 'wakes'} left (until ${t})`,
+    off: 'Wake off',
   },
   ja: {
     left: t => `キャッシュ残り ${t}`,
     warn: n => `キャッシュ残り${n}分`,
     expired: 'キャッシュ期限切れ',
     expiredToast: 'キャッシュ期限切れ — 次の入力でキャッシュを作り直します',
-    wakeOff: 'キャッシュの自動延長は無効 — refresh_interval_minutes が cache_ttl_minutes 以上',
+    noWindow: 'キャッシュの自動延長は無効 — refresh_interval_minutes が cache_ttl_minutes 以上',
     revived: n => `${n}回蘇生`,
-    lives: (n, t) => `残機 ${n} (${t}まで)`,
-    budget: (n, t) => `wake 残り${n}回 (${t}まで)`,
+    remaining: (n, t) => `残り${n}回 (${t}まで)`,
+    off: '自動延長オフ',
   },
   zh: {
     left: t => `缓存剩余 ${t}`,
     warn: n => `缓存剩余 ${n} 分钟`,
     expired: '缓存已过期',
     expiredToast: '缓存已过期 — 下次输入将重新创建缓存',
-    wakeOff: '缓存唤醒已关闭 — refresh_interval_minutes 不小于 cache_ttl_minutes',
+    noWindow: '缓存唤醒已关闭 — refresh_interval_minutes 不小于 cache_ttl_minutes',
     revived: n => `已复活 ${n} 次`,
-    lives: (n, t) => `剩余 ${n} 命 (至 ${t})`,
-    budget: (n, t) => `剩余 ${n} 次 wake (至 ${t})`,
+    remaining: (n, t) => `还剩 ${n} 次唤醒 (至 ${t})`,
+    off: '唤醒已关闭',
   },
 }
 
 const pad = (n: number) => String(n).padStart(2, '0')
 
 // Python 쪽 lib/config.py 와 같은 파일에서 필요한 키만 읽는 최소 TOML 파서.
-// 분은 1 이상 정수, max_refresh_count 는 0 이상 정수, countdown 은 불리언, language 는 4종 문자열만 받고,
-// 그 밖의 값·다른 섹션의 같은 키는 무시해 기본값을 둔다.
-// arm·notify·grace 는 lib/config.py 의 _resolve_axes 와 같게: 신 키([wake] arm·grace_seconds, [notify] enabled)가 우선,
-// 없으면 legacy([general] mode: hybrid·auto → always, auto 는 알림 없음 / [notify] system_notification / [refresh] hybrid_wait_seconds)
+// 분은 1 이상 정수, auto_wakes 는 0~10 정수, countdown 은 불리언, language 는 4종 문자열만 받고,
+// 그 밖의 값·다른 섹션의 같은 키·옛 키(arm·mode·max_refresh_count·notify·grace 등)는 무시해 기본값을 둔다
 function parseConfig(text: string): CacheNecromancerConfig {
   const cfg = { ...DEFAULT_CONFIG }
   let section = ''
-  let arm: string | undefined
-  let mode: string | undefined
-  let enabled: boolean | undefined
-  let systemNotification: boolean | undefined
-  let grace: number | undefined
-  let legacyGrace: number | undefined
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.replace(/#.*/, '').trim()
     const header = /^\[\s*([A-Za-z0-9_.-]+)\s*\]$/.exec(line)
@@ -144,31 +135,17 @@ function parseConfig(text: string): CacheNecromancerConfig {
     const pair = /^([A-Za-z0-9_-]+)\s*=\s*(\S+)$/.exec(line)
     if (!pair) continue
     const [, key, value = ''] = pair
-    const minutes = /^\d+$/.test(value) && Number(value) >= 1 ? Number(value) : undefined
+    const int = /^\d+$/.test(value) ? Number(value) : undefined
+    const minutes = int !== undefined && int >= 1 ? int : undefined
     if (section === 'general' && key === 'cache_ttl_minutes' && minutes) cfg.ttlMinutes = minutes
     if (section === 'general' && key === 'refresh_interval_minutes' && minutes) cfg.warnAfterMinutes = minutes
+    if (section === 'general' && key === 'auto_wakes' && int !== undefined && int <= 10) cfg.autoWakes = int
     if (section === 'display' && key === 'countdown' && (value === 'true' || value === 'false')) {
       cfg.countdown = value === 'true'
     }
     const lang = /^(["'])(ko|en|ja|zh)\1$/.exec(value)?.[2] as CacheNecromancerLanguage | undefined
     if (section === 'general' && key === 'language' && lang) cfg.language = lang
-    if (section === 'general' && key === 'max_refresh_count' && /^\d+$/.test(value)) cfg.maxRefreshCount = Number(value)
-    const str = /^(["'])(.*)\1$/.exec(value)?.[2]
-    if (section === 'wake' && key === 'arm') arm = str ?? value
-    if (section === 'general' && key === 'mode') mode = str
-    const bool = value === 'true' || value === 'false' ? value === 'true' : undefined
-    if (section === 'notify' && key === 'enabled') enabled = bool
-    if (section === 'notify' && key === 'system_notification') systemNotification = bool
-    const seconds = /^\d+$/.test(value) ? Number(value) : undefined
-    if (section === 'wake' && key === 'grace_seconds') grace = seconds
-    if (section === 'refresh' && key === 'hybrid_wait_seconds') legacyGrace = seconds
   }
-  const isLegacyMode = mode === 'hybrid' || mode === 'auto' || mode === 'notify'
-  cfg.arm = (arm ?? (mode === 'hybrid' || mode === 'auto' ? 'always' : 'manual')) === 'always' ? 'always' : 'manual'
-  // 구 auto 는 system_notification 과 무관하게 알림 없음
-  const legacyEnabled = mode === 'auto' ? false : (systemNotification ?? (isLegacyMode ? true : undefined))
-  cfg.notify = enabled ?? legacyEnabled ?? true
-  cfg.graceSeconds = grace ?? legacyGrace ?? 60
   return cfg
 }
 
@@ -196,10 +173,10 @@ async function applyConfig($: EngineInterface): Promise<void> {
   const cfg = await loadConfig($)
   await update($, config, () => cfg)
   if (!cfg.countdown) await update($, label, () => null)
-  if (cfg.warnAfterMinutes >= cfg.ttlMinutes) $.ui.toast(TEXT[cfg.language].wakeOff)
+  if (cfg.warnAfterMinutes >= cfg.ttlMinutes) $.ui.toast(TEXT[cfg.language].noWindow)
 }
 
-// Python(lib/marker.py)이 쓰는 이 세션의 marker 에서 깨우기 횟수·예산만 읽는다. 없음·깨짐·id 모양 밖이면 null
+// Python(lib/marker.py)이 쓰는 이 세션의 marker 에서 깨우기 횟수·덮어쓰기·끔만 읽는다. 없음·깨짐·id 모양 밖이면 null
 async function loadMarker($: EngineInterface): Promise<CacheNecromancerMarker> {
   try {
     const sid = await $.session.id()
@@ -213,6 +190,9 @@ async function loadMarker($: EngineInterface): Promise<CacheNecromancerMarker> {
       wakeCount: int('wake_count'),
       budgetRemaining: int('set_budget_remaining'),
       budgetTotal: int('set_budget_total'),
+      wakeOff: fields['wake_off'] === true,
+      // ns 라 Number 정밀도를 넘지만 바뀌었는지만 보므로 상관없다
+      chargedAt: typeof fields['set_charged_at_ns'] === 'number' ? fields['set_charged_at_ns'] : 0,
     }
   } catch {
     return null
@@ -225,23 +205,19 @@ function hhmm(ms: number): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
-// 띠 카운트다운 뒤에 붙일 것: 마지막 사용자 입력 뒤 살린 횟수, 그리고 always 면 남은 목숨, manual 이면 남은 예산.
-// 생존 시각 = 기준 시각 + 남은 횟수 × (refresh_interval + 알림 켜짐이면 grace) + ttl.
-// 깨우기마다 refresh.py 가 알림 뒤 grace 만큼 기다렸다 ping 하므로 다음 기준 시각이 그만큼 늦다
+// 띠 카운트다운 뒤에 붙일 것: 이번 자리비움에 살린 횟수, 그리고 깨우기 꺼짐 또는 남은 깨우기 횟수와 생존 시각.
+// 남은 횟수는 lib/wake_plan.py remaining_wakes 와 같다 (덮어쓰기 중엔 충전 남은 것, 아니면 auto_wakes - wake_count).
+// 생존 시각 = 기준 시각 + 남은 횟수 × refresh_interval + ttl (survive_until_ns 와 같은 식)
 function extraFor(at: number, cfg: CacheNecromancerConfig, m: CacheNecromancerMarker): string[] {
   if (m === null) return []
   const text = TEXT[cfg.language]
-  const cycleMs = cfg.warnAfterMinutes * MIN_MS + (cfg.notify ? cfg.graceSeconds * 1000 : 0)
-  const until = (n: number) => hhmm(at + n * cycleMs + cfg.ttlMinutes * MIN_MS)
-  // wake_count 는 사용자 입력 때 0 으로 돌아간다. manual 은 예산 없는 알림도 세므로 소비한 예산만큼만 깨운 것.
-  // 충전 뒤 깨우기가 있은 다음 사용자가 돌아오면 Python(on_user_prompt)이 set_budget_total 도 0 으로 비운다
-  const revived = cfg.arm === 'always' ? m.wakeCount : Math.min(m.wakeCount, m.budgetTotal - m.budgetRemaining)
-  const extra = revived > 0 ? [text.revived(revived)] : []
-  if (cfg.arm === 'always') {
-    const lives = Math.max(0, cfg.maxRefreshCount - m.wakeCount)
-    extra.push(text.lives(lives, until(lives)))
-  } else if (m.budgetRemaining > 0) {
-    extra.push(text.budget(m.budgetRemaining, until(m.budgetRemaining)))
+  const extra = m.wakeCount > 0 ? [text.revived(m.wakeCount)] : []
+  if (m.wakeOff) return [...extra, text.off]
+  // 깨우기 창이 없으면(refresh_interval ≥ ttl) 깨울 수 없으니 남은 0 (wake_plan 과 같은 규칙)
+  const canWake = cfg.warnAfterMinutes < cfg.ttlMinutes
+  const remaining = !canWake ? 0 : m.budgetTotal > 0 ? m.budgetRemaining : Math.max(0, cfg.autoWakes - m.wakeCount)
+  if (remaining > 0) {
+    extra.push(text.remaining(remaining, hhmm(at + remaining * cfg.warnAfterMinutes * MIN_MS + cfg.ttlMinutes * MIN_MS)))
   }
   return extra
 }
@@ -252,7 +228,7 @@ const cols = (s: string) => [...s].reduce((n, ch) => n + (WIDE.test(ch) ? 2 : 1)
 // extra 가 없는 값(shape 태그 이전 코드가 남긴 것 등)도 카운트다운만으로 다룬다
 const joined = (line: NonNullable<CacheNecromancerLabel>) => [line.text, ...(line.extra ?? [])].join(SEP)
 
-// 폭 안에 들어오게 뒤 정보를 앞에서부터(살린 횟수 → 목숨·예산) 뺀다. 카운트다운은 남기고, 남은 뒤 정보를 돌려준다
+// 폭 안에 들어오게 뒤 정보를 앞에서부터(살린 횟수 → 남은 깨우기) 뺀다. 카운트다운은 남기고, 남은 뒤 정보를 돌려준다
 function fit(line: NonNullable<CacheNecromancerLabel>, width: number): string[] {
   const extra = [...(line.extra ?? [])]
   while (extra.length > 0 && cols(joined({ ...line, extra })) > width) extra.shift()
@@ -290,9 +266,9 @@ async function tick($: EngineInterface): Promise<void> {
   const cfg = await read($, config)
   const at = await read($, base)
   const now = at === null ? 0 : await $.clock.now()
-  // marker 는 Python 이 Stop·사용자 입력·깨우기 때 바꾼다. 띠를 그릴 때만 몇 초 간격으로 읽는다
+  // marker 는 Python 이 Stop·사용자 입력·깨우기·/cn:set 때 바꾼다. 기준 시각이 있으면 띠 표시와 무관하게 몇 초 간격으로 읽는다 (충전 재판정)
   const readAt = await read($, markerReadAt)
-  if (at !== null && cfg.countdown && (readAt === null || now - readAt >= MARKER_EVERY_MS)) {
+  if (at !== null && (readAt === null || now - readAt >= MARKER_EVERY_MS)) {
     await update($, markerReadAt, () => now)
     const m = await loadMarker($)
     await update($, marker, () => m)
@@ -312,12 +288,28 @@ async function tick($: EngineInterface): Promise<void> {
     isFirst = prev !== at
     return at
   }
-  // 깨우기는 띠(countdown)와 무관하게 판정한다. grace 동안 tick 이 계속 돌아도 claim 이 막는다.
+  // 깨우기는 띠(countdown)와 무관하게 판정한다. 실행이 끝나기 전에 tick 이 계속 돌아도 claim 이 막는다.
   // 이미 만료된 캐시(리로드 직후 오래된 기준 시각, 잠자기 복귀 등)는 깨워도 재생성 비용만 나므로 건너뛴다
   const age = now - at
-  if (age >= cfg.warnAfterMinutes * MIN_MS && age < cfg.ttlMinutes * MIN_MS && (await read($, wokeFor)) !== at) {
-    await update($, wokeFor, claim)
-    if (isFirst) void wake($).catch(error => logWakeOnce($, `wake failed (${errorText(error)})`).catch(() => undefined))
+  if (age >= cfg.warnAfterMinutes * MIN_MS && age < cfg.ttlMinutes * MIN_MS) {
+    const m = await read($, marker)
+    const charge = m?.chargedAt ?? 0
+    if ((await read($, wokeFor)) !== at) {
+      // wokeCharge = null 은 "실행 중" 표시. claim 보다 먼저 적어, claim 직후 겹친 tick 이 아래 재판정으로 새지 않게 한다.
+      // 실행이 끝나면 wake() 가 Python 이 본 충전을 적는다
+      await update($, wokeCharge, () => null)
+      await update($, wokeFor, claim)
+      if (isFirst) startWake($)
+    } else if (m !== null && !m.wakeOff && m.budgetRemaining > 0) {
+      // 이 기준 시각으로 이미 돌렸는데(알림 없이 끝남 등) 그 뒤 /cn:set 으로 충전이 바뀌면 1회 더 판정한다.
+      // 실행 중(null)·리로드 직후(null 로 시작)는 하지 않는다. 판정과 기록을 update 콜백 한 번에 (겹친 tick 중복 방지)
+      let isRecharge = false
+      await update($, wokeCharge, prev => {
+        isRecharge = prev !== null && prev !== charge
+        return isRecharge ? null : prev
+      })
+      if (isRecharge) startWake($)
+    }
   }
   if (next === null) return
   if (next.tone === 'error' && (await read($, expiredFor)) !== at) {
@@ -330,31 +322,51 @@ async function tick($: EngineInterface): Promise<void> {
   }
 }
 
-// 캐시 마지막 적중 + refresh_interval 이 지나면 refresh.py --now 를 돌린다. 재확인·예산·알림·grace 와 marker 기록은
+const startWake = ($: EngineInterface) =>
+  void wake($).catch(error => logWakeOnce($, `wake failed (${errorText(error)})`).catch(() => undefined))
+
+// 캐시 마지막 적중 + refresh_interval 이 지나면 refresh.py --now 를 돌린다. 재확인·남은 횟수와 marker 기록은
 // Python 몫이고, exit 2 면 stderr 중 ping 줄만 프롬프트로 낸다 ([cn:warn] 같은 경고 줄은 뺀다). 그 turn 이 캐시를 읽으면 turn.step 이 base 를 갱신해 다음 주기로 이어진다
 // 진행 중인 turn·이미 돌아온 경우는 Python 이 마지막 Stop 뒤 사용자 입력으로 보고 건너뛴다
 async function wake($: EngineInterface): Promise<void> {
-  const r = await $.process.run(['python3', `${$.plugin.root}/scripts/refresh.py`, '--now'], {
-    stdin: JSON.stringify({ session_id: await $.session.id() }),
-    // grace 길이는 Python 이 설정에서 정하므로 process.run 상한(10분)을 그대로 쓴다. 끝나면 바로 돌아온다
-    timeoutMs: 10 * MIN_MS,
-  })
+  let r: ProcessRunResult
+  try {
+    r = await $.process.run(['python3', `${$.plugin.root}/scripts/refresh.py`, '--now'], {
+      stdin: JSON.stringify({ session_id: await $.session.id() }),
+      // grace 대기가 없어져 바로 끝난다. 상한은 넉넉히 1분
+      timeoutMs: 60_000,
+    })
+  } finally {
+    // 실패해도 "실행 중"을 풀어야 재판정이 다시 가능하다. 깨우기가 marker 를 바꿨을 수 있으니 바로 다시 읽고,
+    // Python 이 이번 판정에 쓴 충전을 적는다 (그 뒤 충전이 또 바뀔 때만 재판정)
+    const m = await loadMarker($)
+    await update($, marker, () => m)
+    await update($, wokeCharge, () => m?.chargedAt ?? 0)
+  }
   const ping = r.stderr
     .split(/\r?\n/)
     .filter(line => line.includes(PING_PREFIX))
     .join('\n')
     .trim()
-  // 깨우기·알림이 marker 를 바꿨으니 다음 tick 이 다시 읽는다
-  await update($, markerReadAt, () => null)
-  if (r.exitCode === 2 && ping) await $.prompt.submit({ text: ping })
+  if (r.exitCode === 2 && ping) {
+    const res = await $.prompt.submit({ text: ping })
+    if (res.drop !== undefined) await logWakeOnce($, `ping dropped (${res.drop})`)
+  }
 }
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
-// 깨우기도 best-effort: 첫 실패만 디버그 로그에 남긴다
+// 깨우기도 best-effort: 첫 실패(실행 실패·ping 거부)만 디버그 로그에 남긴다
 async function logWakeOnce($: EngineInterface, text: string): Promise<void> {
   if (await read($, wakeErrorLogged)) return
   await update($, wakeErrorLogged, () => true)
+  $.ui.log(`cache-necromancer: ${text}; later failures are not logged`, { to: 'debug' })
+}
+
+// /cn:* 명령도 같다: 첫 실패만 남기고 옛 경로로 넘긴다
+async function logCommandOnce($: EngineInterface, text: string): Promise<void> {
+  if (await read($, commandErrorLogged)) return
+  await update($, commandErrorLogged, () => true)
   $.ui.log(`cache-necromancer: ${text}; later failures are not logged`, { to: 'debug' })
 }
 
@@ -374,7 +386,51 @@ function ensureTimer($: EngineInterface): void {
   $.clock.every(1000, () => void tick($).catch(error => logFirstTickError($, error).catch(() => undefined)))
 }
 
+// /cn:* 명령 → 실행할 스크립트와 인자. 엔진이 넘기는 이름이 짧은 형식·네임스페이스형 어느 쪽이든 받는다.
+// (Python UserPromptExpansion 훅 scripts/on_status_command.py 와 같은 표 — 그쪽은 mods 없는 Claude Code 용 대체 경로)
+const COMMANDS: Record<string, (args: string) => string[]> = {}
+for (const prefix of ['', 'cache-necromancer:']) {
+  // cn:set 은 첫 토큰만 (나머지는 무시)
+  COMMANDS[`${prefix}cn:set`] = args => ['cn_set.py', ...args.trim().split(/\s+/).filter(Boolean).slice(0, 1)]
+  COMMANDS[`${prefix}cn:status`] = () => ['cn_status.py']
+  // 설정 메뉴(TUI)는 터미널 입력이 필요해 여기선 못 띄운다 → 실행 방법 안내만
+  COMMANDS[`${prefix}cn:config`] = () => ['cn_config.py', '--hint']
+}
+// 스크립트 출력 끝의 stderr 는 이만큼만 붙인다
+const STDERR_LINES = 10
+
+// /cn:* 를 Python 스크립트로 직접 실행해 그 출력을 명령 결과로 답한다 (next 를 부르지 않아 명령 본문·모델 turn 없음).
+// 세션 id 는 스크립트가 읽는 CLAUDE_CODE_SESSION_ID 로 넘긴다 (process.run 의 env 는 host 환경 위에 덧씌움 — HOME·PATH·CN_ROOT 는 그대로).
+// exit≠0 이면 stdout 뒤에 exit 코드와 stderr 끝부분을 붙인다
+async function runCommand($: EngineInterface, argv: string[]): Promise<string> {
+  const [script = '', ...args] = argv
+  const r = await $.process.run(['python3', `${$.plugin.root}/scripts/${script}`, ...args], {
+    env: { CLAUDE_CODE_SESSION_ID: await $.session.id() },
+    timeoutMs: 10_000,
+  })
+  const out = r.stdout.trimEnd() || '(empty)'
+  if (r.exitCode === 0) return out
+  const err = r.stderr.trimEnd().split(/\r?\n/).slice(-STDERR_LINES).join('\n')
+  return `${out}\n\n[exit ${r.exitCode}]${err ? `\n[stderr]\n${err}` : ''}`
+}
+
 export const register: Register = on => {
+  // /cn:* 를 mod 가 먼저 처리한다. Python 훅(decision=block)으로 막으면 막힌 명령이 입력창에 다시 들어가 매번 지워야 했다.
+  // 실행 자체가 실패하면(python3 없음 등) 옛 경로(명령 본문·Python 훅)로 넘긴다
+  for (const command of Object.keys(COMMANDS)) {
+    on('command.run', { command }, async ($, e, next) => {
+      const argv = COMMANDS[e.command]?.(e.args)
+      if (argv === undefined) return next(e)
+      try {
+        return { text: await runCommand($, argv) }
+      } catch (error) {
+        await logCommandOnce($, `/${e.command} failed (${errorText(error)}), falling back`).catch(() => undefined)
+        return next(e)
+      }
+    })
+  }
+
+
   // 설정은 세션 시작 때 읽는다 (Python 훅과 같은 "설정 변경 후 새 세션" 규칙).
   // 리로드 뒤엔 session.start 가 안 올 수 있어 ui.render·turn.step 도 타이머를 건다 (먼저 오는 쪽 1회, 설정은 첫 tick 이 읽음)
   on('session.start', async ($, e, next) => {

@@ -65,4 +65,4 @@ python3 -c "import json; d=json.load(open('$HOME/.claude/plugins/installed_plugi
 grep '\[refresh\]' ~/.cache-necromancer/cn.log.$(date +%F)
 ```
 
-v0.10.0 부터 깨우기는 mod 가 `refresh.py --now` 를 짧게 실행하는 방식이라 상주하는 refresh.py 프로세스가 없다 (예전 Stop 훅 asyncRewake 대기 프로세스는 사라졌다). 깨우기가 안 될 때는 활성 버전을 확인한 뒤 `~/.cache-necromancer/cn.log.*` 의 `[refresh]` 줄(wake·notify·skip 사유)로 판정 결과를 본다. 구조는 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+v0.10.0 부터 깨우기는 mod 가 `refresh.py --now` 를 짧게 실행하는 방식이라 상주하는 refresh.py 프로세스가 없다 (예전 Stop 훅 asyncRewake 대기 프로세스는 사라졌다). 깨우기가 안 될 때는 활성 버전을 확인한 뒤 `~/.cache-necromancer/cn.log.*` 의 `[refresh]` 줄(wake·skip 사유)로 판정 결과를, `[return]` 줄로 깨운 뒤 사용자가 돌아온 기록을 본다 (v0.12.0 부터 macOS 알림 없음). 구조는 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).

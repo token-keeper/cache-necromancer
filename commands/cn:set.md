@@ -1,5 +1,5 @@
 ---
-description: cache-necromancer wake 예산 충전 — /cn:set N (N회 소생, 0=취소, 무인자=상태)
+description: cache-necromancer 이번 자리비움 깨우기 — /cn:set N (N회 깨우기, 0·off=이 세션 끄기, 무인자=상태)
 allowed-tools: Bash
 ---
 
