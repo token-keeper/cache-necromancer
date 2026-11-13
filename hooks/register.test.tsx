@@ -1711,3 +1711,15 @@ test('이 세션 버튼 실패에 stderr 가 비면 stdout 첫 줄(marker 저장
   expect((await ui.findAll({ type: 'Text', text: '실패' })).map(t => t.props['color'])).toEqual(expect.arrayContaining(['error', undefined]))
   await ui.unmount()
 })
+
+test('실패 사유를 고를 때 stderr 의 설정 경고([cn:warn]) 줄은 건너뛴다 — 경고만 있으면 stdout 안내를 보인다', async ($, on) => {
+  const w = setup(on)
+  await start($)
+  w.run = { exitCode: 1, stdout: '⚠️ marker 저장 실패 — 다시 시도해 주세요\n', stderr: '[cn:warn] auto_wakes = 11 은 0~10 이 아니라 기본값 2 를 씀\n' }
+  const ui = await $.ui.mount(pane('terminal'))
+  await ui.press({ key: 'session:2h' })
+  const lines = await ui.findAll({ type: 'Text', text: '⚠️ marker 저장 실패 — 다시 시도해 주세요' })
+  expect(lines.map(t => t.props['color'])).toContain('error')
+  expect(await ui.findAll({ type: 'Text', text: /\[cn:warn\]/ })).toEqual([])
+  await ui.unmount()
+})

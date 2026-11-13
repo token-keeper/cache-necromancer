@@ -527,9 +527,15 @@ const SESSION_ARGS = ['off', 'auto', '1h', '2h', '4h'] as const
 const NOTE_MS = 4000
 const firstLine = (text: string) => text.trim().split(/\r?\n/)[0] ?? ''
 
-// 스크립트 실패(exit≠0) 사유 한 줄: stderr 첫 줄, 없으면 stdout 첫 줄(cn_set 의 marker 저장 실패 안내는 stdout), 둘 다 없으면 "실패"
+// 스크립트 실패(exit≠0) 사유 한 줄: stderr 중 설정 경고([cn:warn])가 아닌 첫 줄, 없으면 stdout 첫 줄(cn_set 의 marker 저장 실패 안내는 stdout),
+// 둘 다 없으면 "실패". 설정 파일의 잘못된 값 경고가 실제 실패 사유를 가리지 않게 한다
 const failText = async ($: EngineInterface, r: ProcessRunResult) =>
-  firstLine(r.stderr) || firstLine(r.stdout) || TEXT[(await read($, config)).language].failed
+  r.stderr
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .find(line => line !== '' && !line.startsWith('[cn:warn]')) ||
+  firstLine(r.stdout) ||
+  TEXT[(await read($, config)).language].failed
 
 // 알림 줄을 쓴다. 앞 알림의 지우기 타이머는 취소하고(같은 글자가 연달아 떠도 새 알림이 제 시간만큼 보이게), clearAfterMs 가 있으면 그 뒤 지운다
 async function showNote($: EngineInterface, note: NonNullable<CacheNecromancerNote>, clearAfterMs?: number): Promise<void> {
