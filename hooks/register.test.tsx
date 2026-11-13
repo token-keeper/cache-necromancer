@@ -123,9 +123,10 @@ function setup(on: On, env: Env = { HOME: '/home/t' }, files: Files = KO): World
   on('process.run', async (_$, e) => {
     if (e.argv[1]?.endsWith('/scripts/cn_config.py') && e.argv[2] === '--json') {
       w.configRuns += 1
+      // 실행 시작 때의 파일을 읽는다 (붙잡힌 동안 파일이 바뀌어도 결과는 시작 때 값)
+      const out = w.configOut ?? { exitCode: 0, stdout: JSON.stringify({ config: fakeConfig(files[`${root}/config.toml`]), items: w.items }) }
       await w.configGate
       if (w.configError) throw w.configError
-      const out = w.configOut ?? { exitCode: 0, stdout: JSON.stringify({ config: fakeConfig(files[`${root}/config.toml`]), items: w.items }) }
       return { value: { stderr: '', isStdoutTruncated: false, isStderrTruncated: false, ...out } }
     }
     w.runs.push({ argv: e.argv, stdin: e.init?.stdin, timeoutMs: e.init?.timeoutMs, env: e.init?.env })
@@ -1468,8 +1469,11 @@ test('전체 설정 버튼: --set 성공이면 바로 다시 읽어 반영하고
   const ui = await $.ui.mount(pane('terminal'))
   await ui.press({ key: 'general.auto_wakes=5' })
   await ui.unmount()
-  expect(argsOf(w)).toEqual([['cn_config.py', '--set', 'general.auto_wakes=5']])
+  // 저장 뒤 이 세션 상태 줄도 다시 받는다
+  expect(argsOf(w)).toEqual([['cn_config.py', '--set', 'general.auto_wakes=5'], ['cn_set.py']])
   expect(w.configRuns).toBe(2)
+  // 언어가 바뀌어 같은 id 로 다시 열어 제목을 바꾼다
+  expect(w.opens.at(-1)).toEqual({ id: 'cn-config', title: 'Cache Necromancer settings', closeOnEscape: true })
   const p = await panel($)
   expect(p.texts).toContain('Saved · applied to every open session right away')
   expect(p.buttons.find(b => b.key === 'general.auto_wakes=5')?.variant).toBe('primary')
@@ -1579,4 +1583,131 @@ test('이 세션 버튼을 다시 누르면 알림 줄이 새 결과로 바뀌�
   const texts = (await panel($)).texts
   expect(texts).toContain('살아 있는 캐시 없음')
   expect(texts).not.toContain('이미 19:00까지 살아 있어요')
+})
+
+// ── 리뷰 r1 반영: 깨우기 자격 서명 재판정·알림 타이머·⚙ 실패 안내·저장과 5초 읽기 겹침 ──
+test('깨우기 창 안에서 판정이 끝난 뒤 끔을 풀면([자동]·/cn:set auto) 1회 더 판정한다', async ($, on) => {
+  const files: Record<string, string> = { [CONFIG]: AUTO, [MARKER]: '{"wake_off": true}' }
+  const w = setup(on, undefined, files)
+  w.run = { exitCode: 0, stderr: '' } // Python 은 끔이라 깨우지 않고 끝난다
+  await start($)
+  await step($, w)
+  await w.clock.advance(50 * MIN)
+  await wait(20)
+  expect(w.runs).toHaveLength(1)
+  // auto: wake_off=false, 충전 0 → 남은 깨우기 2, 서명이 바뀐다
+  files[MARKER] = '{}'
+  await w.clock.advance(5000)
+  await wait(20)
+  expect(w.runs).toHaveLength(2)
+  await w.clock.advance(MIN)
+  await wait(20)
+  expect(w.runs).toHaveLength(2)
+})
+
+test('깨우기 창 안에서 판정이 끝난 뒤 auto_wakes 를 0 → 2 로 올리면 1회 더 판정한다', async ($, on) => {
+  const files: Record<string, string> = { [CONFIG]: `${AUTO}auto_wakes = 0\n`, [MARKER]: '{}' }
+  const w = setup(on, undefined, files)
+  w.run = { exitCode: 0, stderr: '' }
+  await start($)
+  await step($, w)
+  await w.clock.advance(50 * MIN)
+  await wait(20)
+  expect(w.runs).toHaveLength(1)
+  files[CONFIG] = `${AUTO}auto_wakes = 2\n`
+  await w.clock.advance(5000)
+  await wait(20)
+  expect(w.runs).toHaveLength(2)
+  await w.clock.advance(MIN)
+  await wait(20)
+  expect(w.runs).toHaveLength(2)
+})
+
+test('남은 깨우기가 있어도 자격 서명이 그대로면 다시 판정하지 않는다', async ($, on) => {
+  const w = setup(on, undefined, { [CONFIG]: AUTO, [MARKER]: '{}' })
+  w.run = { exitCode: 0, stderr: '' }
+  await start($)
+  await step($, w)
+  await w.clock.advance(50 * MIN)
+  await wait(20)
+  await w.clock.advance(5 * MIN)
+  await wait(20)
+  expect(w.runs).toHaveLength(1)
+})
+
+test('같은 글자 알림이 연달아 떠도 앞 타이머가 새 알림을 일찍 지우지 않는다', async ($, on) => {
+  const w = setup(on)
+  w.items = ITEMS
+  await runCmd($, 'cn:config')
+  w.run = { exitCode: 0, stdout: 'saved\n', stderr: '' }
+  const SAVED_KO = '저장됨 · 열린 세션 모두에 바로 반영'
+  const ui = await $.ui.mount(pane('terminal'))
+  await ui.press({ key: 'general.auto_wakes=5' })
+  await w.clock.advance(2000)
+  await ui.press({ key: 'general.auto_wakes=0' })
+  await ui.unmount()
+  await w.clock.advance(2000)
+  expect((await panel($)).texts).toContain(SAVED_KO)
+  await w.clock.advance(2000)
+  expect((await panel($)).texts).not.toContain(SAVED_KO)
+})
+
+test('띠 ⚙ 로 패널을 못 띄우면 /cn:config 안내 토스트 1줄', async ($, on) => {
+  const w = setup(on)
+  w.openResult = { isPlaced: false, reason: 'no-surface' }
+  await start($)
+  await step($, w)
+  await w.clock.advance(1000)
+  const ui = await $.ui.mount(band('terminal'))
+  await ui.press({ key: 'cn-gear' })
+  await ui.unmount()
+  expect(w.toasts).toEqual(['설정 패널을 띄울 수 없음 — /cn:config 를 입력해 보세요'])
+})
+
+test('저장 순간 5초 주기 읽기가 겹쳐도 저장 전 텍스트의 결과가 저장 후 결과를 덮지 않는다', async ($, on) => {
+  const files: Record<string, string> = { ...KO }
+  const w = setup(on, undefined, files)
+  w.items = ITEMS
+  await start($)
+  await w.clock.advance(1000) // 첫 tick 확인 (그대로)
+  await runCmd($, 'cn:config')
+  expect(w.configRuns).toBe(2)
+  // 저장 전에 바뀐 텍스트(ko, auto_wakes 3)로 5초 읽기가 시작돼 붙잡힌다
+  let release = () => {}
+  w.configGate = new Promise(resolve => (release = resolve))
+  files[CONFIG] = '[general]\nlanguage = "ko"\nauto_wakes = 3\n'
+  await w.clock.advance(5000)
+  expect(w.configRuns).toBe(3)
+  // 그 사이 패널에서 저장 → Python 이 파일을 en 으로 쓴다
+  files[CONFIG] = '[general]\nlanguage = "en"\n'
+  w.run = { exitCode: 0, stdout: 'saved\n', stderr: '' }
+  const ui = await $.ui.mount(pane('terminal'))
+  const pressing = ui.press({ key: 'general.auto_wakes=5' })
+  await wait(20)
+  // 강제 읽기는 붙잡힌 읽기 뒤에 줄 선다
+  expect(w.configRuns).toBe(3)
+  release()
+  await pressing
+  await ui.unmount()
+  expect(w.configRuns).toBe(4)
+  const texts = (await panel($)).texts
+  expect(texts).toContain('Settings')
+  expect(texts).toContain('Saved · applied to every open session right away')
+})
+
+test('이 세션 버튼 실패에 stderr 가 비면 stdout 첫 줄(marker 저장 실패 안내)을, 둘 다 비면 "실패"를 빨간 줄·상태 줄에', async ($, on) => {
+  const w = setup(on)
+  await start($)
+  w.run = { exitCode: 1, stdout: '⚠️ marker 저장 실패 — 다시 시도해 주세요\n충전 안 됨\n', stderr: '' }
+  let ui = await $.ui.mount(pane('terminal'))
+  await ui.press({ key: 'session:1h' })
+  const lines = await ui.findAll({ type: 'Text', text: '⚠️ marker 저장 실패 — 다시 시도해 주세요' })
+  await ui.unmount()
+  // 알림 줄(빨강) + 같은 규칙의 상태 줄
+  expect(lines.map(t => t.props['color'])).toEqual(expect.arrayContaining(['error', undefined]))
+  w.run = { exitCode: 1, stdout: '', stderr: '' }
+  ui = await $.ui.mount(pane('terminal'))
+  await ui.press({ key: 'session:off' })
+  expect((await ui.findAll({ type: 'Text', text: '실패' })).map(t => t.props['color'])).toEqual(expect.arrayContaining(['error', undefined]))
+  await ui.unmount()
 })

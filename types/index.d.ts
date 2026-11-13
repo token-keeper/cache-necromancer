@@ -59,10 +59,13 @@ declare module 'claude-code' {
       warnedFor: CacheNecromancerTime
       /** 만료 토스트를 보낸 기준 시각 */
       expiredFor: CacheNecromancerTime
-      /** refresh.py --now 를 실행한 기준 시각 (기준 시각당 1회, 충전이 바뀌면 재판정) */
+      /** refresh.py --now 를 실행한 기준 시각 (기준 시각당 1회, 깨우기 자격이 바뀌면 재판정) */
       wokeFor: CacheNecromancerTime
-      /** 이 기준 시각으로 마지막 깨우기가 끝난 뒤 marker 의 chargedAt — 달라지면 1회 더 판정한다. null = 실행 중·리로드 직후 (재판정 안 함) */
-      wokeCharge: number | null
+      /**
+       * 이 기준 시각으로 마지막 깨우기가 끝난 뒤의 깨우기 자격 서명 `chargedAt|wakeOff|autoWakes` — 남은 깨우기가 있고 서명이 달라지면
+       * 1회 더 판정한다. null = 실행 중·리로드 직후 (재판정 안 함)
+       */
+      wokeCharge: Shaped<string | null>
       /** 지금 띠에 그릴 줄 */
       label: Shaped<CacheNecromancerLabel>
       /** 지금 쓰는 설정 (config.toml 이 바뀌면 몇 초 안에 갱신) */

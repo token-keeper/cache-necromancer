@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, ProcessRunResult, Register } from 'claude-code'
+import type { EngineInterface, ProcessRunResult, Register, Timer } from 'claude-code'
 
 import type {
   CacheNecromancerConfig,
@@ -23,7 +23,8 @@ const base = atom({ plugin: 'cache-necromancer', key: 'base' } as const, null as
 const warnedFor = atom({ plugin: 'cache-necromancer', key: 'warnedFor' } as const, null as CacheNecromancerTime)
 const expiredFor = atom({ plugin: 'cache-necromancer', key: 'expiredFor' } as const, null as CacheNecromancerTime)
 const wokeFor = atom({ plugin: 'cache-necromancer', key: 'wokeFor' } as const, null as CacheNecromancerTime)
-const wokeCharge = atom({ plugin: 'cache-necromancer', key: 'wokeCharge' } as const, null as number | null)
+// v0.13.0 에서 숫자(chargedAt)가 깨우기 자격 서명 문자열로 바뀌었다. 옛 숫자 값은 shape 가 달라 null(리로드 직후)로 읽힌다
+const wokeCharge = atom({ plugin: 'cache-necromancer', key: 'wokeCharge' } as const, null as string | null, { shape: 'v0.13' })
 // label·config 는 v0.12.0 에서 모양이 바뀌었다(arm·notify·grace 삭제, autoWakes 추가). shape 태그가 다르면 리로드 전(옛 코드)이 남긴 값은
 // 없는 것으로 읽혀 초기값에서 시작한다. 모양을 다시 바꾸면 태그도 올린다
 const label = atom({ plugin: 'cache-necromancer', key: 'label' } as const, null as CacheNecromancerLabel, { shape: 'v0.12' })
@@ -67,6 +68,8 @@ let isStarted = false
 let configText: string | null = null
 let configCheckedAt: number | null = null
 let configJob: Promise<void> | null = null
+// 설정 패널 알림 줄을 지울 타이머 (새 알림이 뜨면 앞 것을 취소)
+let noteTimer: Timer | null = null
 
 // 문구는 lib/i18n.py 의 언어·용어를 따른다 (기본 en)
 const TEXT: Record<
@@ -88,6 +91,7 @@ const TEXT: Record<
     saved: string
     failed: string
     opened: string
+    openFailed: string
   }
 > = {
   ko: {
@@ -106,6 +110,7 @@ const TEXT: Record<
     saved: '저장됨 · 열린 세션 모두에 바로 반영',
     failed: '실패',
     opened: '설정 패널을 열었습니다',
+    openFailed: '설정 패널을 띄울 수 없음 — /cn:config 를 입력해 보세요',
   },
   en: {
     left: t => `Cache ${t} left`,
@@ -123,6 +128,7 @@ const TEXT: Record<
     saved: 'Saved · applied to every open session right away',
     failed: 'Failed',
     opened: 'Opened the settings panel',
+    openFailed: 'Could not show the settings panel — try typing /cn:config',
   },
   ja: {
     left: t => `キャッシュ残り ${t}`,
@@ -140,6 +146,7 @@ const TEXT: Record<
     saved: '保存しました · 開いているすべてのセッションにすぐ反映',
     failed: '失敗',
     opened: '設定パネルを開きました',
+    openFailed: '設定パネルを表示できません — /cn:config を入力してみてください',
   },
   zh: {
     left: t => `缓存剩余 ${t}`,
@@ -157,6 +164,7 @@ const TEXT: Record<
     saved: '已保存 · 立即应用到所有打开的会话',
     failed: '失败',
     opened: '已打开设置面板',
+    openFailed: '无法显示设置面板 — 请尝试输入 /cn:config',
   },
 }
 
@@ -214,10 +222,10 @@ async function loadConfig($: EngineInterface, force: boolean): Promise<void> {
     const data: unknown = JSON.parse(r.stdout)
     const cfg = toConfig(data)
     if (cfg === null) throw new Error('unexpected --json output')
-    const isFirst = configText === null
-    configText = text
     await update($, items, () => toItems(data))
-    await applyConfig($, cfg, isFirst)
+    await applyConfig($, cfg, configText === null)
+    // atom 갱신까지 끝난 뒤에 "읽음"으로 적는다 (중간에 실패하면 다음 주기에 다시 한다)
+    configText = text
   } catch (error) {
     await logConfigOnce($, `config load failed (${errorText(error)})`)
   }
@@ -227,11 +235,15 @@ async function loadConfig($: EngineInterface, force: boolean): Promise<void> {
 // force(패널 저장 직후)는 실행 중인 작업 뒤에 한 번 더 돌려, 저장 전 텍스트로 시작한 작업이 결과를 덮지 않게 한다
 function syncConfig($: EngineInterface, force = false): Promise<void> {
   if (configJob !== null && !force) return configJob
-  const job = (configJob ?? Promise.resolve()).then(() => loadConfig($, force))
+  // 앞 작업이 실패(reject)해도 이번 읽기는 돈다
+  const run = () => loadConfig($, force)
+  const job = (configJob ?? Promise.resolve()).then(run, run)
   configJob = job
-  void job.finally(() => {
-    if (configJob === job) configJob = null
-  })
+  void job
+    .finally(() => {
+      if (configJob === job) configJob = null
+    })
+    .catch(() => undefined)
   return job
 }
 
@@ -277,14 +289,23 @@ function hhmm(ms: number): string {
 // 띠 카운트다운 뒤에 붙일 것: 이번 자리비움에 살린 횟수, 그리고 깨우기 꺼짐 또는 남은 깨우기 횟수와 생존 시각.
 // 남은 횟수는 lib/wake_plan.py remaining_wakes 와 같다 (덮어쓰기 중엔 충전 남은 것, 아니면 auto_wakes - wake_count).
 // 생존 시각 = 기준 시각 + 남은 횟수 × refresh_interval + ttl (survive_until_ns 와 같은 식)
+// 남은 깨우기 횟수 (lib/wake_plan.py remaining_wakes 와 같다). marker 없음·끔이면 0.
+// 깨우기 창이 없으면(refresh_interval ≥ ttl) 깨울 수 없으니 0 (wake_plan 과 같은 규칙)
+function remainingWakes(cfg: CacheNecromancerConfig, m: CacheNecromancerMarker): number {
+  if (m === null || m.wakeOff || cfg.warnAfterMinutes >= cfg.ttlMinutes) return 0
+  return m.budgetTotal > 0 ? m.budgetRemaining : Math.max(0, cfg.autoWakes - m.wakeCount)
+}
+
+// 깨우기 자격 서명: 충전·끔·자동 횟수 중 하나라도 바뀌면 달라진다 (ns 는 Number 정밀도를 넘어 더하지 않고 글자로 잇는다)
+const wakeSign = (cfg: CacheNecromancerConfig, m: CacheNecromancerMarker) =>
+  `${m?.chargedAt ?? 0}|${m?.wakeOff === true}|${cfg.autoWakes}`
+
 function extraFor(at: number, cfg: CacheNecromancerConfig, m: CacheNecromancerMarker): string[] {
   if (m === null) return []
   const text = TEXT[cfg.language]
   const extra = m.wakeCount > 0 ? [text.revived(m.wakeCount)] : []
   if (m.wakeOff) return [...extra, text.off]
-  // 깨우기 창이 없으면(refresh_interval ≥ ttl) 깨울 수 없으니 남은 0 (wake_plan 과 같은 규칙)
-  const canWake = cfg.warnAfterMinutes < cfg.ttlMinutes
-  const remaining = !canWake ? 0 : m.budgetTotal > 0 ? m.budgetRemaining : Math.max(0, cfg.autoWakes - m.wakeCount)
+  const remaining = remainingWakes(cfg, m)
   if (remaining > 0) {
     extra.push(text.remaining(remaining, hhmm(at + remaining * cfg.warnAfterMinutes * MIN_MS + cfg.ttlMinutes * MIN_MS)))
   }
@@ -365,19 +386,20 @@ async function tick($: EngineInterface): Promise<void> {
   const age = now - at
   if (age >= cfg.warnAfterMinutes * MIN_MS && age < cfg.ttlMinutes * MIN_MS) {
     const m = await read($, marker)
-    const charge = m?.chargedAt ?? 0
+    const sign = wakeSign(cfg, m)
     if ((await read($, wokeFor)) !== at) {
       // wokeCharge = null 은 "실행 중" 표시. claim 보다 먼저 적어, claim 직후 겹친 tick 이 아래 재판정으로 새지 않게 한다.
-      // 실행이 끝나면 wake() 가 Python 이 본 충전을 적는다
+      // 실행이 끝나면 wake() 가 Python 이 본 자격 서명을 적는다
       await update($, wokeCharge, () => null)
       await update($, wokeFor, claim)
       if (isFirst) startWake($)
-    } else if (m !== null && !m.wakeOff && m.budgetRemaining > 0) {
-      // 이 기준 시각으로 이미 돌렸는데(알림 없이 끝남 등) 그 뒤 /cn:set 으로 충전이 바뀌면 1회 더 판정한다.
+    } else if (remainingWakes(cfg, m) > 0) {
+      // 이 기준 시각으로 이미 판정했는데(깨우지 않고 끝남 등) 그 뒤 남은 깨우기가 있고 자격 서명이 바뀌면 1회 더 판정한다
+      // (/cn:set 충전, [자동]·/cn:set auto 로 끔 해제, auto_wakes 변경). 실제 남은 횟수는 refresh.py 가 다시 확인한다.
       // 실행 중(null)·리로드 직후(null 로 시작)는 하지 않는다. 판정과 기록을 update 콜백 한 번에 (겹친 tick 중복 방지)
       let isRecharge = false
       await update($, wokeCharge, prev => {
-        isRecharge = prev !== null && prev !== charge
+        isRecharge = prev !== null && prev !== sign
         return isRecharge ? null : prev
       })
       if (isRecharge) startWake($)
@@ -410,10 +432,11 @@ async function wake($: EngineInterface): Promise<void> {
     })
   } finally {
     // 실패해도 "실행 중"을 풀어야 재판정이 다시 가능하다. 깨우기가 marker 를 바꿨을 수 있으니 바로 다시 읽고,
-    // Python 이 이번 판정에 쓴 충전을 적는다 (그 뒤 충전이 또 바뀔 때만 재판정)
+    // Python 이 이번 판정에 쓴 자격 서명을 적는다 (그 뒤 서명이 또 바뀔 때만 재판정)
     const m = await loadMarker($)
     await update($, marker, () => m)
-    await update($, wokeCharge, () => m?.chargedAt ?? 0)
+    const sign = wakeSign(await read($, config), m)
+    await update($, wokeCharge, () => sign)
   }
   const ping = r.stderr
     .split(/\r?\n/)
@@ -504,17 +527,23 @@ const SESSION_ARGS = ['off', 'auto', '1h', '2h', '4h'] as const
 const NOTE_MS = 4000
 const firstLine = (text: string) => text.trim().split(/\r?\n/)[0] ?? ''
 
-// 알림 줄을 쓴다. clearAfterMs 가 있으면 그 뒤 지운다 (그새 다른 알림으로 바뀌었으면 그대로)
+// 스크립트 실패(exit≠0) 사유 한 줄: stderr 첫 줄, 없으면 stdout 첫 줄(cn_set 의 marker 저장 실패 안내는 stdout), 둘 다 없으면 "실패"
+const failText = async ($: EngineInterface, r: ProcessRunResult) =>
+  firstLine(r.stderr) || firstLine(r.stdout) || TEXT[(await read($, config)).language].failed
+
+// 알림 줄을 쓴다. 앞 알림의 지우기 타이머는 취소하고(같은 글자가 연달아 떠도 새 알림이 제 시간만큼 보이게), clearAfterMs 가 있으면 그 뒤 지운다
 async function showNote($: EngineInterface, note: NonNullable<CacheNecromancerNote>, clearAfterMs?: number): Promise<void> {
+  noteTimer?.cancel()
+  noteTimer = null
   await update($, paneNote, () => note)
   if (clearAfterMs === undefined) return
-  $.clock.after(clearAfterMs, () => void update($, paneNote, n => (n?.text === note.text ? null : n)).catch(() => undefined))
+  noteTimer = $.clock.after(clearAfterMs, () => void update($, paneNote, () => null).catch(() => undefined))
 }
 
 // 이 세션 상태 줄 = cn_set.py(무인자) 출력
 async function refreshSession($: EngineInterface): Promise<void> {
   const r = await runScript($, ['cn_set.py'])
-  const line = r.exitCode === 0 ? r.stdout.trim() : firstLine(r.stderr) || r.stdout.trim()
+  const line = r.exitCode === 0 ? r.stdout.trim() : await failText($, r)
   await update($, sessionLine, () => line)
 }
 
@@ -539,11 +568,16 @@ const tryOpenPanel = ($: EngineInterface) =>
     return false
   })
 
+// 띠 ⚙: 패널을 못 띄우면(그려지지 못함·거부) 아무 반응 없이 끝나지 않게 /cn:config 를 안내한다
+async function openFromBand($: EngineInterface): Promise<void> {
+  if (!(await tryOpenPanel($))) $.ui.toast(TEXT[(await read($, config)).language].openFailed)
+}
+
 // 이 세션 버튼: cn_set.py <인자> → 결과 첫 줄(충전량·생존 시각 등)을 4초 알림, 상태 줄 다시 받기 + 다음 tick 에 marker 다시 읽기(띠 반영). 실패는 빨간 줄
 async function pressSession($: EngineInterface, arg: (typeof SESSION_ARGS)[number]): Promise<void> {
   const r = await runScript($, ['cn_set.py', arg])
   if (r.exitCode !== 0) {
-    await showNote($, { text: firstLine(r.stderr) || TEXT[(await read($, config)).language].failed, isError: true })
+    await showNote($, { text: await failText($, r), isError: true })
   } else {
     await showNote($, { text: firstLine(r.stdout), isError: false }, NOTE_MS)
   }
@@ -551,15 +585,20 @@ async function pressSession($: EngineInterface, arg: (typeof SESSION_ARGS)[numbe
   await refreshSession($)
 }
 
-// 전체 설정 버튼: cn_config.py --set → 성공이면 바로 다시 읽어 이 세션에 반영하고(다른 세션은 5초 안에) 4초 "저장됨", 실패면 빨간 줄
+// 전체 설정 버튼: cn_config.py --set → 성공이면 바로 다시 읽어 이 세션에 반영하고(다른 세션은 5초 안에) 상태 줄도 다시 받고 4초 "저장됨", 실패면 빨간 줄
 async function pressSetting($: EngineInterface, id: string, value: string): Promise<void> {
   const r = await runScript($, ['cn_config.py', '--set', `${id}=${value}`])
   if (r.exitCode !== 0) {
-    await showNote($, { text: firstLine(r.stderr) || TEXT[(await read($, config)).language].failed, isError: true })
+    await showNote($, { text: await failText($, r), isError: true })
     return
   }
+  const before = (await read($, config)).language
   await syncConfig($, true)
-  await showNote($, { text: TEXT[(await read($, config)).language].saved, isError: false }, NOTE_MS)
+  const lang = (await read($, config)).language
+  // 상태 줄은 auto_wakes·간격·언어에 따라 달라 다시 받는다. 언어가 바뀌면 같은 id 로 다시 열어 제목만 바꾼다 (closeOnEscape 는 열 때마다 다시 정해진다)
+  await refreshSession($).catch(() => undefined)
+  if (lang !== before) await $.ui.open({ id: PANE, title: TEXT[lang].title, closeOnEscape: true }).catch(() => undefined)
+  await showNote($, { text: TEXT[lang].saved, isError: false }, NOTE_MS)
 }
 
 // 버튼 작업이 throw 하면(python3 없음 등) 그 사유를 빨간 줄로
@@ -647,7 +686,7 @@ export const register: Register = on => {
             <Text color={line.color ?? EXPIRED_COLOR}>{line.text}</Text>
             {extra.length > 0 ? <Text color={EXTRA_COLOR}>{SEP + extra.join(SEP)}</Text> : null}
           </Text>
-          <Button key="cn-gear" label="⚙" onPress={() => pressed($, tryOpenPanel($))} />
+          <Button key="cn-gear" label="⚙" onPress={() => pressed($, openFromBand($))} />
         </Box>
         {below}
       </Box>
