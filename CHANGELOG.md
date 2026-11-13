@@ -17,6 +17,9 @@
 - 설정 해석을 Python(`cn_config.py --json`) 하나로 통일 — mod 의 TS 파서 삭제. 문법 오류 때 Python 은 기본값, mod 는 읽히는 줄만 쓰던 불일치가 없어진다.
 - 설정 저장을 원자화(같은 디렉터리 tempfile → `os.replace`, 권한 0o600) — 터미널 메뉴 저장도 동일.
 - `refresh_interval_minutes` 가 `cache_ttl_minutes` 이상이면 `/cn:status`·`/cn:set` 도 띠처럼 남은 깨우기 횟수를 보이지 않는다.
+- `[자동]`·`auto_wakes` 변경도 깨우기 구간 안에서 바로 다시 판정해 깨운다 (충전뿐 아니라 자격 서명이 바뀌면).
+- `/cn:set` 이 marker 저장에 실패하면 exit 1.
+- 터미널 설정 메뉴도 깨우기 시점 ≥ 캐시 수명인 값을 거부한다.
 - 업데이트 안내: `/plugin update` 뒤 `/reload-plugins` 로 충분하다 (2026-11-13 v0.12.0 실측 — reload 만으로 settings 훅 경로도 새 버전으로 바뀜). 완전 재시작은 안전한 대안으로만 남긴다.
 
 ## [0.12.0] — 2026-11-13
