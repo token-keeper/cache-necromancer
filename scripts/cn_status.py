@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
-"""/cn:status backend (TECH_SPEC §8).
+"""/cn:status backend (v0.12.0).
 
-v0.5.0: arm/예산 표시 + legacy config 경고.
-  - mode 행 → arm 행 (arm_label_i18n)
-  - settings 행에 notify on/off 추가
-  - 현재 세션: arm=manual 시 set 예산 행 추가
-  - legacy v0.4.x config 키 감지 시 경고 행 추가
+  - 현재 세션: 깨우기 상태(off/덮어쓰기/자동) + 남은 횟수 + 살린 횟수 + 다음 깨우기 + 캐시 최대 생존 시각
+  - 다른 세션: 다음 깨우기 / prompt / cwd — active 판정은 생존 시각(lib/wake_plan) 기준
+  - 상태: 자동 깨우기 · interval/ttl · plugin, 옛 설정 키가 있으면 한 줄 경고
 """
 import json
 import os
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -20,16 +18,18 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from lib.box_renderer import box_section, display_width, wrap_outer  # noqa: E402
-from lib.config import Config, detect_legacy_keys, load_config, parse_config_file  # noqa: E402
-from lib.i18n import (  # noqa: E402
-    arm_label_i18n,
-    normalize_language,
-    set_label,
-    status_label,
-)
+from lib.config import Config, detect_obsolete_keys, load_config, parse_config_file  # noqa: E402
+from lib.i18n import normalize_language, status_label  # noqa: E402
 from lib.marker import Marker, marker_dir  # noqa: E402
 from lib.mask import mask_sid  # noqa: E402
 from lib.session_id import sanitize  # noqa: E402
+from lib.wake_plan import (  # noqa: E402
+    cache_expired,
+    can_wake,
+    remaining_wakes,
+    survive_until_ns,
+    wake_mode,
+)
 
 OTHER_SESSIONS_MAX_SHOW = 5
 
@@ -89,8 +89,25 @@ def _list_markers() -> list[Marker]:
     return out
 
 
-def _ns_to_dt(ns: int, now: datetime) -> datetime:
+def _ns_to_dt(ns: int) -> datetime:
     return datetime.fromtimestamp(ns / 1_000_000_000, tz=timezone.utc).astimezone()
+
+
+def _next_wake_dt(marker: Marker, config: Config) -> datetime | None:
+    """다음 깨우기 예상 시각 (마지막 Stop + interval). 깨울 수 없으면 None."""
+    if (marker.latest_fire <= 0 or remaining_wakes(marker, config) == 0
+            or not can_wake(config) or _expired(marker, config)):
+        return None
+    return _ns_to_dt(marker.latest_fire + config.refresh_interval_minutes * 60 * 1_000_000_000)
+
+
+def _expired(marker: Marker, config: Config) -> bool:
+    return cache_expired(marker.latest_fire, time.time_ns(), config)
+
+
+def _survive_dt(marker: Marker, config: Config, now: datetime) -> datetime:
+    anchor = marker.latest_fire or int(now.timestamp() * 1_000_000_000)
+    return _ns_to_dt(survive_until_ns(anchor, remaining_wakes(marker, config), config))
 
 
 def _abbrev_home(path: str) -> str:
@@ -115,63 +132,51 @@ def _row(label: str, value: str, pad: int) -> str:
     return f"{label}:{' ' * (pad - display_width(label) - 1)}{value}"
 
 
-def _build_session_box(marker: Marker, config: Config, now: datetime, lang) -> list[str]:
-    """현재 세션 박스 (i18n). arm=manual 시 set 예산 행 추가."""
-    masked = mask_sid(marker.sid_hash)
-    L_sid = status_label(lang, "sid")
-    L_count = status_label(lang, "repeat_count")
-    L_next = status_label(lang, "next_fire")
+def _wake_state(marker: Marker, config: Config, lang) -> str:
+    mode = wake_mode(marker)
+    if mode == "off":
+        return status_label(lang, "state_off")
+    key = "state_set" if mode == "set" else "state_auto"
+    return status_label(lang, key).format(n=remaining_wakes(marker, config))
 
-    # arm=manual 시 set 예산 행 포함 — pad 계산에 반영
-    show_budget = config.wake.arm == "manual"
-    L_budget = status_label(lang, "set_budget") if show_budget else None
-    all_labels = [L_sid, L_count, L_next] + ([L_budget] if L_budget else [])
-    pad = _compute_pad(all_labels)
+
+def _build_session_box(marker: Marker, config: Config, now: datetime, lang) -> list[str]:
+    """현재 세션 박스 (i18n)."""
+    L_sid = status_label(lang, "sid")
+    L_wake = status_label(lang, "wake")
+    L_woken = status_label(lang, "woken")
+    L_next = status_label(lang, "next_wake")
+    L_alive = status_label(lang, "alive_until")
+    pad = _compute_pad([L_sid, L_wake, L_woken, L_next, L_alive])
 
     lines = [
-        _row(L_sid, masked, pad),
-        _row(L_count, f"{marker.wake_count} / {config.max_refresh_count}", pad),
+        _row(L_sid, mask_sid(marker.sid_hash), pad),
+        _row(L_wake, _wake_state(marker, config, lang), pad),
+        _row(L_woken, status_label(lang, "woken_value").format(n=marker.wake_count), pad),
     ]
+    next_dt = _next_wake_dt(marker, config)
+    if next_dt is not None:
+        lines.append(_row(
+            L_next,
+            f"{next_dt.strftime('%Y-%m-%d %H:%M:%S')} ({_format_delta(next_dt, now)})",
+            pad,
+        ))
     if marker.latest_fire > 0:
-        next_dt = _ns_to_dt(marker.latest_fire, now) + timedelta(
-            minutes=config.refresh_interval_minutes
-        )
-        lines.append(
-            _row(
-                L_next,
-                f"{next_dt.strftime('%Y-%m-%d %H:%M:%S')} ({_format_delta(next_dt, now)})",
-                pad,
-            )
-        )
-
-    # set 예산 행 (arm=manual 전용)
-    if show_budget:
-        remaining = marker.set_budget_remaining
-        total = marker.set_budget_total
-        if remaining > 0:
-            # 예상 생존 시한: now + remaining × refresh_interval + cache_ttl
-            deadline = now + timedelta(
-                minutes=remaining * config.refresh_interval_minutes + config.cache_ttl_minutes
-            )
-            budget_val = f"🔥 {remaining}/{total} (~{deadline.strftime('%H:%M')})"
-        else:
-            budget_val = set_label(lang, "status_none")
-        lines.append(_row(L_budget, budget_val, pad))
-
+        alive = (status_label(lang, "expired") if _expired(marker, config)
+                 else _survive_dt(marker, config, now).strftime("%H:%M"))
+        lines.append(_row(L_alive, alive, pad))
     return box_section(status_label(lang, "current_session"), lines)
 
 
 def _other_session_lines(marker: Marker, config: Config, now: datetime, lang) -> list[str]:
-    """다른 세션 inner 박스 본문 — next_fire / prompt / cwd."""
-    L_next = status_label(lang, "next_fire")
+    """다른 세션 inner 박스 본문 — next_wake / prompt / cwd."""
+    L_next = status_label(lang, "next_wake")
     L_prompt = status_label(lang, "prompt")
     L_cwd = status_label(lang, "cwd")
     pad = _compute_pad([L_next, L_prompt, L_cwd])
 
-    if marker.latest_fire > 0:
-        next_dt = _ns_to_dt(marker.latest_fire, now) + timedelta(
-            minutes=config.refresh_interval_minutes
-        )
+    next_dt = _next_wake_dt(marker, config)
+    if next_dt is not None:
         next_val = f"{next_dt.strftime('%H:%M:%S')} ({_format_delta(next_dt, now)})"
     else:
         next_val = "—"
@@ -187,18 +192,13 @@ def _other_session_lines(marker: Marker, config: Config, now: datetime, lang) ->
 
 
 def _is_active(marker: Marker, config: Config, now: datetime) -> bool:
-    """다음 발동 예상 시각이 미래여야 active.
+    """캐시가 아직 살아 있어야 active (마지막 Stop + ttl 이 미래).
 
-    latest_fire 가 과거고 거기서 refresh_interval 도 이미 지났으면 = wake
-    cycle 종료된 stale 세션 (max_refresh_count 도달 또는 chat 종료). cn:status
-    가시성에서 제외 (cleanup_stale 7d 정책과 별개로 표시만 필터링).
+    깨우면 ping turn 의 Stop 이 latest_fire 를 다시 올리므로, 연쇄 중인 세션은 항상
+    여기에 걸린다. Stop 기록이 없거나 이미 만료된 세션은 표시에서 뺀다
+    (cleanup_stale 7d 정책과 별개로 표시만 필터링).
     """
-    if marker.latest_fire <= 0:
-        return False
-    next_dt = _ns_to_dt(marker.latest_fire, now) + timedelta(
-        minutes=config.refresh_interval_minutes
-    )
-    return next_dt > now
+    return marker.latest_fire > 0 and not _expired(marker, config)
 
 
 def _build_other_sessions_box(
@@ -240,48 +240,39 @@ def _build_other_sessions_box(
     return wrap_outer(title, combined)
 
 
-def _build_status_box(config: Config, lang, legacy_keys: list[str]) -> list[str]:
-    """상태 박스 — arm / settings / plugin (v0.5.0: mode → arm, notify 상태 추가)."""
-    L_arm = status_label(lang, "arm")
+def _build_status_box(config: Config, lang, obsolete_keys: list[str]) -> list[str]:
+    """상태 박스 — 자동 깨우기 / 설정 / plugin (+ 옛 설정 경고 한 줄)."""
+    L_auto = status_label(lang, "auto_wakes")
     L_settings = status_label(lang, "settings")
     L_plugin = status_label(lang, "plugin")
-    pad = _compute_pad([L_arm, L_settings, L_plugin])
+    pad = _compute_pad([L_auto, L_settings, L_plugin])
 
-    arm_text = arm_label_i18n(
-        lang, config.wake.arm, config.notify.enabled, config.wake.grace_seconds
-    )
-    notify_state = "on" if config.notify.enabled else "off"
-    settings_text = (
-        f"refresh {config.refresh_interval_minutes}m"
-        f" · max {config.max_refresh_count}"
-        f" · notify {notify_state}"
+    if config.auto_wakes > 0:
+        auto_text = status_label(lang, "auto_per_away").format(n=config.auto_wakes)
+    else:
+        auto_text = status_label(lang, "auto_disabled")
+    settings_text = status_label(lang, "settings_value").format(
+        i=config.refresh_interval_minutes, t=config.cache_ttl_minutes
     )
     plugin_text = f"cache-necromancer v{_plugin_version()} (active)"
 
     lines = [
-        _row(L_arm, arm_text, pad),
+        _row(L_auto, auto_text, pad),
         _row(L_settings, settings_text, pad),
         _row(L_plugin, plugin_text, pad),
     ]
-    # legacy v0.4.x config 키 감지 시 경고 행 추가
-    if legacy_keys:
-        lines.append(
-            status_label(lang, "legacy_warn").format(keys=", ".join(legacy_keys))
-        )
+    # 키 이름은 나열하지 않는다 — 박스 폭 보호
+    if obsolete_keys:
+        lines.append(status_label(lang, "obsolete_warn").format(n=len(obsolete_keys)))
     return box_section(status_label(lang, "status"), lines)
 
 
 def main() -> int:
     config_path = _resolve_root() / "config.toml"
-    # legacy 키 감지용 raw parse (load_config 와 별도 — side effect 없음)
+    # 옛 키 감지용 raw parse (load_config 와 별도 — side effect 없음)
     raw_data, _err = parse_config_file(config_path)
-    legacy_keys = detect_legacy_keys(raw_data)
-
-    try:
-        config = load_config(config_path)
-    except ValueError as e:
-        print(f"⚠️  config 로드 실패: {e}. 기본값 표시.", file=sys.stderr)
-        config = Config()
+    obsolete_keys = detect_obsolete_keys(raw_data)
+    config = load_config(config_path)
 
     lang = normalize_language(config.language)
     now = datetime.now(timezone.utc).astimezone()
@@ -296,7 +287,7 @@ def main() -> int:
         else:
             others.append(m)
     if current is None and current_hash:
-        current = Marker(sid_hash=current_hash, session_started_at=int(time.time()))
+        current = Marker(sid_hash=current_hash)
 
     body: list[str] = []
     if current:
@@ -304,7 +295,7 @@ def main() -> int:
         body.append("")
     body.extend(_build_other_sessions_box(others, config, now, lang))
     body.append("")
-    body.extend(_build_status_box(config, lang, legacy_keys))
+    body.extend(_build_status_box(config, lang, obsolete_keys))
 
     print("\n".join(wrap_outer(status_label(lang, "title"), body)))
     return 0

@@ -369,19 +369,18 @@ class TestPolicyEdgeCases:
         assert main() == 0
         assert Marker.load(sh).wake_count == 0
 
-    def test_leading_whitespace_before_task_notification_resets(self, cn_root, monkeypatch):
-        """startswith 정책 — 앞에 공백/개행 있으면 system event 아닌 user input
-        으로 간주. 현재 관측된 Claude Code wrapper 는 leading whitespace 없음."""
+    def test_leading_whitespace_before_task_notification_skips(self, cn_root, monkeypatch):
+        """v0.12.0: 앞 공백/개행은 무시 — 공백 뒤 task-notification 도 활동 아님."""
         sid = "ws-task-notif"
         sh = sanitize(sid)
         Marker(sid_hash=sh, wake_count=5).save()
 
         _set_stdin(monkeypatch, {
             "session_id": sid,
-            "prompt": "  <task-notification>이건 사용자가 쓴 텍스트</task-notification>",
+            "prompt": "\n  <task-notification>bg done</task-notification>",
         })
         assert main() == 0
-        assert Marker.load(sh).wake_count == 0
+        assert Marker.load(sh).wake_count == 5
 
     def test_system_reminder_only_wrapper_with_ping_skips(self, cn_root, monkeypatch):
         """`<system-reminder>` 단독 wrapper + PING — task-notification 없는 케이스도
@@ -432,19 +431,101 @@ class TestMetaCommandExemption:
         assert m2.set_budget_remaining == 2
 
 
-class TestBudgetZeroOnReturn:
-    """복귀 판정: 충전 후 wake ≥1회 이후의 진짜 prompt (spec §6 / Q15)."""
+class TestPeerMessagesNotActivity:
+    """v0.12.0: 피어 세션·팀메이트 메시지는 사용자 활동이 아니다 — marker 를 건드리지 않음."""
 
-    def _marker(self, sid_hash, *, charged_at_ns, last_wake_at):
+    @pytest.mark.parametrize("prompt", [
+        '<cross-session-message from="worker">hi</cross-session-message>',
+        '<teammate-message teammate_id="lead">do X</teammate-message>',
+        '  <teammate-message teammate_id="lead">do X</teammate-message>',
+    ])
+    def test_peer_message_does_not_touch_marker(self, cn_root, monkeypatch, prompt):
+        sid = "peer-sid"
+        sh = sanitize(sid)
+        Marker(sid_hash=sh, wake_count=2, last_user_activity_at_ns=111,
+               last_prompt="원래").save()
+        _run_with_stdin(monkeypatch, {"session_id": sid, "prompt": prompt})
+        m = Marker.load(sh)
+        assert m.wake_count == 2
+        assert m.last_user_activity_at_ns == 111
+        assert m.last_prompt == "원래"
+        assert m.last_turn_start_at_ns > 0     # turn 은 시작됐다
+
+
+class TestTurnStart:
+    def test_real_input_records_turn_start(self, cn_root, monkeypatch):
+        sid = "ts-user"
+        _run_with_stdin(monkeypatch, {"session_id": sid, "prompt": "hi"})
+        m = Marker.load(sanitize(sid))
+        assert m.last_turn_start_at_ns == m.last_user_activity_at_ns > 0
+
+    def test_task_notification_records_turn_start_only(self, cn_root, monkeypatch):
+        sid = "ts-task"
+        sh = sanitize(sid)
+        Marker(sid_hash=sh, wake_count=1, last_user_activity_at_ns=5).save()
+        _run_with_stdin(monkeypatch, {"session_id": sid,
+                                      "prompt": "<task-notification>done</task-notification>"})
+        m = Marker.load(sh)
+        assert m.last_turn_start_at_ns > 0
+        assert (m.wake_count, m.last_user_activity_at_ns) == (1, 5)
+
+    @pytest.mark.parametrize("prompt", ["/cn:set 2", "[cn:keepalive 10:00, 1/2] reply"])
+    def test_ping_and_meta_do_not_record_turn_start(self, cn_root, monkeypatch, prompt):
+        sid = "ts-skip"
+        sh = sanitize(sid)
+        Marker(sid_hash=sh).save()
+        _run_with_stdin(monkeypatch, {"session_id": sid, "prompt": prompt})
+        assert Marker.load(sh).last_turn_start_at_ns == 0
+
+
+class TestReturnLog:
+    def _log(self, cn_root) -> str:
+        from datetime import date
+        p = cn_root / f"cn.log.{date.today().isoformat()}"
+        return p.read_text() if p.exists() else ""
+
+    def test_return_after_wake_logs_one_line(self, cn_root, monkeypatch):
+        import time
+        sid = "return-log-sid"
+        sh = sanitize(sid)
+        Marker(sid_hash=sh, wake_count=2, last_wake_at=int(time.time()) - 30).save()
+        _run_with_stdin(monkeypatch, {"session_id": sid, "prompt": "다녀왔어"})
+        lines = [l for l in self._log(cn_root).splitlines() if "[return]" in l]
+        assert len(lines) == 1
+        assert f"[return] sid={sh} wakes=2 since_last_wake_s=" in lines[0]
+        secs = int(lines[0].rsplit("=", 1)[1])
+        assert 29 <= secs <= 35
+        assert Marker.load(sh).wake_count == 0
+
+    def test_no_return_log_without_wake(self, cn_root, monkeypatch):
+        sid = "no-return-sid"
+        Marker(sid_hash=sanitize(sid), wake_count=0).save()
+        _run_with_stdin(monkeypatch, {"session_id": sid, "prompt": "hi"})
+        assert "[return]" not in self._log(cn_root)
+
+
+class TestWakeOffKept:
+    def test_real_prompt_keeps_wake_off(self, cn_root, monkeypatch):
+        sid = "off-sid"
+        sh = sanitize(sid)
+        Marker(sid_hash=sh, wake_off=True).save()
+        _run_with_stdin(monkeypatch, {"session_id": sid, "prompt": "hi"})
+        assert Marker.load(sh).wake_off is True
+
+
+class TestBudgetZeroOnReturn:
+    """복귀 판정: 충전 후 wake ≥1회 이후의 진짜 prompt (ns 비교)."""
+
+    def _marker(self, sid_hash, *, charged_at_ns, last_wake_at_ns):
         return Marker(sid_hash=sid_hash, set_budget_remaining=1,
                       set_budget_total=2, set_charged_at_ns=charged_at_ns,
-                      last_wake_at=last_wake_at)
+                      last_wake_at_ns=last_wake_at_ns)
 
     def test_real_prompt_after_wake_zeroes_budget(self, cn_root, monkeypatch):
         sid = "return-sid"
         sid_hash = sanitize(sid)
         # 충전(t=100s) 후 wake(t=200s) 가 일어난 상태
-        self._marker(sid_hash, charged_at_ns=100 * 10**9, last_wake_at=200).save()
+        self._marker(sid_hash, charged_at_ns=100 * 10**9, last_wake_at_ns=200 * 10**9).save()
         _run_with_stdin(monkeypatch, {"session_id": sid, "prompt": "다녀왔어"})
         m = Marker.load(sid_hash)
         assert m.set_budget_remaining == 0
@@ -455,23 +536,47 @@ class TestBudgetZeroOnReturn:
         sid = "exhausted-sid"
         sid_hash = sanitize(sid)
         Marker(sid_hash=sid_hash, set_budget_remaining=0, set_budget_total=2,
-               set_charged_at_ns=100 * 10**9, last_wake_at=300).save()
+               set_charged_at_ns=100 * 10**9, last_wake_at_ns=300 * 10**9).save()
         _run_with_stdin(monkeypatch, {"session_id": sid, "prompt": "다녀왔어"})
         assert Marker.load(sid_hash).set_budget_total == 0
 
     def test_real_prompt_before_any_wake_keeps_budget(self, cn_root, monkeypatch):
         sid = "stay-sid"
         sid_hash = sanitize(sid)
-        # 충전(t=200s) 후 아직 wake 없음 (last_wake_at 은 충전 전 값)
-        self._marker(sid_hash, charged_at_ns=200 * 10**9, last_wake_at=100).save()
+        # 충전(t=200s) 후 아직 wake 없음 (last_wake_at_ns 는 충전 전 값)
+        self._marker(sid_hash, charged_at_ns=200 * 10**9, last_wake_at_ns=100 * 10**9).save()
         _run_with_stdin(monkeypatch, {"session_id": sid, "prompt": "하나만 더"})
         m = Marker.load(sid_hash)
         assert (m.set_budget_remaining, m.set_budget_total) == (1, 2)
 
+    def test_wake_in_same_second_as_charge_is_return(self, cn_root, monkeypatch):
+        """초 단위였으면 같은 초 안의 충전→깨우기를 놓쳤다 (리뷰 MINOR 13) — ns 로 판정."""
+        sid = "same-sec-sid"
+        sid_hash = sanitize(sid)
+        self._marker(sid_hash, charged_at_ns=100 * 10**9 + 1,
+                     last_wake_at_ns=100 * 10**9 + 500).save()
+        _run_with_stdin(monkeypatch, {"session_id": sid, "prompt": "다녀왔어"})
+        assert Marker.load(sid_hash).set_budget_total == 0
+
+    def test_v011_marker_without_ns_is_released(self, cn_root, monkeypatch):
+        """v0.11 marker(last_wake_at 초만, ns 없음) — 충전 뒤 깨운 적 있음 → 해제 (백필)."""
+        from lib.marker import marker_dir, marker_path
+        sid = "v011-sid"
+        sid_hash = sanitize(sid)
+        marker_dir().mkdir(parents=True, exist_ok=True)
+        marker_path(sid_hash).write_text(json.dumps({
+            "latest_fire": 50 * 10**9, "wake_count": 2, "last_wake_at": 300,
+            "set_budget_remaining": 0, "set_budget_total": 2,
+            "set_charged_at_ns": 100 * 10**9,
+        }), encoding="utf-8")
+        _run_with_stdin(monkeypatch, {"session_id": sid, "prompt": "다녀왔어"})
+        m = Marker.load(sid_hash)
+        assert (m.set_budget_remaining, m.set_budget_total) == (0, 0)
+
     def test_ping_does_not_zero_budget(self, cn_root, monkeypatch):
         sid = "ping-sid"
         sid_hash = sanitize(sid)
-        self._marker(sid_hash, charged_at_ns=100 * 10**9, last_wake_at=200).save()
+        self._marker(sid_hash, charged_at_ns=100 * 10**9, last_wake_at_ns=200 * 10**9).save()
         _run_with_stdin(monkeypatch, {
             "session_id": sid,
             "prompt": "<task-notification>[cn:keepalive 12:00, 1/2] ...",

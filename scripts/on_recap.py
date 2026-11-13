@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Stop hook 의 sync 본체 — turn 종료 시각을 marker.latest_fire 에 기록한다.
 
+Stop·StopFailure 둘 다 이 스크립트를 쓴다 (API 오류로 끝난 turn 도 종료로 기록 —
+안 그러면 last_turn_start_at_ns > latest_fire 가 계속 참이라 깨우기가 막힌다).
+payload 에서는 session_id 만 읽는다.
+
 v0.11.0: 채팅에 띄우던 recap 박스(만료 시각·목숨·예산)는 없앴다. 같은 정보는
 mod(hooks/register.tsx)가 입력창 아래 카운트다운 띠 뒤에 붙인다. 출력 없음.
 첫 Stop 에 config.toml 이 없으면 기본 템플릿을 만든다 (README "첫 hook fire 시 자동 생성").
@@ -49,8 +53,8 @@ def _resolve_session_id(payload: dict) -> str:
 
 
 def _record_stop(sid_hash: str) -> None:
-    """marker.latest_fire = 이번 Stop 시각 (ns). cn_status 다음 발동·active 판정과
-    cn_set 의 timer 추정, refresh.py --now 의 사용자 활동 판정 기준.
+    """marker.latest_fire = 이번 Stop 시각 (ns). refresh.py 의 사용자 활동·억제 판정과
+    cn_set·cn_status 의 다음 깨우기·생존 시각 기준.
     저장 실패는 silent.
     """
     marker = Marker.load(sid_hash)

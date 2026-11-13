@@ -1,4 +1,4 @@
-"""Tests for scripts/on_session_start.py (v0.8.0 clear/compact 소생 억제)."""
+"""Tests for scripts/on_session_start.py (clear/compact 깨우기 억제)."""
 import io
 import json
 import sys

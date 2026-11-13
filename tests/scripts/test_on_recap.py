@@ -129,3 +129,30 @@ def test_stop_creates_config_when_missing(session_stdin, temp_root, capsys):
     assert path.exists()
     assert "[general]" in path.read_text(encoding="utf-8")
     assert capsys.readouterr().out == ""
+
+
+def test_stop_failure_payload_records_stop_and_unblocks_wake(monkeypatch, capsys):
+    """StopFailure(API 오류로 끝난 turn) payload 로도 latest_fire 기록 → refresh 가
+    turn_start 게이트를 통과해 깨운다 (v0.12.0 리뷰 r2 MINOR A)."""
+    import time
+    from lib.marker import Marker
+    from lib.session_id import sanitize
+    from scripts import on_recap, refresh
+
+    sid = "stopfail-sid"
+    sh = sanitize(sid)
+    t0 = time.time_ns() - 60 * 60 * 1_000_000_000
+    Marker(sid_hash=sh, latest_fire=t0, last_turn_start_at_ns=t0 + 1).save()  # Stop 없이 끝난 turn
+
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    payload = {"session_id": sid, "hook_event_name": "StopFailure",
+               "error": "rate_limit", "error_details": "429"}
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+    assert on_recap.main() == 0
+    assert capsys.readouterr().out == ""
+    m = Marker.load(sh)
+    assert m.latest_fire > m.last_turn_start_at_ns
+
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": sid})))
+    assert refresh.main(["--now"]) == 2
+    assert refresh.PING_PREFIX in capsys.readouterr().err
