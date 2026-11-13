@@ -500,7 +500,8 @@ async function runCommand($: EngineInterface, argv: readonly string[]): Promise<
 // ── 설정 패널 (Pane): 이 세션 깨우기(cn_set.py)와 전체 설정(cn_config.py --set) ──
 const PANE = 'cn-config'
 const SESSION_ARGS = ['off', 'auto', '1h', '2h', '4h'] as const
-const SAVED_MS = 2000
+// 성공 알림 줄(저장됨·이 세션 버튼 결과)을 보이는 시간
+const NOTE_MS = 4000
 const firstLine = (text: string) => text.trim().split(/\r?\n/)[0] ?? ''
 
 // 알림 줄을 쓴다. clearAfterMs 가 있으면 그 뒤 지운다 (그새 다른 알림으로 바뀌었으면 그대로)
@@ -538,19 +539,19 @@ const tryOpenPanel = ($: EngineInterface) =>
     return false
   })
 
-// 이 세션 버튼: cn_set.py <인자> → 상태 줄 다시 받기 + 다음 tick 에 marker 다시 읽기(띠 반영). 실패는 빨간 줄
+// 이 세션 버튼: cn_set.py <인자> → 결과 첫 줄(충전량·생존 시각 등)을 4초 알림, 상태 줄 다시 받기 + 다음 tick 에 marker 다시 읽기(띠 반영). 실패는 빨간 줄
 async function pressSession($: EngineInterface, arg: (typeof SESSION_ARGS)[number]): Promise<void> {
   const r = await runScript($, ['cn_set.py', arg])
   if (r.exitCode !== 0) {
     await showNote($, { text: firstLine(r.stderr) || TEXT[(await read($, config)).language].failed, isError: true })
   } else {
-    await update($, paneNote, () => null)
+    await showNote($, { text: firstLine(r.stdout), isError: false }, NOTE_MS)
   }
   await update($, markerReadAt, () => null)
   await refreshSession($)
 }
 
-// 전체 설정 버튼: cn_config.py --set → 성공이면 바로 다시 읽어 이 세션에 반영하고(다른 세션은 5초 안에) 2초 "저장됨", 실패면 빨간 줄
+// 전체 설정 버튼: cn_config.py --set → 성공이면 바로 다시 읽어 이 세션에 반영하고(다른 세션은 5초 안에) 4초 "저장됨", 실패면 빨간 줄
 async function pressSetting($: EngineInterface, id: string, value: string): Promise<void> {
   const r = await runScript($, ['cn_config.py', '--set', `${id}=${value}`])
   if (r.exitCode !== 0) {
@@ -558,7 +559,7 @@ async function pressSetting($: EngineInterface, id: string, value: string): Prom
     return
   }
   await syncConfig($, true)
-  await showNote($, { text: TEXT[(await read($, config)).language].saved, isError: false }, SAVED_MS)
+  await showNote($, { text: TEXT[(await read($, config)).language].saved, isError: false }, NOTE_MS)
 }
 
 // 버튼 작업이 throw 하면(python3 없음 등) 그 사유를 빨간 줄로

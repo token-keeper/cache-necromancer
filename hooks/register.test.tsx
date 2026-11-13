@@ -1455,7 +1455,7 @@ test('옵션 밖 현재값(직접 편집)이면 어떤 버튼도 강조하지 �
   expect((await panel($)).buttons.filter(b => b.variant === 'primary')).toEqual([])
 })
 
-test('전체 설정 버튼: --set 성공이면 바로 다시 읽어 반영하고 "저장됨"을 2초 보인다', async ($, on) => {
+test('전체 설정 버튼: --set 성공이면 바로 다시 읽어 반영하고 "저장됨"을 4초 보인다', async ($, on) => {
   const files: Record<string, string> = { ...KO }
   const w = setup(on, undefined, files)
   w.items = ITEMS
@@ -1473,7 +1473,9 @@ test('전체 설정 버튼: --set 성공이면 바로 다시 읽어 반영하고
   const p = await panel($)
   expect(p.texts).toContain('Saved · applied to every open session right away')
   expect(p.buttons.find(b => b.key === 'general.auto_wakes=5')?.variant).toBe('primary')
-  await w.clock.advance(2000)
+  await w.clock.advance(3999)
+  expect((await panel($)).texts).toContain('Saved · applied to every open session right away')
+  await w.clock.advance(1)
   expect((await panel($)).texts).not.toContain('Saved · applied to every open session right away')
 })
 
@@ -1547,4 +1549,34 @@ test('띠 오른쪽 ⚙ 버튼을 누르면 같은 패널을 연다', async ($, 
     await ui.unmount()
   }
   expect(w.opens.map(o => o.id)).toEqual(['cn-config', 'cn-config'])
+})
+
+test('이 세션 버튼이 성공하면 cn_set 출력 첫 줄을 초록 알림 줄로 4초 보인다', async ($, on) => {
+  const w = setup(on)
+  w.run = { exitCode: 0, stdout: '2회 충전 — 캐시 최대 19:56까지\n상태 줄\n', stderr: '' }
+  const ui = await $.ui.mount(pane('terminal'))
+  await ui.press({ key: 'session:2h' })
+  // 상태 줄도 같은 목 출력을 받으니 같은 글자를 가진 줄 중 알림 줄이 초록인지 본다
+  const lines = await ui.findAll({ type: 'Text', text: '2회 충전 — 캐시 최대 19:56까지' })
+  expect(lines.map(t => t.props['color'])).toContain('success')
+  await ui.unmount()
+  await w.clock.advance(3999)
+  expect((await panel($)).texts).toContain('2회 충전 — 캐시 최대 19:56까지')
+  await w.clock.advance(1)
+  expect((await panel($)).texts).not.toContain('2회 충전 — 캐시 최대 19:56까지')
+})
+
+test('이 세션 버튼을 다시 누르면 알림 줄이 새 결과로 바뀌고, 앞 알림의 타이머가 새 알림을 지우지 않는다', async ($, on) => {
+  const w = setup(on)
+  w.run = { exitCode: 0, stdout: '이미 19:00까지 살아 있어요\n', stderr: '' }
+  const ui = await $.ui.mount(pane('terminal'))
+  await ui.press({ key: 'session:1h' })
+  await w.clock.advance(2000)
+  w.run = { exitCode: 0, stdout: '살아 있는 캐시 없음\n', stderr: '' }
+  await ui.press({ key: 'session:4h' })
+  await ui.unmount()
+  await w.clock.advance(2000)
+  const texts = (await panel($)).texts
+  expect(texts).toContain('살아 있는 캐시 없음')
+  expect(texts).not.toContain('이미 19:00까지 살아 있어요')
 })

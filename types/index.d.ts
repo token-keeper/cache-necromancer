@@ -47,7 +47,7 @@ export type CacheNecromancerItem = {
   options: { value: string; text: string }[]
 }
 
-/** 설정 패널 아래 알림 줄 (저장됨은 2초 뒤 지움, 실패는 빨강) */
+/** 설정 패널 아래 알림 줄 (저장됨·이 세션 버튼 결과는 4초 뒤 지움, 실패는 빨강) */
 export type CacheNecromancerNote = { text: string; isError: boolean } | null
 
 declare module 'claude-code' {
