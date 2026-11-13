@@ -39,7 +39,7 @@ turn.step (메인 대화, 캐시 read+creation > 0)
 
 | 저장소 | 쓰는 쪽 | 내용 |
 |---|---|---|
-| mod atom (세션 메모리) | mod 만 | `base`, 띠 `label`, `config`, 토스트·깨우기 1회 가드(`warnedFor`·`expiredFor`·`wokeFor`), 깨울 때 본 충전 시각 `wokeCharge`, 읽어 둔 `marker` |
+| mod atom (세션 메모리) | mod 만 | `base`, 띠 `label`, `config`, 토스트·깨우기 1회 가드(`warnedFor`·`expiredFor`·`wokeFor`), 깨울 때 본 충전 시각 `wokeCharge`, 읽어 둔 `marker`·`markerReadAt`(마지막 marker 읽은 시각), 패널용 `items`(전체 설정 항목)·`sessionLine`(이 세션 상태 1줄)·`paneNote`(저장됨·실패 알림), 오류 로그 1회 가드(`tickErrorLogged`·`wakeErrorLogged`·`commandErrorLogged`·`configErrorLogged`) |
 | `~/.cache-necromancer/marker/<sid>.json` | **Python 만** | `latest_fire`, `wake_count`, `last_wake_at`·`last_wake_at_ns`, `last_user_activity_at_ns`, `last_turn_start_at_ns`, `suppressed_at_ns`, `set_budget_remaining`·`set_budget_total`·`set_charged_at_ns`, `wake_off`, `last_prompt`·`cwd` |
 | `~/.cache-necromancer/config.toml` | 사용자·설정 패널·터미널 설정 메뉴(`scripts/cn_config.py`, 원자 저장)·Python(템플릿 생성) | 설정 5개 키. 옛 키는 무시, 메뉴 저장 때 삭제 |
 | `~/.cache-necromancer/cn.log.YYYY-MM-DD` | Python (`lib/logger.py`) | `[refresh]`·`[return]` 등 판정 로그. 자동 삭제 없음 |
@@ -53,7 +53,7 @@ mod 는 marker 를 기준 시각이 있는 동안 5초 간격·깨우기 직후�
 
 ## 설정 패널
 
-띠 `[ ⚙ ]` 클릭 또는 `/cn:config`(`command.run`)가 같은 Pane 을 연다. 위쪽 "이 세션" 버튼은 `cn_set.py off|auto|1h|2h|4h` 를, 아래쪽 "전체 설정" 버튼은 `cn_config.py --set <id>=<value>` 를 실행한다(`--json` 의 `items` 로 그린다). 저장 성공 직후에는 5초를 기다리지 않고 설정·marker 를 강제로 다시 읽는다. `--set` 은 값 검증 후 원자 저장(tempfile → `os.replace`). mod 가 없으면 `/cn:config` 는 터미널 메뉴 실행 안내(`--hint`)로 폴백한다.
+띠 `[ ⚙ ]` 클릭 또는 `/cn:config`(`command.run`)가 같은 Pane 을 연다 (엔진이 폭에 따라 배치를 정함 — 넓으면 오른쪽). 위쪽 "이 세션" 버튼은 `cn_set.py off|auto|1h|2h|4h` 를, 아래쪽 "전체 설정" 버튼은 `cn_config.py --set <id>=<value>` 를 실행한다(`--json` 의 `items` 로 그린다). 저장 성공 직후에는 5초를 기다리지 않고 설정·marker 를 강제로 다시 읽는다. `--set` 은 값 검증 후 원자 저장(tempfile → `os.replace`). mod 가 없으면 `/cn:config` 는 터미널 메뉴 실행 안내(`--hint`)로 폴백한다.
 
 ## 알려진 제약
 

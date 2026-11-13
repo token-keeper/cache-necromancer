@@ -35,7 +35,7 @@ Default behavior (v0.13.0): when you step away after your last input, it wakes t
 
 Takes effect from **a new chat session**.
 
-**Updating**: after `/plugin update`, `/reload-plugins` is enough (restart Claude Code if anything looks off). Coming from v0.11.x, the old always/manual settings are ignored and every session wakes up to 2 times per time away — set `auto_wakes = 10` for the old always behavior, or `auto_wakes = 0` to turn automatic wakes off. `/cn:set 0` now turns wakes off for the session instead of cancelling a charge. See the 0.12.0 entry in the [CHANGELOG](CHANGELOG.md) (Korean).
+**Updating**: after `/plugin update`, `/reload-plugins` is enough (measured on 2026-11-13: reload alone, without a restart, switched the hooks to the new version too; restart Claude Code if anything looks off). Coming from v0.11.x, the old always/manual settings are ignored and every session wakes up to 2 times per time away — set `auto_wakes = 10` for the old always behavior, or `auto_wakes = 0` to turn automatic wakes off. `/cn:set 0` now turns wakes off for the session instead of cancelling a charge. See the 0.12.0 entry in the [CHANGELOG](CHANGELOG.md) (Korean).
 
 ## Slash Commands
 
@@ -45,7 +45,7 @@ Takes effect from **a new chat session**.
 | `/cn:set 2h` · `90m` · `1h30m` · `18:00` | Charge as many wakes as needed to keep the cache alive until that time (a past clock time means tomorrow) |
 | `/cn:set auto` | Clear off/override and go back to automatic |
 | `/cn:set 0` · `/cn:set off` | Turn wakes off for this session (until it ends; `/cn:set N` turns them back on) |
-| `/cn:config` | Opens the settings panel (clicking `[ ⚙ ]` at the right of the band does the same). Without mods it shows how to launch the terminal settings menu — see [Settings menu](#settings-menu-cnconfig) |
+| `/cn:config` | Opens the settings panel (clicking `[ ⚙ ]` at the right of the band does the same; on the right when the screen is wide enough). Without mods it shows how to launch the terminal settings menu — see [Settings menu](#settings-menu-cnconfig) |
 | `/cn:status` | Session state + wakes left and the latest time the cache stays alive (no API cost) |
 
 `/cn:status` output:
@@ -94,9 +94,9 @@ ok @16:42 (1/2)
 - After your last input, while you are away, it wakes the session every time `refresh_interval_minutes` (default 50) pass since the last cache hit — at most `auto_wakes` times (default 2) per time away. The wake turn reads the cache again, so the next cycle follows.
 - Your next input resets the wake count to 0 — the next time away gets `auto_wakes` again.
 - **`/cn:set N`**: overrides this time away with N wakes (max 10). There is no automatic share on top while the override lasts. A real prompt that arrives after at least one wake since charging counts as "returning" and ends the override. Prompts sent right after `/cn:set` (before any wake) keep it ("set, then one more thing").
-- **`/cn:set 2h` · `90m` · `18:00`**: computes how many wakes keep the cache alive until that time and charges them. If the cache already lives that long nothing is charged (you just get a note); above 10 it charges 10 and shows the latest survival time.
+- **`/cn:set 2h` · `90m` · `18:00`**: computes how many wakes keep the cache alive until that time and charges them. If the cache already lives that long nothing is charged (you just get a note); above 10 it charges 10 and shows the latest survival time. A time charge overrides this time away with just the wakes needed to reach that time — it can hold the cache for less than automatic wakes would, and if you keep working after charging, wakes may run past the target time.
 - **`/cn:set auto`**: clears off/override and returns to automatic mode.
-- **`/cn:set 0` · `/cn:set off`**: no wakes for this session until it ends. Your input doesn't undo it; only `/cn:set N` turns wakes back on.
+- **`/cn:set 0` · `/cn:set off`**: no wakes for this session until it ends. Your input doesn't undo it; only `/cn:set N` or `/cn:set auto` (panel `[Auto]`) turns wakes back on.
 - Per session — other sessions need their own `/cn:set`.
 - Messages from other sessions or teammates (`<cross-session-message`, `<teammate-message`), `<task-notification>`, wake pings and `/cn:*` commands don't count as your input.
 - Right after `/clear` or `/compact` nothing wakes until your next input or the next Stop.
@@ -130,7 +130,7 @@ countdown = true                      # cache countdown in the band below the pr
 
 ### Settings menu (`/cn:config`)
 
-`/cn:config` (or `[ ⚙ ]` at the right of the band) opens the settings panel on the right (mods, Claude Code v2.1.286+). The top "This session" part shows one status line plus `[Off]`·`[Auto]`·`[1 hour]`·`[2 hours]`·`[4 hours]`; the bottom "Settings" part has buttons for auto wakes, wake timing, countdown band and language, saved and applied on click. Without mods `/cn:config` only prints the command to run; run it (`python3 ".../scripts/cn_config.py"`) in a new terminal to get a numbered menu.
+`/cn:config` (or `[ ⚙ ]` at the right of the band) opens the settings panel (on the right when the screen is wide enough; mods, Claude Code v2.1.286+). The top "This session" part shows one status line plus `[Off]`·`[Auto]`·`[1 hour]`·`[2 hours]`·`[4 hours]`; the bottom "Settings" part has buttons for auto wakes, wake timing, countdown band and language, saved and applied on click. Without mods `/cn:config` only prints the command to run; run it (`python3 ".../scripts/cn_config.py"`) in a new terminal to get a numbered menu.
 
 - Items: `auto_wakes` (0 off / 1 / 2 default / 3) · `refresh_interval_minutes` (30 / 45 / 50 default) · `countdown` (show / hide) · `language`. Numeric items also accept a typed value instead of a number. Enter = keep.
 - The current value shown is the value actually in effect (old keys and invalid values show as ignored). Text follows `language`.
@@ -170,7 +170,7 @@ Wake info for this time away is appended to the countdown with ` · ` (v0.12.0):
 - Nothing is shown before the first request of a session (or after `/clear`).
 - Right after `/compact` the band is cleared too, and counting restarts from the next answer's cache request (v0.9.1). An automatic compact in the middle of an answer leaves it as is.
 - `[display] countdown = false` turns off both the band and the toasts (wakes keep working). Text follows `[general] language` (ko/en/ja/zh, default en). The band re-reads setting changes within 5 seconds (v0.13.0). When `/reload-plugins` loads the mod anew, the band and tick restart on the next request or screen redraw (v0.11.0).
-- If the config file has a syntax error, the Python side (wake, `/cn:status`) drops the whole file and uses defaults, while the band uses the values on the lines it can read, so their TTL and warning time can differ.
+- If the config file has a syntax error, both Python (wake, `/cn:status`) and the band drop the whole file and use defaults (settings are parsed by Python only).
 - With the what-did-i-say plugin's band box, this line sits on top and the request box below it.
 
 **Requires Claude Code v2.1.286 or later** (mods = function-hook plugins, loaded through the `modules` entry of `hooks/hooks.json`). Since v0.10.0 the mod also runs the wake, so on v2.1.200–v2.1.241, where the `modules` key is ignored without error, the band and wakes are both missing and only `/cn:*` remains (`modules` being ignored measured on v2.1.200 and later; older versions not checked). On v2.1.242–v2.1.285 mods sit behind a server rollout flag, so the band and wakes may work depending on the environment (flag-on environments not tested). Evidence: measured on 2026-10-07 with an isolated config on v2.1.200, v2.1.241 and v2.1.242–v2.1.286; `claude plugin test` passes on v2.1.287, v2.1.290, v2.1.291 and v2.1.292.
