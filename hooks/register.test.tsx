@@ -19,15 +19,19 @@ type World = {
   // compact 를 거부할 사유(있으면 skip), agent.list 를 붙잡아 둘 관문(tick 경합 재현용)
   compactSkip?: string
   gate?: Promise<void>
-  // 깨우기: refresh.py 실행 기록·결과, 제출된 프롬프트, 디버그 로그. runGate 가 있으면 실행을 붙잡아 둔다(grace 재현)
-  runs: { argv: readonly string[]; stdin?: string; timeoutMs?: number }[]
-  run: Pick<ProcessRunResult, 'exitCode' | 'stderr'>
+  // 깨우기: refresh.py 실행 기록·결과, 제출된 프롬프트, 디버그 로그. runGate 가 있으면 실행을 붙잡아 둔다.
+  // drop 이 있으면 prompt.submit 이 그 사유로 거부한다
+  runs: { argv: readonly string[]; stdin?: string; timeoutMs?: number; env?: Readonly<Record<string, string>> }[]
+  run: Pick<ProcessRunResult, 'exitCode' | 'stderr'> & { stdout?: string }
   runGate?: Promise<void>
   runError?: Error
   submits: string[]
+  drop?: string
   logs: string[]
   // $.session.id 가 돌려줄 id (marker 파일명)
   sid: string
+  // 플러그인이 next 로 넘긴 명령 (= 엔진의 옛 경로)
+  commands: { command: string; args: string }[]
 }
 type Env = Readonly<Record<string, string>>
 type Files = Readonly<Record<string, string>>
@@ -49,6 +53,7 @@ function setup(on: On, env: Env = { HOME: '/home/t' }, files: Files = KO): World
     submits: [],
     logs: [],
     sid: 'sid-1',
+    commands: [],
   }
   on('agent.list', async () => {
     await w.gate
@@ -76,18 +81,22 @@ function setup(on: On, env: Env = { HOME: '/home/t' }, files: Files = KO): World
   })
   on('session.id', () => ({ value: w.sid }))
   on('process.run', async (_$, e) => {
-    w.runs.push({ argv: e.argv, stdin: e.init?.stdin, timeoutMs: e.init?.timeoutMs })
+    w.runs.push({ argv: e.argv, stdin: e.init?.stdin, timeoutMs: e.init?.timeoutMs, env: e.init?.env })
     await w.runGate
     if (w.runError) throw w.runError
     return { value: { stdout: '', isStdoutTruncated: false, isStderrTruncated: false, ...w.run } }
   })
   on('prompt.submit', (_$, e) => {
     w.submits.push(e.text)
-    return { text: e.text }
+    return w.drop === undefined ? { text: e.text } : { drop: w.drop }
   })
   on('ui.log', (_$, e) => {
     w.logs.push(e.text)
     return { value: undefined }
+  })
+  on('command.run', (_$, e) => {
+    w.commands.push({ command: e.command, args: e.args })
+    return { text: 'core' }
   })
   return w
 }
@@ -557,7 +566,7 @@ test('refresh_interval 이 지나면 refresh.py --now 를 1회 돌리고, exit 2
   await w.clock.advance(1000)
   await wait(20)
   expect(w.runs).toHaveLength(1)
-  expect(w.runs[0]).toMatchObject({ argv: [expect.any(String), expect.any(String), '--now'], stdin: STDIN, timeoutMs: 10 * MIN })
+  expect(w.runs[0]).toMatchObject({ argv: [expect.any(String), expect.any(String), '--now'], stdin: STDIN, timeoutMs: 60_000 })
   expect(w.runs[0]?.argv[0]).toBe('python3')
   expect(w.submits).toEqual([PING])
   // 같은 기준 시각으로는 다시 하지 않는다
@@ -583,7 +592,7 @@ test('실행하는 스크립트는 로드된 플러그인 디렉터리($.plugin.
   expect(w.runs[0]?.argv[1]).toBe(`${pluginRoot}/scripts/refresh.py`)
 })
 
-test('grace 동안(실행이 끝나기 전) tick 이 계속 돌아도 중복 실행하지 않는다', async ($, on) => {
+test('실행이 끝나기 전에 tick 이 계속 돌아도 중복 실행하지 않는다', async ($, on) => {
   const w = setup(on)
   let release = () => {}
   w.runGate = new Promise(resolve => (release = resolve))
@@ -618,7 +627,7 @@ test('겹친 tick(앞 tick 이 끝나기 전에 다음 tick)이 동시에 판정
 
 test('stderr 에 경고 줄이 섞여도 ping 줄만 프롬프트로 낸다', async ($, on) => {
   const w = setup(on)
-  w.run = { exitCode: 2, stderr: `[cn:warn] invalid wake.arm: 'x' — fallback to 'manual'\n${PING}\n[cn:warn] other\n` }
+  w.run = { exitCode: 2, stderr: `[cn:warn] invalid general.auto_wakes: 'x' — 기본값 2\n${PING}\n[cn:warn] other\n` }
   await start($)
   await step($, w)
   await w.clock.advance(50 * MIN)
@@ -755,17 +764,17 @@ test('refresh_interval_minutes ≥ cache_ttl_minutes 면 세션 시작 때 "깨�
   expect(w.toasts).toEqual(['캐시 깨우기 꺼짐 — refresh_interval_minutes 가 cache_ttl_minutes 이상', EXPIRED])
 })
 
-// ── 띠 뒤 정보: 살린 횟수·목숨·예산 (Python 이 쓰는 marker 를 읽음) ──
+// ── 띠 뒤 정보: 살린 횟수·꺼짐·남은 깨우기 (Python 이 쓰는 marker 를 읽음) ──
 const MARKER = '/home/t/.cache-necromancer/marker/sid-1.json'
 // 기대 시각은 런타임 로컬 시각대로 계산한다 (mod 와 같은 Date 기준)
 const hhmm = (ms: number) => {
   const d = new Date(ms)
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
-// 기준 시각(step 시점 T0) + n × (50분 + grace) + 60분. 알림 기본 켜짐·grace 60초
-const until = (n: number, graceSec = 60) => hhmm(T0 + n * (50 * MIN + graceSec * 1000) + 60 * MIN)
-const ALWAYS = '[general]\nlanguage = "ko"\nmax_refresh_count = 5\n[wake]\narm = "always"\n'
-const MANUAL = '[general]\nlanguage = "ko"\n[wake]\narm = "manual"\n'
+// 생존 시각 = 기준 시각(step 시점 T0) + n × 50분 + 60분 (lib/wake_plan.py survive_until_ns 와 같은 식, grace 없음)
+const until = (n: number) => hhmm(T0 + n * 50 * MIN + 60 * MIN)
+// 기본 auto_wakes = 2
+const AUTO = KO[CONFIG] ?? ''
 
 async function bandWith($: Engine, on: On, toml: string, mark: string | undefined, over: BandOver = {}) {
   const w = setup(on, undefined, { [CONFIG]: toml, ...(mark === undefined ? {} : { [MARKER]: mark }) })
@@ -776,41 +785,61 @@ async function bandWith($: Engine, on: On, toml: string, mark: string | undefine
 }
 
 for (const [name, toml, mark, tail] of [
-  ['always: 목숨 = max_refresh_count - wake_count', ALWAYS, '{"wake_count": 0}', ` · 목숨 5 (${until(5)}까지)`],
-  ['always 깨운 직후: 살린 횟수 + 줄어든 목숨', ALWAYS, '{"wake_count": 2}', ` · 2번 살림 · 목숨 3 (${until(3)}까지)`],
-  ['always 목숨 0', ALWAYS, '{"wake_count": 7}', ` · 7번 살림 · 목숨 0 (${until(0)}까지)`],
-  ['manual 예산 있음', MANUAL, '{"set_budget_remaining": 3, "set_budget_total": 3}', ` · 깨우기 3회 남음 (${until(3)}까지)`],
-  ['manual 예산 소비 중', MANUAL, '{"wake_count": 1, "set_budget_remaining": 2, "set_budget_total": 3}', ` · 1번 살림 · 깨우기 2회 남음 (${until(2)}까지)`],
-  ['manual 예산 없음(알림만 센 wake_count 는 살린 횟수 아님)', MANUAL, '{"wake_count": 2}', ''],
-  ['legacy [general] mode = "hybrid" 는 always', '[general]\nlanguage = "ko"\nmode = "hybrid"\nmax_refresh_count = 5\n', '{}', ` · 목숨 5 (${until(5)}까지)`],
-  ['[wake] arm 이 legacy mode 보다 우선', '[general]\nlanguage = "ko"\nmode = "auto"\n[wake]\narm = "manual"\n', '{}', ''],
-  ['marker 없음', ALWAYS, undefined, ''],
-  ['marker 깨짐', ALWAYS, '{"wake_count": ', ''],
-  ['marker 가 객체 아님', ALWAYS, '[1, 2]', ''],
+  ['자동: 남은 = auto_wakes(기본 2) - wake_count', AUTO, '{"wake_count": 0}', ` · 깨우기 2회 남음 (${until(2)}까지)`],
+  ['자동 깨운 직후: 살린 횟수 + 줄어든 남은 횟수', AUTO, '{"wake_count": 1}', ` · 1번 살림 · 깨우기 1회 남음 (${until(1)}까지)`],
+  ['자동 다 씀: 살린 횟수만 (남은 0 은 생략)', AUTO, '{"wake_count": 2}', ' · 2번 살림'],
+  ['덮어쓰기 충전 직후', AUTO, '{"set_budget_remaining": 3, "set_budget_total": 3}', ` · 깨우기 3회 남음 (${until(3)}까지)`],
+  ['덮어쓰기 소비 중 (자동 몫과 무관)', AUTO, '{"wake_count": 1, "set_budget_remaining": 2, "set_budget_total": 3}', ` · 1번 살림 · 깨우기 2회 남음 (${until(2)}까지)`],
+  ['덮어쓰기 다 씀: 자동 몫으로 돌아가지 않는다', AUTO, '{"wake_count": 3, "set_budget_remaining": 0, "set_budget_total": 3}', ' · 3번 살림'],
+  ['wake_off: 깨우기 꺼짐', AUTO, '{"wake_off": true}', ' · 깨우기 꺼짐'],
+  ['wake_off 이면 충전·자동 몫보다 꺼짐이 앞선다', AUTO, '{"wake_count": 1, "wake_off": true, "set_budget_remaining": 2, "set_budget_total": 3}', ' · 1번 살림 · 깨우기 꺼짐'],
+  ['wake_off 가 true 가 아니면(문자열 등) 꺼짐 아님', AUTO, '{"wake_off": "yes"}', ` · 깨우기 2회 남음 (${until(2)}까지)`],
+  ['auto_wakes = 5', `${AUTO}auto_wakes = 5\n`, '{"wake_count": 1}', ` · 1번 살림 · 깨우기 4회 남음 (${until(4)}까지)`],
+  ['auto_wakes = 10 (상한)', `${AUTO}auto_wakes = 10\n`, '{}', ` · 깨우기 10회 남음 (${until(10)}까지)`],
+  ['auto_wakes = 0: 자동 몫 없음', `${AUTO}auto_wakes = 0\n`, '{}', ''],
+  ['auto_wakes = 0 이어도 덮어쓰기는 보인다', `${AUTO}auto_wakes = 0\n`, '{"set_budget_remaining": 1, "set_budget_total": 1}', ` · 깨우기 1회 남음 (${until(1)}까지)`],
+  ['auto_wakes = 11 (범위 밖) 은 기본 2', `${AUTO}auto_wakes = 11\n`, '{}', ` · 깨우기 2회 남음 (${until(2)}까지)`],
+  ['auto_wakes = -1 은 기본 2', `${AUTO}auto_wakes = -1\n`, '{}', ` · 깨우기 2회 남음 (${until(2)}까지)`],
+  ['auto_wakes = "3"(문자열) 은 기본 2', `${AUTO}auto_wakes = "3"\n`, '{}', ` · 깨우기 2회 남음 (${until(2)}까지)`],
+  ['다른 섹션의 auto_wakes 는 무시', `${AUTO}[wake]\nauto_wakes = 5\n`, '{}', ` · 깨우기 2회 남음 (${until(2)}까지)`],
+  [
+    '옛 키(max_refresh_count·mode·arm·grace·notify)는 무시 — 기본 2·grace 없음',
+    `${AUTO}mode = "hybrid"\nmax_refresh_count = 5\n[wake]\narm = "always"\ngrace_seconds = 300\n[notify]\nenabled = true\n[refresh]\nhybrid_wait_seconds = 120\n`,
+    '{}',
+    ` · 깨우기 2회 남음 (${until(2)}까지)`,
+  ],
+  ['refresh_interval ≥ ttl(깨우기 창 없음)이면 남은 0 — 자동·덮어쓰기 모두 생략', `${AUTO}refresh_interval_minutes = 60\n`, '{"wake_count": 1, "set_budget_remaining": 2, "set_budget_total": 3}', ' · 1번 살림'],
+  ['marker 없음', AUTO, undefined, ''],
+  ['marker 깨짐', AUTO, '{"wake_count": ', ''],
+  ['marker 가 객체 아님', AUTO, '[1, 2]', ''],
 ] as const) {
   test(`띠 뒤 정보 — ${name}`, async ($, on) => {
     expect(await bandWith($, on, toml, mark)).toBe(`캐시 59:11 남음${tail}`)
   })
 }
 
-test('기본 설정(en·manual)·예산 있음 문구', async ($, on) => {
-  expect(await bandWith($, on, '', '{"wake_count": 1, "set_budget_remaining": 1, "set_budget_total": 2}')).toBe(
-    `Cache 59:11 left · Revived 1× · Wakes 1 left (until ${until(1)})`,
-  )
+test('기본 설정(en) 문구 — 1회는 단수 wake', async ($, on) => {
+  expect(await bandWith($, on, '', '{"wake_count": 1}')).toBe(`Cache 59:11 left · Revived 1× · 1 wake left (until ${until(1)})`)
 })
 
-for (const [lang, line] of [
-  ['ja', `キャッシュ残り 59:11 · 2回蘇生 · 残機 3 (${until(3)}まで)`],
-  ['zh', `缓存剩余 59:11 · 已复活 2 次 · 剩余 3 命 (至 ${until(3)})`],
+test('기본 설정(en) 문구 — 2회 이상은 복수 wakes', async ($, on) => {
+  expect(await bandWith($, on, '', '{}')).toBe(`Cache 59:11 left · 2 wakes left (until ${until(2)})`)
+})
+
+for (const [lang, mark, line] of [
+  ['en', '{"wake_count": 1, "wake_off": true}', 'Cache 59:11 left · Revived 1× · Wake off'],
+  ['ja', '{"wake_count": 1}', `キャッシュ残り 59:11 · 1回蘇生 · 残り1回 (${until(1)}まで)`],
+  ['ja', '{"wake_off": true}', 'キャッシュ残り 59:11 · 自動延長オフ'],
+  ['zh', '{"wake_count": 1}', `缓存剩余 59:11 · 已复活 1 次 · 还剩 1 次唤醒 (至 ${until(1)})`],
+  ['zh', '{"wake_off": true}', '缓存剩余 59:11 · 唤醒已关闭'],
 ] as const) {
-  test(`띠 뒤 정보 문구 — ${lang}`, async ($, on) => {
-    const toml = `[general]\nlanguage = "${lang}"\nmax_refresh_count = 5\n[wake]\narm = "always"\n`
-    expect(await bandWith($, on, toml, '{"wake_count": 2}')).toBe(line)
+  test(`띠 뒤 정보 문구 — ${lang} ${mark}`, async ($, on) => {
+    expect(await bandWith($, on, `[general]\nlanguage = "${lang}"\n`, mark)).toBe(line)
   })
 }
 
 test('session id 가 marker 파일명 모양이 아니면 읽지 않는다', async ($, on) => {
-  const w = setup(on, undefined, { [CONFIG]: ALWAYS, '/home/t/.cache-necromancer/marker/../x.json': '{}' })
+  const w = setup(on, undefined, { [CONFIG]: AUTO, '/home/t/.cache-necromancer/marker/../x.json': '{}' })
   w.sid = '../x'
   await start($)
   await step($, w)
@@ -818,20 +847,20 @@ test('session id 가 marker 파일명 모양이 아니면 읽지 않는다', asy
   expect((await shown($))?.text).toBe('캐시 59:11 남음')
 })
 
-// "캐시 59:11 남음"(15칸) · "2번 살림"(+11) · "목숨 3 (HH:MM까지)"(+21). 글자 폭 = columns - 6
+// "캐시 59:11 남음"(15칸) · "1번 살림"(+11) · "깨우기 1회 남음 (HH:MM까지)"(+30). 글자 폭 = columns - 6
 for (const [columns, tail] of [
-  [53, ` · 2번 살림 · 목숨 3 (${until(3)}까지)`],
-  [52, ` · 목숨 3 (${until(3)}까지)`],
-  [42, ` · 목숨 3 (${until(3)}까지)`],
-  [41, ''],
+  [62, ` · 1번 살림 · 깨우기 1회 남음 (${until(1)}까지)`],
+  [61, ` · 깨우기 1회 남음 (${until(1)}까지)`],
+  [51, ` · 깨우기 1회 남음 (${until(1)}까지)`],
+  [50, ''],
 ] as const) {
-  test(`폭이 좁으면 살린 횟수 → 목숨 순으로 뺀다 (columns ${columns})`, async ($, on) => {
-    expect(await bandWith($, on, ALWAYS, '{"wake_count": 2}', { columns })).toBe(`캐시 59:11 남음${tail}`)
+  test(`폭이 좁으면 살린 횟수 → 남은 깨우기 순으로 뺀다 (columns ${columns})`, async ($, on) => {
+    expect(await bandWith($, on, AUTO, '{"wake_count": 1}', { columns })).toBe(`캐시 59:11 남음${tail}`)
   })
 }
 
 test('만료되면 뒤 정보를 붙이지 않는다', async ($, on) => {
-  const w = setup(on, undefined, { [CONFIG]: ALWAYS, [MARKER]: '{"wake_count": 0}' })
+  const w = setup(on, undefined, { [CONFIG]: AUTO, [MARKER]: '{"wake_count": 0}' })
   await start($)
   await step($, w)
   await w.clock.advance(60 * MIN)
@@ -839,19 +868,19 @@ test('만료되면 뒤 정보를 붙이지 않는다', async ($, on) => {
 })
 
 test('marker 가 바뀌면 5초 안에 띠에 반영한다', async ($, on) => {
-  const files: Record<string, string> = { [CONFIG]: ALWAYS, [MARKER]: '{"wake_count": 0}' }
+  const files: Record<string, string> = { [CONFIG]: AUTO, [MARKER]: '{"wake_count": 0}' }
   const w = setup(on, undefined, files)
   await start($)
   await step($, w)
   await w.clock.advance(1000)
-  expect((await shown($))?.text).toBe(`캐시 59:59 남음 · 목숨 5 (${until(5)}까지)`)
+  expect((await shown($))?.text).toBe(`캐시 59:59 남음 · 깨우기 2회 남음 (${until(2)}까지)`)
   files[MARKER] = '{"wake_count": 1}'
   await w.clock.advance(5000)
-  expect((await shown($))?.text).toBe(`캐시 59:54 남음 · 1번 살림 · 목숨 4 (${until(4)}까지)`)
+  expect((await shown($))?.text).toBe(`캐시 59:54 남음 · 1번 살림 · 깨우기 1회 남음 (${until(1)}까지)`)
 })
 
-test('깨우기를 마치면 다음 tick 에 marker 를 바로 다시 읽는다', async ($, on) => {
-  const files: Record<string, string> = { [CONFIG]: ALWAYS, [MARKER]: '{"wake_count": 0}' }
+test('깨우기를 마치면 다음 tick 에 바뀐 marker 를 바로 띠에 반영한다', async ($, on) => {
+  const files: Record<string, string> = { [CONFIG]: AUTO, [MARKER]: '{"wake_count": 0}' }
   const w = setup(on, undefined, files)
   w.run = { exitCode: 0, stderr: '' }
   await start($)
@@ -863,7 +892,162 @@ test('깨우기를 마치면 다음 tick 에 marker 를 바로 다시 읽는다'
   await wait(20)
   expect(w.runs).toHaveLength(1)
   await w.clock.advance(1000)
-  expect((await shown($))?.text).toBe(`캐시 09:59 남음 · 1번 살림 · 목숨 4 (${until(4)}까지)`)
+  expect((await shown($))?.text).toBe(`캐시 09:59 남음 · 1번 살림 · 깨우기 1회 남음 (${until(1)}까지)`)
+})
+
+// ── 충전 재판정: 같은 기준 시각으로 이미 돌렸는데(알림 없이 끝남) 그 뒤 /cn:set 으로 충전이 바뀌면 1회 더 ──
+const CHARGED = (at: number, left = 3) => `{"set_budget_remaining": ${left}, "set_budget_total": 3, "set_charged_at_ns": ${at}}`
+
+for (const countdown of [true, false]) {
+  test(`충전이 바뀌면 같은 기준 시각에서 refresh.py 를 1회 더 돌리고, 그대로면 다시 안 한다 (countdown ${countdown})`, async ($, on) => {
+    const files: Record<string, string> = { [CONFIG]: `${AUTO}[display]\ncountdown = ${countdown}\n`, [MARKER]: CHARGED(100) }
+    const w = setup(on, undefined, files)
+    // Python 이 깨우지 않고 끝난 경우 (예: 진행 중 turn)
+    w.run = { exitCode: 0, stderr: '' }
+    await start($)
+    await step($, w)
+    await w.clock.advance(50 * MIN)
+    await wait(20)
+    expect(w.runs).toHaveLength(1)
+    // 충전 그대로(남은 횟수가 있어도)면 다시 돌리지 않는다
+    await w.clock.advance(MIN)
+    await wait(20)
+    expect(w.runs).toHaveLength(1)
+    // /cn:set 으로 새 충전 → 5초 안에 marker 를 다시 읽고 1회 더
+    files[MARKER] = CHARGED(200)
+    await w.clock.advance(5000)
+    await wait(20)
+    expect(w.runs).toHaveLength(2)
+    expect(w.runs[1]).toMatchObject({ stdin: STDIN })
+    await w.clock.advance(MIN)
+    await wait(20)
+    expect(w.runs).toHaveLength(2)
+  })
+}
+
+for (const [name, mark] of [
+  ['wake_off', '{"wake_off": true, "set_charged_at_ns": 200}'],
+  ['충전 남은 0', CHARGED(200, 0)],
+] as const) {
+  test(`충전이 바뀌어도 ${name} 이면 다시 돌리지 않는다`, async ($, on) => {
+    const files: Record<string, string> = { [CONFIG]: AUTO, [MARKER]: CHARGED(100) }
+    const w = setup(on, undefined, files)
+    w.run = { exitCode: 0, stderr: '' }
+    await start($)
+    await step($, w)
+    await w.clock.advance(50 * MIN)
+    await wait(20)
+    files[MARKER] = mark
+    await w.clock.advance(MIN)
+    await wait(20)
+    expect(w.runs).toHaveLength(1)
+  })
+}
+
+test('충전 재판정도 겹친 tick 이 동시에 판정하면 1회만 실행한다', async ($, on) => {
+  const files: Record<string, string> = { [CONFIG]: AUTO, [MARKER]: CHARGED(100) }
+  const w = setup(on, undefined, files)
+  w.run = { exitCode: 0, stderr: '' }
+  await start($)
+  await step($, w)
+  await w.clock.advance(50 * MIN)
+  await wait(20)
+  expect(w.runs).toHaveLength(1)
+  files[MARKER] = CHARGED(200)
+  // tick 을 agent.list 에서 붙잡아 marker 재읽기 이후 tick 여러 개를 쌓은 뒤 한꺼번에 푼다
+  let release = () => {}
+  w.gate = new Promise(resolve => (release = resolve))
+  await w.clock.advance(8000)
+  release()
+  await wait(20)
+  w.gate = undefined
+  expect(w.runs).toHaveLength(2)
+})
+
+test('깨우기 직전에 충전이 바뀌어 Python 이 새 충전으로 깨웠으면 재판정하지 않는다 (claim 때 본 marker 가 묵었어도)', async ($, on) => {
+  const files: Record<string, string> = { [CONFIG]: AUTO, [MARKER]: CHARGED(100) }
+  const w = setup(on, undefined, files)
+  await start($)
+  await step($, w)
+  await w.clock.advance(50 * MIN - 2000)
+  // mod 가 마지막으로 읽은 뒤(5초 안) 충전이 바뀌고 곧바로 깨우기 tick
+  files[MARKER] = CHARGED(200, 2)
+  await w.clock.advance(2000)
+  await wait(20)
+  expect(w.submits).toEqual([PING])
+  // ping turn 이 아직 기준 시각을 바꾸기 전에도 같은 충전으로 다시 돌리지 않는다
+  await w.clock.advance(10_000)
+  await wait(20)
+  expect(w.runs).toHaveLength(1)
+})
+
+test('refresh.py 가 도는 동안 충전이 바뀌어도 재판정이 겹치지 않는다 (실행 중엔 재판정 안 함)', async ($, on) => {
+  const files: Record<string, string> = { [CONFIG]: AUTO, [MARKER]: CHARGED(100) }
+  const w = setup(on, undefined, files)
+  let release = () => {}
+  w.runGate = new Promise(resolve => (release = resolve))
+  await start($)
+  await step($, w)
+  await w.clock.advance(50 * MIN)
+  await wait(20)
+  expect(w.runs).toHaveLength(1)
+  // 실행이 붙잡힌 동안 /cn:set → 5초 marker 재읽기가 새 충전을 본다
+  files[MARKER] = CHARGED(200)
+  await w.clock.advance(6000)
+  await wait(20)
+  expect(w.runs).toHaveLength(1)
+  // 끝나면 Python 이 본 충전(200)을 적으므로 같은 충전으로 다시 돌지 않는다
+  release()
+  await wait(20)
+  await w.clock.advance(6000)
+  await wait(20)
+  expect(w.runs).toHaveLength(1)
+  expect(w.submits).toEqual([PING])
+})
+
+test('refresh.py 실행이 실패해도 충전 기록이 채워져, 그 뒤 충전이 바뀌면 재판정한다', async ($, on) => {
+  const files: Record<string, string> = { [CONFIG]: AUTO, [MARKER]: CHARGED(100) }
+  const w = setup(on, undefined, files)
+  w.runError = new Error('spawn python3 ENOENT')
+  await start($)
+  await step($, w)
+  await w.clock.advance(50 * MIN)
+  await wait(20)
+  expect(w.runs).toHaveLength(1)
+  // 실패 직후 충전 그대로면 다시 안 한다
+  await w.clock.advance(6000)
+  await wait(20)
+  expect(w.runs).toHaveLength(1)
+  files[MARKER] = CHARGED(200)
+  await w.clock.advance(6000)
+  await wait(20)
+  expect(w.runs).toHaveLength(2)
+})
+
+test('리로드 직후(wokeFor 는 남고 wokeCharge 는 null 로 시작) 같은 기준 시각으로 재실행하지 않는다', async ($, on) => {
+  const w = setup(on, undefined, { [CONFIG]: AUTO, [MARKER]: CHARGED(100) })
+  // 옛 모듈이 이 기준 시각(step 시점 T0)으로 이미 깨운 상태를 host 에 남긴 것처럼
+  on('state.get', (_$, e, next) => (e.key === 'wokeFor' ? { value: { value: T0, version: 1 } } : next(e)))
+  await step($, w)
+  await w.clock.advance(55 * MIN)
+  await wait(20)
+  expect(w.runs).toEqual([])
+})
+
+test('prompt.submit 이 ping 을 거부(drop)하면 디버그 로그를 1회만 남긴다', async ($, on) => {
+  const w = setup(on)
+  w.drop = 'a Stop stands'
+  await start($)
+  await step($, w)
+  await w.clock.advance(50 * MIN)
+  await wait(20)
+  expect(w.submits).toEqual([PING])
+  expect(w.logs).toEqual(['cache-necromancer: ping dropped (a Stop stands); later failures are not logged'])
+  await step($, w)
+  await w.clock.advance(50 * MIN)
+  await wait(20)
+  expect(w.submits).toEqual([PING, PING])
+  expect(w.logs).toHaveLength(1)
 })
 
 // ── 리로드: session.start 없이 render·turn.step 만 와도 타이머가 걸린다 (모듈 로드당 1개) ──
@@ -966,34 +1150,6 @@ for (const withStart of [true, false]) {
   })
 }
 
-test('manual: 충전 뒤 사용자가 돌아온 다음의 알림은 살린 횟수로 세지 않는다', async ($, on) => {
-  // /cn:set 3 → 1회 깨움 → 복귀(on_user_prompt: wake_count·remaining·total 0) → 다음 자리비움 알림 1회(wake_count 1)
-  const mark = '{"wake_count": 1, "set_budget_remaining": 0, "set_budget_total": 0, "set_charged_at_ns": 100, "last_user_activity_at_ns": 200}'
-  expect(await bandWith($, on, MANUAL, mark)).toBe('캐시 59:11 남음')
-})
-
-test('manual: /cn:set 직후 "하나만 더" 입력 뒤 떠나 깨우면 소비한 예산만큼 살린 횟수', async ($, on) => {
-  // 충전(100) → 깨우기 전 입력(200, 예산·total 유지, wake_count 0) → 자리비움 중 2회 깨움
-  const mark = '{"wake_count": 2, "set_budget_remaining": 1, "set_budget_total": 3, "set_charged_at_ns": 100, "last_user_activity_at_ns": 200}'
-  expect(await bandWith($, on, MANUAL, mark)).toBe(`캐시 59:11 남음 · 2번 살림 · 깨우기 1회 남음 (${until(1)}까지)`)
-})
-
-// ── 생존 시각의 grace: 알림이 켜져 있으면 깨우기마다 grace 만큼 늦다 (lib/config.py 와 같은 legacy 매핑) ──
-// 모두 always·목숨 4. general·wake 섹션은 각 경우에 맞춰 직접 적는다
-const G = '[general]\nlanguage = "ko"\nmax_refresh_count = 4\n'
-for (const [name, toml, grace] of [
-  ['[notify] enabled = false 면 grace 없음', `${G}[notify]\nenabled = false\n[wake]\narm = "always"\ngrace_seconds = 300\n`, 0],
-  ['[wake] grace_seconds = 300', `${G}[wake]\narm = "always"\ngrace_seconds = 300\n`, 300],
-  ['legacy [refresh] hybrid_wait_seconds', `${G}[wake]\narm = "always"\n[refresh]\nhybrid_wait_seconds = 120\n`, 120],
-  ['[wake] grace_seconds 가 legacy 보다 우선', `${G}[wake]\narm = "always"\ngrace_seconds = 30\n[refresh]\nhybrid_wait_seconds = 120\n`, 30],
-  ['legacy mode = "auto" 는 알림 없음', `${G}mode = "auto"\n`, 0],
-  ['legacy system_notification = false', `${G}mode = "hybrid"\n[notify]\nsystem_notification = false\n`, 0],
-] as const) {
-  test(`생존 시각 grace — ${name}`, async ($, on) => {
-    expect(await bandWith($, on, toml, '{}')).toBe(`캐시 59:11 남음 · 목숨 4 (${until(4, grace)}까지)`)
-  })
-}
-
 // ── 카운트다운 글자색: 남은 시간 10분 구간 6단계 (경계는 위 구간), 뒤 정보는 회청 ──
 for (const [left, color] of [
   ['59:59', '#b8c4d4'],
@@ -1030,9 +1186,73 @@ test('ttl 이 60분보다 길어도 남은 분으로 색을 정한다 (90분 ttl
 })
 
 test('뒤 정보는 카운트다운 색과 무관하게 회청(#b8c4d4)', async ($, on) => {
-  const w = setup(on, undefined, { [CONFIG]: ALWAYS, [MARKER]: '{"wake_count": 0}' })
+  const w = setup(on, undefined, { [CONFIG]: AUTO, [MARKER]: '{"wake_count": 0}' })
   await start($)
   await step($, w)
   await w.clock.advance(55 * MIN)
-  expect(await shown($)).toMatchObject({ text: `캐시 05:00 남음 · 목숨 5 (${until(5)}까지)`, color: '#ff7b7b', extraColor: '#b8c4d4' })
+  expect(await shown($)).toMatchObject({ text: `캐시 05:00 남음 · 깨우기 2회 남음 (${until(2)}까지)`, color: '#ff7b7b', extraColor: '#b8c4d4' })
+})
+
+// ── /cn:* 명령: mod 가 Python 스크립트를 직접 실행해 답한다 (next 안 부름 → 입력창에 명령이 다시 들어가지 않음) ──
+// 엔진은 인자 없는 명령(`/cn:status`)도 args 를 "" 로 채워 넘긴다
+const runCmd = ($: Engine, command: string, args = '') => $.command.run({ command, args })
+const OUT = { exitCode: 0, stdout: 'out line\n\n', stderr: '' }
+
+for (const prefix of ['', 'cache-necromancer:'] as const) {
+  for (const [name, args, script, scriptArgs] of [
+    ['cn:status', undefined, 'cn_status.py', []],
+    ['cn:config', undefined, 'cn_config.py', ['--hint']],
+    ['cn:set', undefined, 'cn_set.py', []],
+    ['cn:set', '0', 'cn_set.py', ['0']],
+    ['cn:set', 'off', 'cn_set.py', ['off']],
+    ['cn:set', '3', 'cn_set.py', ['3']],
+    ['cn:set', '  3  extra 5 ', 'cn_set.py', ['3']],
+  ] as const) {
+    test(`/${prefix}${name} ${args ?? ''} → python3 scripts/${script} ${scriptArgs.join(' ')} 출력으로 답하고 next 를 부르지 않는다`, async ($, on) => {
+      const w = setup(on)
+      w.run = OUT
+      const r = await runCmd($, `${prefix}${name}`, args)
+      expect(r.text).toBe('out line')
+      expect(w.commands).toEqual([])
+      expect(w.runs).toHaveLength(1)
+      const [py, path, ...rest] = w.runs[0]?.argv ?? []
+      expect(py).toBe('python3')
+      expect(path).toMatch(new RegExp(`/scripts/${script.replace('.', '\\.')}$`))
+      expect(rest).toEqual([...scriptArgs])
+      // env 는 host 환경 위에 덧씌우므로 세션 id 만 넘긴다
+      expect(w.runs[0]).toMatchObject({ env: { CLAUDE_CODE_SESSION_ID: 'sid-1' }, timeoutMs: 10_000 })
+      expect(Object.keys(w.runs[0]?.env ?? {})).toEqual(['CLAUDE_CODE_SESSION_ID'])
+    })
+  }
+}
+
+test('exit≠0 이면 stdout 뒤에 exit 코드와 stderr 끝 10줄을 붙인다', async ($, on) => {
+  const w = setup(on)
+  const stderr = Array.from({ length: 12 }, (_, i) => `e${i + 1}`).join('\n') + '\n'
+  w.run = { exitCode: 1, stdout: 'partial\n', stderr }
+  expect((await runCmd($, 'cn:set', '3')).text).toBe(`partial\n\n[exit 1]\n[stderr]\n${['e3', 'e4', 'e5', 'e6', 'e7', 'e8', 'e9', 'e10', 'e11', 'e12'].join('\n')}`)
+  w.run = { exitCode: 2, stdout: '', stderr: '' }
+  expect((await runCmd($, 'cn:status')).text).toBe('(empty)\n\n[exit 2]')
+  expect(w.commands).toEqual([])
+})
+
+test('스크립트를 실행하지 못하면(python3 없음 등) next 로 옛 경로에 넘기고 디버그 로그는 1회만', async ($, on) => {
+  const w = setup(on)
+  w.runError = new Error('spawn python3 ENOENT')
+  expect((await runCmd($, 'cn:set', '0')).text).toBe('core')
+  expect((await runCmd($, 'cache-necromancer:cn:status')).text).toBe('core')
+  expect(w.commands).toEqual([
+    { command: 'cn:set', args: '0' },
+    { command: 'cache-necromancer:cn:status', args: '' },
+  ])
+  expect(w.logs).toHaveLength(1)
+  expect(w.logs[0]).toMatch(/^cache-necromancer: \/cn:set failed \(.+\), falling back; later failures are not logged$/)
+})
+
+test('다른 명령(/compact·/cn:other)은 건드리지 않는다', async ($, on) => {
+  const w = setup(on)
+  expect((await runCmd($, 'compact')).text).toBe('core')
+  expect((await runCmd($, 'cn:other', '1')).text).toBe('core')
+  expect(w.runs).toEqual([])
+  expect(w.commands.map(c => c.command)).toEqual(['compact', 'cn:other'])
 })
