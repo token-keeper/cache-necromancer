@@ -48,7 +48,7 @@ class Marker:
       - set_budget_remaining / set_budget_total / set_charged_at_ns: /cn:set N —
         이번 자리비움 깨우기 횟수 덮어쓰기 (남은 수 / 충전량 / 충전 시각 ns).
         충전 뒤 깨운 적이 있으면 사용자 복귀 때 0 으로 비워진다.
-      - wake_off: /cn:set 0·off — 세션 끝까지 깨우기 끔. /cn:set N(≥1) 만 해제.
+      - wake_off: /cn:set 0·off — 세션 끝까지 깨우기 끔. /cn:set N(≥1)·시간 충전·auto(패널 [자동]) 가 해제.
       - suppressed_at_ns: SessionStart(clear|compact) 가 기록하는 억제 시각 (ns).
         max(last_user_activity_at_ns, latest_fire) 보다 크면 refresh.py 가 skip.
     """

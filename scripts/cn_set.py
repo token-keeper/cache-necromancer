@@ -47,7 +47,7 @@ def _resolve_root() -> Path:
 
 
 def _save_or_fail(marker: Marker, lang: Language) -> bool:
-    """save 실패 시 경고 출력 + False (성공 메시지 출력 금지 — 미반영 상태)."""
+    """save 실패 시 경고 출력 + False (성공 메시지 출력 금지 — 미반영 상태). 호출부는 exit 1."""
     try:
         marker.save()
         return True
@@ -109,7 +109,7 @@ def _charge(marker: Marker, config: Config, lang: Language, n: int) -> int:
     marker.set_charged_at_ns = time.time_ns()
     marker.wake_off = False
     if not _save_or_fail(marker, lang):
-        return 0
+        return 1
     if not can_wake(config):  # 충전은 저장하되 깨울 수 없으니 횟수는 보이지 않는다 (띠와 같게)
         lines = [set_label(lang, "no_window")]
     else:
@@ -170,8 +170,9 @@ def main(argv: list[str]) -> int:
         marker.set_budget_remaining = 0
         marker.set_budget_total = 0
         marker.set_charged_at_ns = 0
-        if _save_or_fail(marker, lang):
-            print(set_label(lang, "turned_off"))
+        if not _save_or_fail(marker, lang):
+            return 1
+        print(set_label(lang, "turned_off"))
         return 0
 
     if arg.lower() == "auto":
@@ -179,8 +180,9 @@ def main(argv: list[str]) -> int:
         marker.set_budget_remaining = 0
         marker.set_budget_total = 0
         marker.set_charged_at_ns = 0
-        if _save_or_fail(marker, lang):
-            print(set_label(lang, "back_to_auto") + "\n" + _status(marker, config, lang))
+        if not _save_or_fail(marker, lang):
+            return 1
+        print(set_label(lang, "back_to_auto") + "\n" + _status(marker, config, lang))
         return 0
 
     if arg.isdecimal():

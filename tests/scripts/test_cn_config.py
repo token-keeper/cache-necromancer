@@ -509,3 +509,27 @@ def test_atomic_write_failure_leaves_original(tmp_path, monkeypatch):
     assert apply_changes(path, [(_AUTO, "3")]) is None
     assert path.read_text(encoding="utf-8") == "[general]\nauto_wakes = 1\n"
     assert [p.name for p in path.parent.iterdir()] == ["config.toml"]
+
+
+def test_atomic_write_keeps_symlink_and_updates_target(tmp_path, capsys):
+    """심링크 config.toml — 링크는 그대로, 링크 대상 파일에 반영 (v0.12 write_text 와 같게)."""
+    (tmp_path / "real").mkdir()
+    (tmp_path / "d").mkdir()
+    real = tmp_path / "real" / "config.toml"
+    real.write_text("[general]\nauto_wakes = 2\n", encoding="utf-8")
+    link = tmp_path / "d" / "config.toml"
+    link.symlink_to(real)
+    assert apply_changes(link, [(_AUTO, "1")]) == 0
+    assert link.is_symlink()
+    assert load_config(real).auto_wakes == 1
+    assert [p.name for p in real.parent.iterdir()] == ["config.toml"]
+
+
+def test_run_tui_rejects_interval_ge_ttl(tmp_path, capsys):
+    """메뉴 직접 입력도 --set 처럼 interval ≥ ttl 을 거부 — 현재값 유지 + 안내."""
+    path = tmp_path / "config.toml"
+    path.write_text("[general]\ncache_ttl_minutes = 60\nrefresh_interval_minutes = 50\n", encoding="utf-8")
+    changes = run_tui(path, input_fn=_inputs("", "75", "", ""))
+    assert changes == []
+    assert "Wake timing must be shorter than the cache TTL of 60 min: 75" in capsys.readouterr().out
+    assert load_config(path).refresh_interval_minutes == 50

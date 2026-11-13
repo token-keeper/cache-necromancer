@@ -348,7 +348,11 @@ def _is_valid_toml(text: str) -> bool:
 
 
 def _atomic_write(path: Path, text: str) -> None:
-    """같은 디렉터리 임시 파일(mkstemp = 0o600) → `os.replace`. 다른 세션이 반쯤 쓴 파일을 읽지 않게."""
+    """같은 디렉터리 임시 파일(mkstemp = 0o600) → `os.replace`. 다른 세션이 반쯤 쓴 파일을 읽지 않게.
+
+    심링크면 링크 대상 파일을 바꾼다 (링크를 일반 파일로 바꾸지 않게).
+    """
+    path = path.resolve()
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".config.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -409,6 +413,10 @@ def run_tui(path: Path, input_fn=input) -> list:
     for item in SCHEMA:
         cur = current_value(cfg, item)
         chosen = prompt_item(item, cur, input_fn, lang)
+        if (chosen is not None and item["key"] == "refresh_interval_minutes"
+                and int(chosen) >= cfg.cache_ttl_minutes):  # --set 과 같은 검사 — 깨우기가 꺼지는 함정
+            print("   ⚠️  " + t["interval_ge_ttl"].format(ttl=cfg.cache_ttl_minutes, value=chosen))
+            chosen = None
         if chosen is not None and not _matches_current(chosen, cur):
             changes.append((item, chosen))
     print("╰──────────────────────────────────────────╯")

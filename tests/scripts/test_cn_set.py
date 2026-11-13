@@ -167,10 +167,11 @@ class TestErrors:
             raise OSError("simulated")
 
         monkeypatch.setattr(Marker, "save", bad_save)
-        assert main(["2"]) == 0
-        out = capsys.readouterr().out
-        assert "⚠️" in out
-        assert "충전" not in out
+        for arg in ("2", "off", "auto", "2h"):          # 저장 실패는 exit 1 (패널이 빨간 줄로)
+            assert main([arg]) == 1
+            out = capsys.readouterr().out
+            assert out.startswith("⚠️")
+            assert "충전" not in out and "껐어요" not in out and "되돌렸어요" not in out
 
     def test_no_session(self, cn_root, monkeypatch, capsys):
         monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
@@ -268,6 +269,14 @@ class TestChargeUntil:
         assert "깨우기 10회 충전" in capsys.readouterr().out
         main(["19:00"])                                 # 지금과 같음 → 내일
         assert "깨우기 10회 충전" in capsys.readouterr().out
+
+    @freeze_time("2026-06-10 23:30:00")
+    def test_clock_past_midnight_not_capped(self, cn_root, sid_env, capsys):
+        """자정 넘김 00:30 = 60분 뒤 → ceil((60 − 20) / 10) = 4. 하루가 더 밀리면 상한 10 이 된다."""
+        _write_config(cn_root, interval=10, ttl=20)
+        main(["00:30"])
+        assert "깨우기 4회 충전" in capsys.readouterr().out
+        assert Marker.load(sid_env).set_budget_total == 4
 
     def test_interval_ge_ttl_no_charge(self, cn_root, sid_env, capsys):
         _write_config(cn_root, interval=60, ttl=60)
