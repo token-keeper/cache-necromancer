@@ -49,3 +49,12 @@ def survive_until_ns(anchor_ns: int, remaining: int, c: Config) -> int:
     if not can_wake(c):
         remaining = 0
     return anchor_ns + (remaining * c.refresh_interval_minutes + c.cache_ttl_minutes) * _MIN_NS
+
+
+def wakes_for_target(anchor_ns: int, target_ns: int, c: Config) -> int:
+    """캐시를 target 까지 살리는 데 필요한 깨우기 횟수 = ceil((target − anchor − ttl) / interval).
+
+    0 이하 = 깨우지 않아도 anchor + ttl 이 이미 target 이상.
+    """
+    need = target_ns - anchor_ns - c.cache_ttl_minutes * _MIN_NS
+    return -(-need // (c.refresh_interval_minutes * _MIN_NS))

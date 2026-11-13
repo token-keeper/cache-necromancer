@@ -90,11 +90,16 @@ class TestExpired:
         assert "깨우기 3회 충전 — 지금 캐시는 이미 만료 — 다음 자리비움부터 적용" in out
         assert "캐시 최대" not in out
 
-    def test_interval_ge_ttl_survive_is_ttl_only(self, cn_root, sid_env, capsys):
-        with freeze_time("2026-06-10 19:00:00"):
-            _write_config(cn_root, interval=60, ttl=60)
-            main(["3"])
-            assert "20:00" in capsys.readouterr().out     # 19:00 + 0×60 + 60
+    def test_interval_ge_ttl_hides_count(self, cn_root, sid_env, capsys):
+        """v0.13.0 D: 깨울 수 없으면 띠처럼 횟수를 보이지 않는다 (충전 자체는 저장)."""
+        _write_config(cn_root, interval=60, ttl=60)
+        main(["3"])
+        out = capsys.readouterr().out
+        assert "깨울 수 없어요" in out and "3회" not in out
+        assert Marker.load(sid_env).set_budget_total == 3
+        main([])
+        out = capsys.readouterr().out
+        assert "깨울 수 없어요" in out and "남음" not in out
 
 
 class TestOff:
@@ -162,12 +167,126 @@ class TestErrors:
             raise OSError("simulated")
 
         monkeypatch.setattr(Marker, "save", bad_save)
-        assert main(["2"]) == 0
-        out = capsys.readouterr().out
-        assert "⚠️" in out
-        assert "충전" not in out
+        for arg in ("2", "off", "auto", "2h"):          # 저장 실패는 exit 1 (패널이 빨간 줄로)
+            assert main([arg]) == 1
+            out = capsys.readouterr().out
+            assert out.startswith("⚠️")
+            assert "충전" not in out and "껐어요" not in out and "되돌렸어요" not in out
 
     def test_no_session(self, cn_root, monkeypatch, capsys):
         monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
         assert main(["2"]) == 0
         assert "session_id" in capsys.readouterr().out
+
+
+class TestAuto:
+    def test_auto_clears_off_and_override(self, cn_root, sid_env, capsys):
+        _write_config(cn_root)
+        m = Marker.load(sid_env)
+        m.wake_off, m.set_budget_remaining, m.set_budget_total, m.set_charged_at_ns = True, 3, 3, 5
+        m.save()
+        assert main(["AUTO"]) == 0
+        out = capsys.readouterr().out
+        assert "자동 깨우기로 되돌렸어요" in out and "자동 깨우기 2회 남음" in out
+        m2 = Marker.load(sid_env)
+        assert (m2.wake_off, m2.set_budget_remaining, m2.set_budget_total,
+                m2.set_charged_at_ns) == (False, 0, 0, 0)
+
+
+class TestChargeUntil:
+    """시간·시각 인자 — N = ceil((목표 − 기준 − ttl) / interval). 시각은 freeze_time 으로 고정."""
+
+    @freeze_time("2026-06-10 19:00:00")
+    @pytest.mark.parametrize("arg,n", [("2h", 2), ("90m", 1), ("1h30m", 1), ("4h", 4), ("61m", 1)])
+    def test_duration_from_latest_fire(self, cn_root, sid_env, capsys, arg, n):
+        _write_config(cn_root)
+        m = Marker.load(sid_env)
+        m.latest_fire = time.time_ns() - 10 * MIN_NS   # 18:50 → ttl 만으로 19:50
+        m.save()
+        assert main([arg]) == 0
+        assert f"깨우기 {n}회 충전" in capsys.readouterr().out
+        assert Marker.load(sid_env).set_budget_total == n
+
+    @freeze_time("2026-06-10 19:00:00")
+    def test_duration_without_fire_uses_now(self, cn_root, sid_env, capsys):
+        _write_config(cn_root)
+        main(["2h"])                                    # ceil((120 − 60) / 50) = 2
+        assert "깨우기 2회 충전" in capsys.readouterr().out
+
+    @freeze_time("2026-06-10 19:00:00")
+    def test_expired_cache_anchor_is_now(self, cn_root, sid_env, capsys):
+        _write_config(cn_root)
+        m = Marker.load(sid_env)
+        m.latest_fire = time.time_ns() - 90 * MIN_NS   # 만료 → 기준 = 지금
+        m.save()
+        main(["2h"])
+        assert "깨우기 2회 충전" in capsys.readouterr().out
+
+    @freeze_time("2026-06-10 19:00:00")
+    def test_already_alive_no_charge(self, cn_root, sid_env, capsys):
+        _write_config(cn_root)
+        m = Marker.load(sid_env)
+        m.latest_fire = time.time_ns() - 10 * MIN_NS
+        m.save()
+        main(["30m"])                                   # 19:30 ≤ 19:50
+        out = capsys.readouterr().out
+        assert "캐시가 이미 19:50까지 살아 있어요" in out
+        assert Marker.load(sid_env).set_budget_total == 0
+
+    @freeze_time("2026-06-10 19:00:00")
+    def test_no_fire_short_target_no_alive_promise(self, cn_root, sid_env, capsys):
+        """latest_fire 없음 → 기준 now 대체, N≤0 이어도 "이미 살아 있음"이라 하지 않는다."""
+        _write_config(cn_root)
+        main(["30m"])
+        out = capsys.readouterr().out
+        assert "살아 있는 캐시가 없어요" in out and "까지 살아 있어요" not in out
+        assert Marker.load(sid_env).set_budget_total == 0
+
+    @freeze_time("2026-06-10 19:00:00")
+    def test_expired_short_target_no_alive_promise(self, cn_root, sid_env, capsys):
+        _write_config(cn_root)
+        m = Marker.load(sid_env)
+        m.latest_fire = time.time_ns() - 90 * MIN_NS   # 만료
+        m.save()
+        main(["19:30"])                                 # 오늘 19:30, now+ttl 안 → N≤0
+        out = capsys.readouterr().out
+        assert "살아 있는 캐시가 없어요" in out and "까지 살아 있어요" not in out
+        assert Marker.load(sid_env).set_budget_total == 0
+
+    @freeze_time("2026-06-10 19:00:00")
+    def test_capped_at_10(self, cn_root, sid_env, capsys):
+        _write_config(cn_root)
+        main(["24h"])
+        out = capsys.readouterr().out
+        assert "깨우기 10회 충전" in out and "최대 10회까지만" in out and "캐시 최대" in out
+
+    @freeze_time("2026-06-10 19:00:00")
+    def test_clock_today_and_tomorrow(self, cn_root, sid_env, capsys):
+        _write_config(cn_root)
+        main(["21:00"])                                 # 오늘 21:00 → ceil(60/50) = 2
+        assert "깨우기 2회 충전" in capsys.readouterr().out
+        main(["18:00"])                                 # 지났으니 내일 18:00 → 23h → 상한 10
+        assert "깨우기 10회 충전" in capsys.readouterr().out
+        main(["19:00"])                                 # 지금과 같음 → 내일
+        assert "깨우기 10회 충전" in capsys.readouterr().out
+
+    @freeze_time("2026-06-10 23:30:00")
+    def test_clock_past_midnight_not_capped(self, cn_root, sid_env, capsys):
+        """자정 넘김 00:30 = 60분 뒤 → ceil((60 − 20) / 10) = 4. 하루가 더 밀리면 상한 10 이 된다."""
+        _write_config(cn_root, interval=10, ttl=20)
+        main(["00:30"])
+        assert "깨우기 4회 충전" in capsys.readouterr().out
+        assert Marker.load(sid_env).set_budget_total == 4
+
+    def test_interval_ge_ttl_no_charge(self, cn_root, sid_env, capsys):
+        _write_config(cn_root, interval=60, ttl=60)
+        main(["2h"])
+        assert "깨울 수 없어요" in capsys.readouterr().out
+        assert Marker.load(sid_env).set_budget_total == 0
+
+    @pytest.mark.parametrize("bad", ["0m", "0h0m", "h", "24:00", "9:60", "1h30", "2x", "1:5"])
+    def test_bad_time_shows_usage(self, cn_root, sid_env, capsys, bad):
+        _write_config(cn_root)
+        main([bad])
+        assert "사용법: /cn:set N" in capsys.readouterr().out
+        assert Marker.load(sid_env).set_budget_total == 0

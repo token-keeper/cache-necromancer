@@ -1,12 +1,12 @@
-# cache-necromancer 구조 (v0.12.0)
+# cache-necromancer 구조 (v0.13.0)
 
-> 독자: 이 repo 를 고치는 사람. 기준: v0.12.0 코드 (`hooks/`·`scripts/`·`lib/`). 변경 이력은 [CHANGELOG](../CHANGELOG.md).
+> 독자: 이 repo 를 고치는 사람. 기준: v0.13.0 코드 (`hooks/`·`scripts/`·`lib/`). 변경 이력은 [CHANGELOG](../CHANGELOG.md).
 
 ## 구성요소
 
 | 구성요소 | 위치 | 하는 일 |
 |---|---|---|
-| mod | `hooks/register.tsx` (`hooks.json` 의 `modules`) | 입력창 아래 띠(`PromptHint` 자리, 엔진 힌트 줄 위 — 카운트다운·10분 구간 6단계 색·뒤 정보: 살린 횟수·남은 깨우기 또는 깨우기 꺼짐과 생존 시각), 경고·만료 토스트, 1초 tick 의 깨우기 타이머, `/cn:set` 충전 시 재판정 |
+| mod | `hooks/register.tsx` (`hooks.json` 의 `modules`) | 입력창 아래 띠(`PromptHint` 자리, 엔진 힌트 줄 위 — 카운트다운·10분 구간 6단계 색·뒤 정보: 살린 횟수·남은 깨우기 또는 깨우기 꺼짐과 생존 시각), 경고·만료 토스트, 1초 tick 의 깨우기 타이머, 충전·끔 해제·`auto_wakes` 변경 시 재판정 |
 | Stop·StopFailure 훅 | `scripts/on_recap.py` | `marker.latest_fire`(마지막 turn 끝 시각) 기록 — API 오류로 끝난 turn(`StopFailure`)도 같게 기록해 진행 중 turn 판정이 풀린다. config.toml 없으면 기본 템플릿 생성. 출력 없음 |
 | UserPromptSubmit 훅 | `scripts/on_user_prompt.py` | ping·`/cn:*` 를 뺀 모든 프롬프트에 `last_turn_start_at_ns`(turn 시작) 기록. 그중 진짜 사용자 입력이면 `wake_count` 0·`last_user_activity_at_ns` 갱신(깨운 적 있으면 `[return]` 로그), 복귀 판정 시 `/cn:set` 덮어쓰기 해제. `<task-notification>`·`<cross-session-message`·`<teammate-message` 는 turn 시작만 기록하고 활동으로 안 셈. `wake_off` 는 안 건드림 |
 | SessionStart 훅 (`clear\|compact`) | `scripts/on_session_start.py` | `suppressed_at_ns` 기록 — 그 뒤 진짜 입력이나 Stop 이 올 때까지 깨우기 억제 |
@@ -27,8 +27,8 @@ turn.step (메인 대화, 캐시 read+creation > 0)
             ├─ exit 0 → 끝 (건너뜀 — 사유는 cn.log 의 [refresh] 줄)
             └─ exit 2 → stderr 의 [cn:keepalive 줄만 prompt.submit
                           └─ ping turn 이 캐시를 읽음 → turn.step 이 base 갱신 → 다음 주기 (연쇄)
-  └─ 이 base 로 이미 깨웠어도, 깨우기 구간 안에서 marker 의 충전 시각(set_charged_at_ns)이 바뀌었고
-     남은 충전이 있으면(꺼짐 아님) refresh.py --now 를 1회 더 실행  ← /cn:set 재판정
+  └─ 이 base 로 이미 판정했어도, 남은 깨우기(자동 몫 포함) ≥ 1 이고 자격 서명(충전 시각·꺼짐·auto_wakes)이
+     직전 판정과 다르면 refresh.py --now 를 1회 더 실행  ← /cn:set·[자동]·auto_wakes 재판정
 ```
 
 - 연쇄 상한: 자리비움마다 `auto_wakes`, `/cn:set N` 덮어쓰기 중이면 N. `/cn:set 0|off`(`wake_off`)는 세션 끝까지 0.
@@ -39,24 +39,28 @@ turn.step (메인 대화, 캐시 read+creation > 0)
 
 | 저장소 | 쓰는 쪽 | 내용 |
 |---|---|---|
-| mod atom (세션 메모리) | mod 만 | `base`, 띠 `label`, `config`, 토스트·깨우기 1회 가드(`warnedFor`·`expiredFor`·`wokeFor`), 깨울 때 본 충전 시각 `wokeCharge`, 읽어 둔 `marker` |
+| mod atom (세션 메모리) | mod 만 | `base`, 띠 `label`, `config`, 토스트·깨우기 1회 가드(`warnedFor`·`expiredFor`·`wokeFor`), 직전 판정의 자격 서명 문자열 `wokeCharge`(충전 시각·꺼짐·auto_wakes, null = 실행 중), 읽어 둔 `marker`·`markerReadAt`(마지막 marker 읽은 시각), 패널용 `items`(전체 설정 항목)·`sessionLine`(이 세션 상태 1줄)·`paneNote`(저장됨·실패 알림), 오류 로그 1회 가드(`tickErrorLogged`·`wakeErrorLogged`·`commandErrorLogged`·`configErrorLogged`) |
 | `~/.cache-necromancer/marker/<sid>.json` | **Python 만** | `latest_fire`, `wake_count`, `last_wake_at`·`last_wake_at_ns`, `last_user_activity_at_ns`, `last_turn_start_at_ns`, `suppressed_at_ns`, `set_budget_remaining`·`set_budget_total`·`set_charged_at_ns`, `wake_off`, `last_prompt`·`cwd` |
-| `~/.cache-necromancer/config.toml` | 사용자·터미널 설정 메뉴(`scripts/cn_config.py`)·Python(템플릿 생성) | 설정 5개 키. 옛 키는 무시, 메뉴 저장 때 삭제 |
+| `~/.cache-necromancer/config.toml` | 사용자·설정 패널·터미널 설정 메뉴(`scripts/cn_config.py`, 원자 저장)·Python(템플릿 생성) | 설정 5개 키. 옛 키는 무시, 메뉴 저장 때 삭제 |
 | `~/.cache-necromancer/cn.log.YYYY-MM-DD` | Python (`lib/logger.py`) | `[refresh]`·`[return]` 등 판정 로그. 자동 삭제 없음 |
 
 mod 는 marker 를 기준 시각이 있는 동안 5초 간격·깨우기 직후에 **읽기만** 한다 (띠 표시와 무관 — 재판정에 필요). 경로 루트는 모두 `$CN_ROOT` 가 있으면 그것.
 
 ## 설정 반영 시점
 
-- mod: 세션 시작(`session.start`) 때, 또는 리로드 뒤 첫 tick 에 읽는다 → 띠·깨우기 시점(`cache_ttl_minutes`·`refresh_interval_minutes`·`countdown`·`language`, 뒤 정보용 `auto_wakes`)은 새 세션 또는 `/reload-plugins` 뒤부터. 매 tick 재읽기는 v0.13.0 예정.
+- mod: tick 에서 5초마다 `config.toml` 텍스트를 읽어 직전과 다르면(처음 포함) `cn_config.py --json` 을 실행해 `config` atom 을 갱신한다 — 해석은 Python 하나, TS 파서 없음. 실패하면 이전 값을 유지하고 다음 주기에 재시도. 그래서 새 세션·리로드 없이 열린 세션 모두 최대 5초 안에 반영된다.
 - Python: 실행마다 읽는다 → 깨우기 횟수(`auto_wakes`)·`/cn:*` 문구는 다음 판정부터.
+
+## 설정 패널
+
+띠 `[ ⚙ ]` 클릭 또는 `/cn:config`(`command.run`)가 같은 Pane 을 연다 (엔진이 폭에 따라 배치를 정함 — 넓으면 오른쪽). 위쪽 "이 세션" 버튼은 `cn_set.py off|auto|1h|2h|4h` 를, 아래쪽 "전체 설정" 버튼은 `cn_config.py --set <id>=<value>` 를 실행한다(`--json` 의 `items` 로 그린다). 저장 성공 직후에는 5초를 기다리지 않고 설정·marker 를 강제로 다시 읽는다. `--set` 은 값 검증 후 원자 저장(tempfile → `os.replace`). mod 가 없으면 `/cn:config` 는 터미널 메뉴 실행 안내(`--hint`)로 폴백한다.
 
 ## 알려진 제약
 
+- 깨운 직후 ping turn 이 끝나기 전 몇 초 사이(또는 다른 세션이 `auto_wakes` 를 바꾼 직후)에 자격 서명이 바뀌면 같은 기준 시각에서 한 번 더 깨울 수 있다. `refresh.py` 가 "마지막 Stop 뒤 이미 깨움"을 막으면 ping 이 거부됐을 때 그 뒤 깨우기가 모두 막혀 더 비싸므로 막지 않는다.
 - mods 는 Claude Code v2.1.286 이상. 그 미만은 `modules` 를 무시해 띠·깨우기가 없고 Python 훅·`/cn:*` 만 동작한다.
-- `/reload-plugins` 뒤 `session.start` 가 안 올 수 있다 — 0.11.0 부터 `ui.render`·`turn.step` 중 먼저 오는 쪽에서 타이머를 건다. settings 훅(`hooks.json`)의 경로는 여전히 재시작해야 바뀐다 ([CLAUDE.md](../CLAUDE.md)).
+- `/reload-plugins` 뒤 `session.start` 가 안 올 수 있다 — 0.11.0 부터 `ui.render`·`turn.step` 중 먼저 오는 쪽에서 타이머를 건다. settings 훅(`hooks.json`)의 경로도 `/reload-plugins` 로 바뀐다는 실측은 [CLAUDE.md](../CLAUDE.md) 참고.
 - Esc 로 중단한 turn 은 Stop 이 없어 다음 완료 turn 까지 깨우지 않는다.
 - Claude Code 재시작은 SessionEnd 로 marker 를 지워 `/cn:set` 덮어쓰기·`wake_off` 가 사라진다 (resume 후 다시 설정).
-- 설정 파일 문법 오류 때 Python 은 전체 기본값, mod 는 읽히는 줄의 값을 쓴다 — 해석 통일은 v0.13.0 예정.
 
 실측 기록: 2026-10-07 깨우기 1회 cache_read 355,998 / creation 271

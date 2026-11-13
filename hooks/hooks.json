@@ -1,5 +1,5 @@
 {
-  "description": "v0.12.0 — 자리비움마다 자동 깨우기 최대 N회(auto_wakes, 기본 2) + /cn:set N 이번 자리비움 덮어쓰기·/cn:set 0|off 이 세션 끄기 + clear/compact 시 깨우기 억제 + 입력창 아래 캐시 카운트다운 띠(뒤에 살린 횟수·남은 깨우기와 생존 시각), 캐시 마지막 적중 시각 기준 깨우기 (modules). Stop·StopFailure 훅은 마지막 turn 끝 시각 기록만",
+  "description": "v0.13.0 — 설정 패널(띠 [ ⚙ ] 또는 /cn:config)·설정 즉시 반영 + 자리비움마다 자동 깨우기 최대 N회(auto_wakes, 기본 2) + /cn:set N|2h|18:00 충전·auto 해제·0|off 이 세션 끄기 + clear/compact 시 깨우기 억제 + 입력창 아래 캐시 카운트다운 띠(뒤에 살린 횟수·남은 깨우기와 생존 시각), 캐시 마지막 적중 시각 기준 깨우기 (modules). Stop·StopFailure 훅은 마지막 turn 끝 시각 기록만",
   "hooks": {
     "Stop": [
       {

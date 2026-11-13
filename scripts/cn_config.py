@@ -8,9 +8,14 @@ LLM turn 0 + context 0. 순수 stdlib (의존성 0).
 
 v0.12.0: 현재값은 실제 적용값(`load_config`), 저장 시 무시되는 옛 키·옛 섹션 정리,
 문구는 설정 language(ko·en·ja·zh) 기준.
+v0.13.0: mod 설정 패널용 `--json`(적용 설정 + 항목) · `--set section.key=value`, 저장은 원자적.
 """
+import contextlib
+import io
+import json
 import re
 import sys
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -66,8 +71,10 @@ _TEXT: dict[str, dict] = {
         "cleaned": "무시되던 옛 설정 {n}줄 정리",
         "cleanup_skipped": "옛 설정 정리는 건너뜀 (정리하면 파일이 깨짐 — 직접 편집하세요)",
         "save_cancelled": "저장 취소 — 결과가 올바른 TOML 이 아님 (파일 문법을 확인하세요)",
-        "saved": "저장됨 → 깨우기 횟수는 다음 깨우기 판정부터, "
-                 "깨우기 시점·띠는 새 세션(또는 /reload-plugins)부터 적용.",
+        "saved": "저장됨 · 열린 세션 모두에 바로 반영",
+        "bad_key": "알 수 없는 설정: {id} (가능: {allowed})",
+        "bad_value": "잘못된 값: {id}={value} (가능: {allowed})",
+        "interval_ge_ttl": "깨우기 시점은 캐시 수명 {ttl}분보다 짧아야 함: {value}",
         "hint": "설정 변경은 새 터미널에서 아래를 실행하세요 (turn 0 · context 0):",
         "hint_note": "(번호 메뉴 — Claude 대화를 거치지 않아 맥락을 소비하지 않음)",
         "cancelled": "취소됨 (변경 없음).",
@@ -92,8 +99,10 @@ _TEXT: dict[str, dict] = {
         "cleaned": "Removed {n} old ignored setting line(s)",
         "cleanup_skipped": "Skipped removing old settings (it would break the file — edit it by hand)",
         "save_cancelled": "Save cancelled — the result is not valid TOML (check the file syntax)",
-        "saved": "Saved → the wake count applies from the next wake check; "
-                 "wake timing and the band apply from a new session (or /reload-plugins).",
+        "saved": "Saved · applies to every open session right away",
+        "bad_key": "Unknown setting: {id} (allowed: {allowed})",
+        "bad_value": "Invalid value: {id}={value} (allowed: {allowed})",
+        "interval_ge_ttl": "Wake timing must be shorter than the cache TTL of {ttl} min: {value}",
         "hint": "To change settings, run this in a new terminal (turn 0 · context 0):",
         "hint_note": "(numbered menu — runs outside the Claude chat, so it uses no context)",
         "cancelled": "Cancelled (no changes).",
@@ -118,8 +127,10 @@ _TEXT: dict[str, dict] = {
         "cleaned": "無視されていた古い設定 {n} 行を整理",
         "cleanup_skipped": "古い設定の整理はスキップ (整理するとファイルが壊れるため — 直接編集してください)",
         "save_cancelled": "保存を中止 — 結果が正しい TOML ではありません (ファイルの文法を確認してください)",
-        "saved": "保存しました → 延長回数は次の延長判定から、"
-                 "延長タイミングと帯は新しいセッション (または /reload-plugins) から反映。",
+        "saved": "保存しました · 開いているすべてのセッションにすぐ反映",
+        "bad_key": "不明な設定: {id} (指定可能: {allowed})",
+        "bad_value": "無効な値: {id}={value} (指定可能: {allowed})",
+        "interval_ge_ttl": "延長タイミングはキャッシュ寿命 {ttl}分より短くしてください: {value}",
         "hint": "設定の変更は新しいターミナルで次を実行してください (turn 0 · context 0):",
         "hint_note": "(番号メニュー — Claude の会話を通さないのでコンテキストを消費しません)",
         "cancelled": "キャンセル (変更なし)。",
@@ -144,8 +155,10 @@ _TEXT: dict[str, dict] = {
         "cleaned": "已清理 {n} 行被忽略的旧设置",
         "cleanup_skipped": "已跳过清理旧设置 (清理会损坏文件 — 请手动编辑)",
         "save_cancelled": "已取消保存 — 结果不是有效的 TOML (请检查文件语法)",
-        "saved": "已保存 → 唤醒次数从下一次唤醒判定起生效，"
-                 "唤醒时机和横条从新会话 (或 /reload-plugins) 起生效。",
+        "saved": "已保存 · 立即应用到所有打开的会话",
+        "bad_key": "未知设置: {id} (可用: {allowed})",
+        "bad_value": "无效值: {id}={value} (可用: {allowed})",
+        "interval_ge_ttl": "唤醒时机必须短于缓存寿命 {ttl} 分钟: {value}",
         "hint": "要更改设置，请在新终端中运行以下命令 (turn 0 · context 0):",
         "hint_note": "(编号菜单 — 不经过 Claude 对话，不消耗上下文)",
         "cancelled": "已取消 (没有更改)。",
@@ -334,16 +347,37 @@ def _is_valid_toml(text: str) -> bool:
     return True
 
 
-def apply_changes(path: Path, changes: list, lang: str = "en") -> "int | None":
+def _atomic_write(path: Path, text: str) -> None:
+    """같은 디렉터리 임시 파일(mkstemp = 0o600) → `os.replace`. 다른 세션이 반쯤 쓴 파일을 읽지 않게.
+
+    심링크면 링크 대상 파일을 바꾼다 (링크를 일반 파일로 바꾸지 않게).
+    """
+    path = path.resolve()
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".config.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def apply_changes(path: Path, changes: list, lang: str = "en", out=None) -> "int | None":
     """변경 목록 `[(item, raw_value), ...]` 을 config.toml 에 라인보존 저장.
 
     파일이 없으면 기본 템플릿 생성 후 적용 (다른 키·주석·사용자 편집 보존).
     무시되는 옛 키(`OBSOLETE_KEYS`) 줄과 비게 된 옛 섹션 헤더도 지운다.
     쓰기 전에 결과를 tomllib 로 검증: 정리 때문에 깨지면 정리 없이 값 변경만,
     그래도 깨지면 저장하지 않는다.
+    저장은 원자적(`_atomic_write`), 권한 0o600. 안내 문구는 `out`(기본 stdout)으로.
     반환: 지운 옛 키 줄 수, 저장 안 함(검증 실패·IO 실패·UTF-8 아님)이면 None.
     """
     t = _TEXT[lang]
+    out = out if out is not None else sys.stdout
     try:
         ensure_config_file(path)
         original = path.read_text(encoding="utf-8")
@@ -353,12 +387,12 @@ def apply_changes(path: Path, changes: list, lang: str = "en") -> "int | None":
             removed = 0
             text = _with_changes(original, changes)
             if not _is_valid_toml(text):
-                print("⚠️  " + t["save_cancelled"])
+                print("⚠️  " + t["save_cancelled"], file=out)
                 return None
-            print("⚠️  " + t["cleanup_skipped"])
-        path.write_text(text, encoding="utf-8")
+            print("⚠️  " + t["cleanup_skipped"], file=out)
+        _atomic_write(path, text)
     except (OSError, UnicodeDecodeError) as e:  # UTF-8 아닌 파일도 traceback 대신 저장 취소
-        print("⚠️  " + t["save_failed"].format(err=f"{type(e).__name__}: {e}"))
+        print("⚠️  " + t["save_failed"].format(err=f"{type(e).__name__}: {e}"), file=out)
         return None
     return removed
 
@@ -379,6 +413,10 @@ def run_tui(path: Path, input_fn=input) -> list:
     for item in SCHEMA:
         cur = current_value(cfg, item)
         chosen = prompt_item(item, cur, input_fn, lang)
+        if (chosen is not None and item["key"] == "refresh_interval_minutes"
+                and int(chosen) >= cfg.cache_ttl_minutes):  # --set 과 같은 검사 — 깨우기가 꺼지는 함정
+            print("   ⚠️  " + t["interval_ge_ttl"].format(ttl=cfg.cache_ttl_minutes, value=chosen))
+            chosen = None
         if chosen is not None and not _matches_current(chosen, cur):
             changes.append((item, chosen))
     print("╰──────────────────────────────────────────╯")
@@ -413,11 +451,102 @@ def _print_hint() -> None:
     print("   " + t["hint_note"])
 
 
+def _item_id(item: dict) -> str:
+    return f"{item['section']}.{item['key']}"
+
+
+def _as_option(value) -> str:
+    """현재값을 옵션값 문자열로 (bool 은 "true"/"false")."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def config_json(path: Path) -> dict:
+    """`--json` 출력 — 적용 설정(mod `CacheNecromancerConfig` 모양) + 패널 항목. 파일은 안 건드린다."""
+    cfg = load_config(path)
+    t = _TEXT[_lang(cfg)]
+    items = []
+    for item in SCHEMA:
+        label, descs = t["items"][item["key"]]
+        items.append({
+            "id": _item_id(item),
+            "label": label,
+            "current": _as_option(current_value(cfg, item)),
+            "options": [{"value": v, "text": f"{v} · {d}"} for v, d in zip(item["options"], descs)],
+        })
+    return {
+        "config": {
+            "ttlMinutes": cfg.cache_ttl_minutes,
+            "warnAfterMinutes": cfg.refresh_interval_minutes,
+            "autoWakes": cfg.auto_wakes,
+            "countdown": cfg.display.countdown,
+            "language": cfg.language,
+        },
+        "items": items,
+    }
+
+
+def _allowed(item: dict) -> str:
+    if item["type"] == "int":
+        return f"{item['min']}~{item['max']}" if "max" in item else f"{item['min']}+"
+    return "|".join(item["options"])
+
+
+def _check_set(arg: str, cfg: Config, t: dict) -> "tuple[dict, str]":
+    """`section.key=value` 하나 검증. (item, 정규화 값) 반환, 잘못되면 ValueError(사유 1줄)."""
+    by_id = {_item_id(i): i for i in SCHEMA}
+    key, sep, raw = arg.partition("=")
+    item = by_id.get(key.strip())
+    if not sep or item is None:
+        raise ValueError(t["bad_key"].format(id=key.strip(), allowed=", ".join(by_id)))
+    raw = raw.strip()
+    bad = ValueError(t["bad_value"].format(id=key.strip(), value=raw, allowed=_allowed(item)))
+    if item["type"] == "int":
+        value = _validate_free(item, raw) if raw.isdecimal() else None
+        if value is None:
+            raise bad
+        if item["key"] == "refresh_interval_minutes" and int(value) >= cfg.cache_ttl_minutes:
+            raise ValueError(t["interval_ge_ttl"].format(ttl=cfg.cache_ttl_minutes, value=value))
+        return item, value
+    if raw not in item["options"]:  # bool 은 options = ["true", "false"]
+        raise bad
+    return item, raw
+
+
+def set_values(path: Path, args: list) -> int:
+    """`--set section.key=value ...` — 검증 후 원자 저장. 성공 stdout 1줄·exit 0, 실패 stderr 1줄·exit 1.
+
+    파일의 다른 잘못된 값 경고(`[cn:warn]`)는 버린다 — 패널은 stderr 첫 줄을 실패 사유로 보인다.
+    """
+    with contextlib.redirect_stderr(io.StringIO()):
+        cfg = load_config(path)
+    t = _TEXT[_lang(cfg)]
+    try:
+        if not args:
+            raise ValueError(t["bad_key"].format(id="", allowed=", ".join(_item_id(i) for i in SCHEMA)))
+        changes = [_check_set(a, cfg, t) for a in args]
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    buf = io.StringIO()
+    if apply_changes(path, changes, _lang(cfg), out=buf) is None:
+        print(buf.getvalue().strip().removeprefix("⚠️  ").replace("\n", " "), file=sys.stderr)
+        return 1
+    print(t["saved"])
+    return 0
+
+
 def main(argv: "list[str] | None" = None) -> int:
     argv = argv if argv is not None else sys.argv[1:]
     if argv and argv[0] == "--hint":
         _print_hint()
         return 0
+    if argv and argv[0] == "--json":
+        print(json.dumps(config_json(_resolve_root() / "config.toml"), ensure_ascii=False))
+        return 0
+    if argv and argv[0] == "--set":
+        return set_values(_resolve_root() / "config.toml", argv[1:])
     path = _resolve_root() / "config.toml"
     try:
         run_tui(path)

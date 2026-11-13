@@ -45,16 +45,15 @@ marketplace submodule pointer 를 bump 해도 **사용자 머신에서 실제로
 | 동작 | 갱신되는 것 | 갱신 안 되는 것 |
 |---|---|---|
 | repo push + marketplace bump | GitHub / marketplace catalog | 사용자 install cache, 활성 버전 |
-| `/reload-plugins` | install cache 에 새 버전 **다운로드만** | `installed_plugins.json` 활성 pointer, **이미 떠있는 세션의 hook 경로** |
-| `/plugin update` | `installed_plugins.json` 활성 pointer (→ 새 버전) | 이미 떠있는 세션의 hook 경로 |
-| **Claude Code 완전 재시작** | 새 세션이 활성 pointer 기준으로 hook register | — |
+| `/plugin update` | `installed_plugins.json` 활성 pointer (→ 새 버전) | 이미 떠있는 세션의 mod·hook (reload 전) |
+| `/reload-plugins` | install cache 에 새 버전 다운로드 + 활성 경로 반영, **이미 떠있는 세션의 settings 훅 경로도 새 버전으로 바뀜** (2026-11-13 실측: 10:56 에 시작한 세션이 재시작 없이 `/plugin update`(14:14 0.12.0 설치) + `/reload-plugins` 뒤, 0.12.0 에만 있는 `last_turn_start_at_ns` 를 UserPromptSubmit 훅이 기록함 — 0.11.1 코드에는 이 키 없음) | — |
+| Claude Code 재시작 | 새 세션이 활성 pointer 기준으로 hook register | — (reload 가 이상할 때의 안전한 대안) |
 
 ### 핵심 사실
 
 - **활성 버전의 진짜 소스는 `~/.claude/plugins/installed_plugins.json`** 의 `installPath` / `version`. `/plugin` UI 가 보여주는 "Version: X" 는 marketplace catalog 의 최신 버전일 뿐, 활성 버전과 다를 수 있다.
-- hook 의 `${CLAUDE_PLUGIN_ROOT}` 는 **세션 시작 시점에 활성 install 경로로 고정**된다. `/reload-plugins` 로는 이미 떠있는 세션의 경로가 안 바뀐다 → 재시작 필수.
-- 따라서 새 버전을 사용자 머신에 실제 반영하려면 **`/plugin update` → Claude Code 재시작** 이 둘 다 필요하다.
-- mod(`hooks/register.tsx`)는 다르다: v0.11.0 부터 `/reload-plugins` 로 다시 로드되면 첫 tick(`ui.render`·`turn.step`) 에 타이머를 걸고 설정을 읽는다. 다만 settings 훅(`hooks.json` 의 Python 훅) 경로는 위대로 재시작해야 바뀐다.
+- 새 버전을 사용자 머신에 실제 반영하려면 **`/plugin update` → `/reload-plugins`** 로 충분하다 (위 실측: reload 만으로 settings 훅 경로도 새 버전으로 바뀜). 이상하면 Claude Code 를 재시작한다.
+- mod(`hooks/register.tsx`)는 `/reload-plugins` 로 다시 로드되면 첫 tick(`ui.render`·`turn.step`) 에 타이머를 걸고 설정을 읽는다 (v0.11.0~).
 
 ### 진단 시 확인 명령
 

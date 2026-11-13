@@ -290,6 +290,7 @@ class TestWakeStateDisplay:
         assert "next wake" not in out
         expect = datetime.fromtimestamp(fire / 1e9 + 60 * 60).strftime("%H:%M")
         assert re.search(rf"cache until:\s+{expect}", out)
+        assert "cannot wake (interval ≥ ttl)" in out and "left" not in out  # v0.13.0 D: 횟수 숨김
 
 
 # ---------- 옛 설정 경고 ----------

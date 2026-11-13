@@ -21,7 +21,7 @@ export type CacheNecromancerMarker = {
   chargedAt: number
 } | null
 
-/** ~/.cache-necromancer/config.toml 에서 세션 시작 때 읽은 값 */
+/** ~/.cache-necromancer/config.toml 을 Python 이 해석한 값 (cn_config.py --json 의 config). 파일이 바뀌면 몇 초 안에 다시 읽는다 */
 export type CacheNecromancerConfig = {
   /** [general] cache_ttl_minutes */
   ttlMinutes: number
@@ -37,6 +37,19 @@ export type CacheNecromancerConfig = {
 
 export type CacheNecromancerLanguage = 'ko' | 'en' | 'ja' | 'zh'
 
+/** cn_config.py --json 의 items 한 줄 — 설정 패널 "전체 설정"의 항목 (문구는 Python 이 언어별로 준다) */
+export type CacheNecromancerItem = {
+  /** section.key — cn_config.py --set 에 그대로 넘긴다 */
+  id: string
+  label: string
+  /** 지금 값 (bool 은 "true"/"false"). 옵션 밖 값이면 어떤 버튼도 강조하지 않는다 */
+  current: string
+  options: { value: string; text: string }[]
+}
+
+/** 설정 패널 아래 알림 줄 (저장됨·이 세션 버튼 결과는 4초 뒤 지움, 실패는 빨강) */
+export type CacheNecromancerNote = { text: string; isError: boolean } | null
+
 declare module 'claude-code' {
   interface PluginState {
     'cache-necromancer': {
@@ -46,13 +59,16 @@ declare module 'claude-code' {
       warnedFor: CacheNecromancerTime
       /** 만료 토스트를 보낸 기준 시각 */
       expiredFor: CacheNecromancerTime
-      /** refresh.py --now 를 실행한 기준 시각 (기준 시각당 1회, 충전이 바뀌면 재판정) */
+      /** refresh.py --now 를 실행한 기준 시각 (기준 시각당 1회, 깨우기 자격이 바뀌면 재판정) */
       wokeFor: CacheNecromancerTime
-      /** 이 기준 시각으로 마지막 깨우기가 끝난 뒤 marker 의 chargedAt — 달라지면 1회 더 판정한다. null = 실행 중·리로드 직후 (재판정 안 함) */
-      wokeCharge: number | null
+      /**
+       * 이 기준 시각으로 마지막 깨우기가 끝난 뒤의 깨우기 자격 서명 `chargedAt|wakeOff|autoWakes` — 남은 깨우기가 있고 서명이 달라지면
+       * 1회 더 판정한다. null = 실행 중·리로드 직후 (재판정 안 함)
+       */
+      wokeCharge: Shaped<string | null>
       /** 지금 띠에 그릴 줄 */
       label: Shaped<CacheNecromancerLabel>
-      /** 세션 시작 때 읽은 설정 */
+      /** 지금 쓰는 설정 (config.toml 이 바뀌면 몇 초 안에 갱신) */
       config: Shaped<CacheNecromancerConfig>
       /** 마지막으로 읽은 marker (띠 뒤 정보·충전 재판정용) */
       marker: CacheNecromancerMarker
@@ -64,6 +80,14 @@ declare module 'claude-code' {
       wakeErrorLogged: boolean
       /** /cn:* 명령 실행 실패를 디버그 로그에 이미 남겼는지 (첫 1회만 남긴다) */
       commandErrorLogged: boolean
+      /** 설정 읽기(cn_config.py --json) 실패를 디버그 로그에 이미 남겼는지 (첫 1회만 남긴다) */
+      configErrorLogged: boolean
+      /** 설정 패널 전체 설정 항목 (마지막 --json 의 items) */
+      items: CacheNecromancerItem[]
+      /** 설정 패널 "이 세션" 상태 줄 (cn_set.py 무인자 출력) */
+      sessionLine: string
+      /** 설정 패널 알림 줄 */
+      paneNote: CacheNecromancerNote
     }
   }
 }
