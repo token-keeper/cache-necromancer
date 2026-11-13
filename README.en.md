@@ -2,7 +2,7 @@
 
 ![cache-necromancer banner](docs/assets/banner.png)
 
-> **A Claude Code plugin that alerts you before your 1-hour prompt cache expires — and only revives it when you explicitly run `/cn:set`.**
+> **A Claude Code plugin that keeps your 1-hour prompt cache alive while you are away, by waking the session a set number of times.**
 
 ![status](https://img.shields.io/badge/status-alpha-orange) ![license](https://img.shields.io/badge/license-MIT-blue) ![platform](https://img.shields.io/badge/platform-macOS-lightgrey)
 
@@ -24,7 +24,7 @@ Claude Code prompt cache TTL = **1 hour**.
 
 > Meeting / lunch / step away for 50 min → come back → cost bomb.
 
-v0.5.0 default behavior: **notify only** (zero token cost). When you step away, use `/cn:set N` to explicitly charge a wake budget — it revives the cache exactly that many times.
+Default behavior (v0.12.0): when you step away after your last input, it wakes the session **up to 2 times** to keep the cache alive (`auto_wakes`). Use `/cn:set N` to change that for this time away only, or `/cn:set off` to turn it off for this session. There are no macOS notifications — the band below the prompt and toasts show the time left.
 
 ## Install
 
@@ -35,67 +35,103 @@ v0.5.0 default behavior: **notify only** (zero token cost). When you step away, 
 
 Takes effect from **a new chat session** (Claude Code doesn't hot-reload settings).
 
+**Updating**: after `/plugin update`, **fully restart Claude Code** (`/reload-plugins` alone mixes the new mod with the old hooks and breaks wake checks). Coming from v0.11.x, the old always/manual settings are ignored and every session wakes up to 2 times per time away — set `auto_wakes = 10` for the old always behavior, or `auto_wakes = 0` to turn automatic wakes off. `/cn:set 0` now turns wakes off for the session instead of cancelling a charge. See the 0.12.0 entry in the [CHANGELOG](CHANGELOG.md) (Korean).
+
 ## Slash Commands
 
 | Command | Description |
 |---|---|
-| `/cn:set N` | Charge wake budget — allow N wakes (0=cancel, no arg=status) |
-| `/cn:config` | Change settings (arm/notify/interval/max_count/countdown) |
-| `/cn:status` | Session state + next scheduled fire (no API cost) |
+| `/cn:set N` | Wake N times during this time away only (max 10, this session only). No arg = status |
+| `/cn:set 0` · `/cn:set off` | Turn wakes off for this session (until it ends; `/cn:set N` turns them back on) |
+| `/cn:config` | Shows how to launch the terminal settings menu (the menu runs in a new terminal — see [Settings menu](#settings-menu-cnconfig)) |
+| `/cn:status` | Session state + wakes left and the latest time the cache stays alive (no API cost) |
 
 `/cn:status` output:
 
-![/cn:status output](docs/assets/cn-status-en.png)
+```
+┌─ 🔮 cache-necromancer ─────────────────────────────┐
+│ ┌─ Session (current) ────────────────────────┐     │
+│ │ sid:         3f2a9c1e                      │     │
+│ │ wake:        auto · 2 left                 │     │
+│ │ revived:     0× (this away)                │     │
+│ │ next wake:   2026-11-13 14:21:27 (41m 50s) │     │
+│ │ cache until: 16:11                         │     │
+│ └────────────────────────────────────────────┘     │
+│                                                    │
+│ ┌─ Other sessions ──────────────────────────────┐  │
+│ │ ┌─ b81c4d2e ────────────────────────────────┐ │  │
+│ │ │ next wake: 13:54:27 (14m 50s)             │ │  │
+│ │ │ prompt:    "refactor the settings screen" │ │  │
+│ │ │ cwd:       ~/projects/web                 │ │  │
+│ │ └───────────────────────────────────────────┘ │  │
+│ └───────────────────────────────────────────────┘  │
+│                                                    │
+│ ┌─ Status ───────────────────────────────────────┐ │
+│ │ auto wakes: 2 per away                         │ │
+│ │ settings:   interval 50m · ttl 60m             │ │
+│ │ plugin:     cache-necromancer v0.12.0 (active) │ │
+│ └────────────────────────────────────────────────┘ │
+└────────────────────────────────────────────────────┘
+```
 
-When a wake fires (budget present), transcript shows:
+(actual output from an isolated run — the current session is automatic with 2 wakes, the other has a `/cn:set 3` override)
+
+When a wake fires, the transcript shows:
 
 ```
-[cn:keepalive 16:42, 3/10] reply with exactly 'ok @16:42 (3/10)'. ...
-ok @16:42 (3/10)
+[cn:keepalive 16:42, 1/2] reply with exactly 'ok @16:42 (1/2)'. ...
+ok @16:42 (1/2)
 ```
+
+`k/N` = wakes so far in this time away / `auto_wakes` (during a `/cn:set` override: used / charged).
 
 ## How It Works
 
-`~/.cache-necromancer/config.toml` (auto-created on first hook fire):
+### Wake rules
 
-### Two-axis Configuration
+- After your last input, while you are away, it wakes the session every time `refresh_interval_minutes` (default 50) pass since the last cache hit — at most `auto_wakes` times (default 2) per time away. The wake turn reads the cache again, so the next cycle follows.
+- Your next input resets the wake count to 0 — the next time away gets `auto_wakes` again.
+- **`/cn:set N`**: overrides this time away with N wakes (max 10). There is no automatic share on top while the override lasts. A real prompt that arrives after at least one wake since charging counts as "returning" and ends the override. Prompts sent right after `/cn:set` (before any wake) keep it ("set, then one more thing").
+- **`/cn:set 0` · `/cn:set off`**: no wakes for this session until it ends. Your input doesn't undo it; only `/cn:set N` turns wakes back on.
+- Per session — other sessions need their own `/cn:set`.
+- Messages from other sessions or teammates (`<cross-session-message`, `<teammate-message`), `<task-notification>`, wake pings and `/cn:*` commands don't count as your input.
+- Right after `/clear` or `/compact` nothing wakes until your next input or the next Stop.
 
-| `notify.enabled` | wake | = legacy mode |
-|---|---|---|
-| true | off | `notify` (default) |
-| false | on | `auto` (immediate wake) |
-| true | on | `hybrid` (notify → wait grace_seconds → wake) |
-| false | off | Silent — no notify, no wake |
+### Config file
 
-Wake on/off is determined by **`arm` policy × budget**:
-- `arm = "manual"` (default): wake only when budget is charged via `/cn:set N`
-- `arm = "always"`: auto-arm every turn — forgetting protection, wake cost incurred
+`~/.cache-necromancer/config.toml` (auto-created on the first hook run):
 
-**Budget lifecycle** (`arm = "manual"`): `/cn:set N` charges N wake credits → only a real prompt that arrives **after at least one wake has fired since charging** counts as "returning" and clears the remaining budget. Prompts sent right after `/cn:set` (before any wake) keep the budget intact ("set, then one more thing" protection). Each session requires its own `/cn:set`.
-
-### Config file example (v0.5.0)
+| Key | Default | Values | Meaning |
+|---|---|---|---|
+| `[general] auto_wakes` | 2 | integer 0–10 | Max automatic wakes per time away. 0 = no automatic wakes (band and toasts only) |
+| `[general] refresh_interval_minutes` | 50 | integer ≥1 | Wake this long after the last cache hit |
+| `[general] cache_ttl_minutes` | 60 | integer ≥1 | Cache lifetime (band countdown and survival time) |
+| `[general] language` | `"en"` | ko/en/ja/zh | Message language |
+| `[display] countdown` | true | true/false | Band below the prompt |
 
 ```toml
 [general]
-refresh_interval_minutes = 50         # sleep before notify/wake (before cache TTL expires)
-cache_ttl_minutes = 60                # Anthropic prompt cache TTL (band countdown and survival time)
-max_refresh_count = 10                # wake cap (always chain / set single-charge cap)
+auto_wakes = 2                        # max automatic wakes per time away (0 = none, max 10)
+refresh_interval_minutes = 50         # wake this long after the last cache hit
+cache_ttl_minutes = 60                # cache lifetime (band countdown and survival time)
 language = "en"                       # ko | en | ja | zh
-
-[notify]
-enabled = true                        # macOS notification near expiry
-
-[wake]
-arm = "manual"                        # manual = wake only after /cn:set / always = auto every turn
-grace_seconds = 60                    # delay between notify and wake (when notify.enabled=true)
 
 [display]
 countdown = true                      # cache countdown in the band below the prompt (Claude Code v2.1.286+)
 ```
 
-v0.4.x legacy keys (`[general].mode`, `[notify].system_notification`, `[refresh].hybrid_wait_seconds`) are auto-mapped on load, so existing config files continue to work.
+- An invalid value (wrong type or out of range) falls back to that key's default (the Python side warns on stderr; the band stays silent).
+- Old settings (`[wake] arm`/`grace_seconds`, `[general] mode`/`max_refresh_count`, all of `[notify]`/`[refresh]`/`[advanced]`, `[display] recap_style`) are ignored since v0.12.0. `/cn:status` shows their count on one line, and saving from the settings menu removes them.
+- **When changes apply**: the Python side (wake checks, `/cn:*` text) reads the file on every run, so changes apply from the next check. The mod (band, toasts, wake timing) reads it at session start, so changes apply from a new chat session or after `/reload-plugins`. So if you change `auto_wakes` mid-session, the actual number of wakes changes right away, but the band's wakes-left count is right only from a new session.
 
-`[display] recap_style` has no effect since v0.11.0 (the Stop recap box is gone). Old config files that still have it load without error.
+### Settings menu (`/cn:config`)
+
+`/cn:config` doesn't open the menu itself; it only prints the command to run (turn 0 · context 0). Run that command (`python3 ".../scripts/cn_config.py"`) in a new terminal to get a numbered menu.
+
+- Items: `auto_wakes` (0 off / 1 / 2 default / 3) · `refresh_interval_minutes` (30 / 45 / 50 default) · `countdown` (show / hide) · `language`. Numeric items also accept a typed value instead of a number. Enter = keep.
+- The current value shown is the value actually in effect (old keys and invalid values show as ignored). Text follows `language`.
+- Saving removes ignored old key lines and old section headers left empty (comment lines stay).
+- `cache_ttl_minutes` is not in the menu — setting it to `refresh_interval_minutes` or below leaves no window to wake in. Edit the file directly to change it.
 
 ## Countdown Band (v0.9.0)
 
@@ -106,18 +142,21 @@ Once all work is done and Claude is waiting for your input, the band right below
   캐시 59:11 남음        (language = "ko")
 ```
 
-Since v0.11.0 the recap box that appeared in the chat at Stop (expiry time, lives, budget) is gone; that information is appended to the countdown with ` · `:
+Wake info for this time away is appended to the countdown with ` · ` (v0.12.0):
 
 ```
-  Cache 52:10 left · Lives 10 (until 19:47)                arm = "always" — lives = max_refresh_count - wakes
-  Cache 52:10 left · Wakes 2 left (until 12:59)             arm = "manual" + /cn:set budget left
-  Cache 52:10 left                                          arm = "manual" + no budget
-  Cache 59:58 left · Revived 2× · Lives 8 (until 18:55)     right after a wake turn (wakes since your last input)
+  Cache 52:10 left · 2 wakes left (until 14:40)              automatic (auto_wakes = 2, no wake yet)
+  Cache 52:10 left · 5 wakes left (until 17:10)              /cn:set 5 override
+  Cache 59:58 left · Revived 1× · 1 wake left (until 14:40)  right after a wake turn
+  Cache 52:10 left · Wake off                                /cn:set off
+  Cache 52:10 left                                           no wakes left
 ```
 
-- The time in parentheses = reference time + remaining count × (`refresh_interval_minutes` + `grace_seconds` when notifications are on) + `cache_ttl_minutes` — the latest the cache stays alive while you are away (local time, HH:MM). Your next input resets the wake count to 0. In manual only consumed budget counts; once you come back after a wake from a `/cn:set` charge (budget cleared), later notifications are not counted as revives.
+- `Revived N×` = wakes in this time away since your last input. Your next input resets it to 0.
+- Wakes left = what remains of the charge during a `/cn:set` override, otherwise `auto_wakes` − wakes so far.
+- The time in parentheses = reference time + wakes left × `refresh_interval_minutes` + `cache_ttl_minutes` — the latest the cache stays alive while you are away (local time, HH:MM). `/cn:set` and `/cn:status` use the same formula (the Python side uses the last Stop time instead of the reference time).
 - Values come from this session's marker file (`~/.cache-necromancer/marker/<session_id>.json`), read every 5 seconds (right away after a wake). If the file is missing or broken, only the countdown shows.
-- When the band is narrow, the revived count goes first, then lives/budget. Nothing is appended after expiry.
+- When the band is narrow, the revived count goes first, then wakes left. Nothing is appended after expiry.
 
 - The reference time is the last main-conversation model request that actually read or wrote the cache (subagent requests and failed requests don't count). Wake turns are main-conversation requests too, so they should restart the count from 60:00 (not yet observed).
 - The countdown color changes every 10 minutes of time left (v0.11.0): 60–50 min slate #b8c4d4 → 50–40 blue #8ec5ff → 40–30 green #8fe3a1 → 30–20 yellow #f2d16b → 20–10 orange #ffb454 → 10–0 and expired red #ff7b7b (a boundary belongs to the upper range — 50:00 is slate). The appended info stays slate.
@@ -126,23 +165,23 @@ Since v0.11.0 the recap box that appeared in the chat at Stop (expiry time, live
   - A teammate in its own terminal window may stay `running` after its window is closed or dies, and the band can stay hidden meanwhile.
 - Nothing is shown before the first request of a session (or after `/clear`).
 - Right after `/compact` the band is cleared too, and counting restarts from the next answer's cache request (v0.9.1). An automatic compact in the middle of an answer leaves it as is.
-- `[display] countdown = false` turns off both the band and the toasts (the expiry notification and wake keep working). Text follows `[general] language` (ko/en/ja/zh, default en). Settings are **read at session start, so changes apply from a new chat session**. When `/reload-plugins` loads the mod anew, the band and tick restart on the next request or screen redraw and re-read the settings then (v0.11.0).
+- `[display] countdown = false` turns off both the band and the toasts (wakes keep working). Text follows `[general] language` (ko/en/ja/zh, default en). The band **reads settings at session start, so changes apply from a new chat session**. When `/reload-plugins` loads the mod anew, the band and tick restart on the next request or screen redraw and re-read the settings then (v0.11.0).
 - If the config file has a syntax error, the Python side (wake, `/cn:status`) drops the whole file and uses defaults, while the band uses the values on the lines it can read, so their TTL and warning time can differ.
 - With the what-did-i-say plugin's band box, this line sits on top and the request box below it.
 
-**Requires Claude Code v2.1.286 or later** (mods = function-hook plugins, loaded through the `modules` entry of `hooks/hooks.json`). Since v0.10.0 the mod also runs the expiry notification and wake, so on v2.1.200–v2.1.241, where the `modules` key is ignored without error, the band, notifications and wake are all missing and only `/cn:*` remains (`modules` being ignored measured on v2.1.200 and later; older versions not checked). On v2.1.242–v2.1.285 mods sit behind a server rollout flag, so the band, notifications and wake may work depending on the environment (flag-on environments not tested). Evidence: measured on 2026-10-07 with an isolated config on v2.1.200, v2.1.241 and v2.1.242–v2.1.286; `claude plugin test` passes on v2.1.287, v2.1.290, v2.1.291 and v2.1.292.
+**Requires Claude Code v2.1.286 or later** (mods = function-hook plugins, loaded through the `modules` entry of `hooks/hooks.json`). Since v0.10.0 the mod also runs the wake, so on v2.1.200–v2.1.241, where the `modules` key is ignored without error, the band and wakes are both missing and only `/cn:*` remains (`modules` being ignored measured on v2.1.200 and later; older versions not checked). On v2.1.242–v2.1.285 mods sit behind a server rollout flag, so the band and wakes may work depending on the environment (flag-on environments not tested). Evidence: measured on 2026-10-07 with an isolated config on v2.1.200, v2.1.241 and v2.1.242–v2.1.286; `claude plugin test` passes on v2.1.287, v2.1.290, v2.1.291 and v2.1.292.
 
 ## Mechanics
 
 The mod (`hooks/register.tsx`) counts with a 1-second tick from the start of the last main-conversation request that read or wrote the cache (the band's reference time).
 
-Once `refresh_interval_minutes` have passed, it runs `scripts/refresh.py --now` once. If there was no user input after the last Stop (a turn still running is skipped) and **budget is available**, it notifies → waits `grace_seconds` → re-checks and emits a ping, which the mod submits as a prompt so the chat session **wakes itself** — short ping turn → model replies `ok` (1 token). Without budget it only notifies.
+Once `refresh_interval_minutes` have passed, it runs `scripts/refresh.py --now` once. If no new turn started after the last Stop (a running turn is skipped — including one started by a teammate or another session) and **wakes are left** for this time away, it emits a ping right away, which the mod submits as a prompt so the chat session **wakes itself** — short ping turn → model replies `ok` (1 token). With no wakes left (off, or all used) it does nothing — only the band and toasts show it.
 
-When the wake turn reads the cache, the reference time moves and the next cycle follows (capped by the budget and `max_refresh_count`). A reference time already past `cache_ttl_minutes` (e.g. after sleep) does not wake. Up to v0.9.x a `Stop` hook + `asyncRewake` started a Python process that slept 50 minutes after every turn; since v0.10.0 there is no waiting process.
+When the wake turn reads the cache, the reference time moves and the next cycle follows (capped by `auto_wakes` or the `/cn:set` charge). A reference time already past `cache_ttl_minutes` (e.g. after sleep) does not wake. Up to v0.9.x a `Stop` hook + `asyncRewake` started a Python process that slept 50 minutes after every turn; since v0.10.0 there is no waiting process.
 
 - A turn interrupted with Esc has no Stop, so nothing wakes until the next turn completes (same as v0.9.x).
 - If `refresh_interval_minutes` is not below `cache_ttl_minutes`, there is no window to wake in, so wake is off; a toast says so at session start.
-- If `grace_seconds` exceeds about 9 minutes 30 seconds, the platform's run time limit (10 minutes) cuts the run and no wake happens.
+- If you charge with `/cn:set N` inside the wake window (reference time + `refresh_interval_minutes` up to `cache_ttl_minutes`), the mod checks again and wakes right then.
 
 Because wake happens inside the chat process, the system prompt + tools stay byte-exact → **cache prefix 100% hit**.
 
@@ -162,10 +201,10 @@ sequenceDiagram
     M-->>C: response
     C->>H: reference time = this request's start
 
-    Note over U,H: 50 minutes after the last cache hit, no user input (budget present)
+    Note over U,H: 50 minutes after the last cache hit, no user input (wakes left)
 
     H->>P: run
-    P-->>H: notify → grace wait → exit 2 + ping
+    P-->>H: exit 2 + ping
     H->>C: ping (prompt.submit)
     C->>M: minimal turn (cache_read)
     M-->>C: "ok" (1 token)
@@ -176,14 +215,15 @@ sequenceDiagram
 ## Safety
 
 - **Silent fail**: All hooks silent (exit 0). Never blocks chat.
-- **No sensitive data logged**: log = `sid_hash` + token counts only. No prompt/response bodies. 7-day auto-rotate.
-- **Permissions**: marker file 0600 / dir 0700.
-- **Atomic write**: `tempfile + os.replace()`.
+- **Sensitive data**: the log (`cn.log.YYYY-MM-DD`) holds only session ids, check reasons and wake counts — no prompt or response bodies. The marker keeps the first 40 characters of your last prompt and the cwd for `/cn:status`.
+- **Logs are never deleted automatically** — one file per day piles up; delete `~/.cache-necromancer/cn.log.*` yourself when needed. Markers are deleted at SessionEnd, and ones older than 7 days are cleaned up.
+- **Permissions**: `~/.cache-necromancer` 0700, log/marker/config files 0600.
+- **Atomic write**: markers use `tempfile + os.replace()`. Saving from the settings menu is not atomic yet (planned for v0.13.0).
 
 ## Caveats
 
 - Not an officially recommended pattern (Anthropic cache policy gray area). For personal use.
-- Each wake incurs a minimal turn cost.
+- Each wake incurs a minimal turn cost. By default it wakes up to 2 times per time away; if you don't want that, set `auto_wakes = 0` or run `/cn:set off` per session.
 - Wake-up turn (`ok @HH:MM`) is permanently recorded in transcript.
 
 ## License

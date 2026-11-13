@@ -2,6 +2,50 @@
 
 이 프로젝트의 모든 주목할 만한 변경사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고, [Semantic Versioning](https://semver.org/lang/ko/) 을 준수합니다.
 
+## [0.12.0] — 2026-11-13
+
+**깨우기를 "자리비움마다 자동 최대 N회" 하나로 통합, macOS 알림 제거**
+
+### 이행 안내
+- 옛 `arm`(always/manual)·`max_refresh_count`·`[notify]`·`grace_seconds` 설정은 **무시되고** 새 키 `[general] auto_wakes` 기본 2 가 적용된다.
+- **always 사용자**: 자리비움당 깨우기 10회 → **2회** (캐시 최대 약 9.5시간 → 2시간 40분). 예전처럼 하려면 `auto_wakes = 10`.
+- **manual 사용자**: 이제 **열려 있는 세션마다**(잊고 둔 탭·별도 터미널 팀메이트 포함) 자리비움당 최대 2회 자동으로 깨운다. 자동 깨우기를 끄려면 `auto_wakes = 0`, 필요한 세션에서만 `/cn:set N`.
+- **`/cn:set 0` 의 뜻이 바뀌었다**: 예전 "이번 충전 취소" → 이제 "**이 세션 끝까지 깨우기 끄기**"(자동 깨우기도 꺼짐). 다시 켜려면 `/cn:set N`.
+- `/plugin update` 뒤에는 **Claude Code 를 완전히 재시작**한다. `/reload-plugins` 만 하면 mod 는 새 버전, 훅은 옛 버전으로 섞여 깨우기 판정이 틀어진다 (사용자가 돌아와도 횟수가 안 줄어 2회 뒤 끝까지 안 깨우거나, 진행 중 turn 에 ping 이 끼는 등).
+- 옛 `max_refresh_count` 를 재사용하지 않은 이유: 옛 템플릿이 `= 10` 을 적어 두어, 같은 키를 쓰면 업그레이드 즉시 자리비움당 10회가 된다.
+- 무시되는 옛 키는 `/cn:status` 에 개수만 한 줄 표시되고, 터미널 설정 메뉴(`/cn:config` 가 안내)에서 저장하면 지워진다.
+
+### Changed
+- 깨우기 규칙 하나: 마지막 사용자 입력 뒤 자리를 비우면 `auto_wakes`(0~10, 기본 2)회까지 자동으로 깨운다. 사용자가 입력하면 횟수는 0 으로 돌아간다. `0` 이면 자동 깨우기 없이 띠·토스트만.
+- `/cn:set N` — 이번 자리비움만 N회(최대 10)로 덮어쓴다. 덮어쓰는 동안 자동 몫은 없고, 깨운 뒤 돌아오면 덮어쓰기가 풀린다. 이 세션에만 적용.
+- `/cn:set 0` = `/cn:set off` — 이 세션은 끝날 때까지 깨우지 않는다. `/cn:set N(≥1)` 로 다시 켠다. 무인자 `/cn:set` 은 상태(꺼짐·덮어쓰기·자동 남은 횟수와 캐시 최대 생존 시각)를 보여 준다.
+- 생존 시각은 `/cn:set`·`/cn:status`·띠 모두 같은 식: 기준 시각 + 남은 횟수 × `refresh_interval_minutes` + `cache_ttl_minutes` (Python 은 기준 시각 대신 마지막 Stop 시각).
+- 캐시가 이미 만료됐으면(마지막 Stop + `cache_ttl_minutes` 지남) `/cn:set`·`/cn:status` 는 생존 시각 대신 "이미 만료 — 다음 자리비움부터" 안내를 보인다.
+- `refresh_interval_minutes` 가 `cache_ttl_minutes` 이상이면(깨울 구간 없음) 띠는 남은 깨우기 횟수를 표시하지 않고, `/cn:set`·`/cn:status` 의 생존 시각에도 남은 횟수를 넣지 않는다.
+- `/cn:status` 의 다른 세션 목록은 캐시가 살아 있는 동안(마지막 Stop + `cache_ttl_minutes`)만 보인다.
+- `StopFailure`(API 오류로 끝난 turn)도 `Stop` 처럼 `on_recap.py` 가 turn 끝 시각을 기록한다 — 팀메이트·백그라운드 알림으로 시작한 turn 이 오류로 끝나도 다음 정상 turn 까지 깨우기가 막히지 않는다.
+- 띠 뒤 정보: `N번 살림` · `깨우기 N회 남음 (HH:MM까지)` · `깨우기 꺼짐`. "목숨"·"예산" 표현을 없앴다.
+- 깨우기 구간(10분 남음 토스트 뒤)에 `/cn:set` 으로 충전해도 이번 주기를 다시 판정해 깨운다 (예전에는 기준 시각당 판정 1회라 충전이 다음 주기부터 먹었다).
+- 다른 세션·팀메이트가 보낸 메시지(`<cross-session-message`·`<teammate-message`)는 사용자 복귀로 세지 않는다. 다만 그런 메시지·백그라운드 알림(`<task-notification>`)으로 시작한 turn 도 Stop 전(진행 중)이면 깨우지 않는다 (marker `last_turn_start_at_ns`).
+- 터미널 설정 메뉴(`scripts/cn_config.py`): 항목을 `auto_wakes`(0·1·2·3)·`refresh_interval_minutes`(30·45·50)·`countdown`·`language` 로 줄였다 (`cache_ttl_minutes` 는 파일 직접 편집). 현재값은 실제 적용값으로 표시하고, 문구는 설정 언어(ko·en·ja·zh)를 따른다.
+- 기본 템플릿·`config.toml.example` 은 5개 키(`auto_wakes`·`refresh_interval_minutes`·`cache_ttl_minutes`·`language`·`countdown`).
+- 잘못된 설정 값(타입·범위 밖)은 그 키만 기본값으로 쓰고 stderr 에 경고한다.
+- 로그 경로를 쓸 때마다 `CN_ROOT`/HOME 으로 정한다.
+- 복귀 때 `[return]` 로그 한 줄(깨운 횟수·마지막 깨우기 뒤 경과 초)을 남긴다.
+
+### Fixed
+- 압축(`/compact`) 뒤 Stop 까지 간 새 캐시도 억제돼 깨우지 않던 문제 — 억제는 그 뒤 사용자 입력이나 Stop 이 오면 풀린다.
+- marker 저장에 실패해도 ping 을 내던 문제 — 저장 실패면 깨우지 않는다 (상한을 넘지 않게).
+- 깨우기 시각과 충전 시각을 초·ns 로 섞어 비교하던 문제 — `last_wake_at_ns` 로 비교한다.
+- 설정 메뉴: 옛 `mode = "hybrid"` 등이 있으면 실제 값과 다른 현재값을 보여 주던 문제, `[wake]  # 메모` 처럼 주석 붙은 헤더를 못 알아보고 같은 섹션을 하나 더 만들어 TOML 이 깨지던 문제.
+- 비활성 설치본에서 `refresh.py` 가 아무 기록 없이 끝나던 것 — 로그 한 줄을 남긴다.
+
+### Removed
+- macOS 알림(`osascript`)·grace 대기와 `[notify]`·`[wake]` 설정, `arm`·`max_refresh_count`.
+- `refresh.py` 의 무인자 sleep 경로·알림·`_kill_older_buddies`, `lib/notify.py`·`lib/mode_help.py`.
+- marker `session_started_at` (읽는 곳 없음).
+- 설정 메뉴의 `arm`·알림·`max_refresh_count`·`cache_ttl_minutes` 항목과 2분·5분·90분 프리셋.
+
 ## [0.11.1] — 2026-10-08
 
 **카운트다운 띠를 입력창 아래로 이동**

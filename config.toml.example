@@ -1,19 +1,12 @@
-# cache-necromancer 설정 (v0.5.0)
-# 이 파일은 첫 hook fire 시 자동 생성됨.
-# 수정 후 새 chat 세션 필요 (Claude Code 는 settings hot-reload 안 함).
+# cache-necromancer 설정 (v0.12.0)
+# 이 파일은 첫 hook 실행 시 자동 생성됨.
+# 깨우기 판정·/cn:set·/cn:status 는 다음 판정부터 바로, 입력창 아래 띠와 깨우기 시점(mod)은 새 세션부터 바뀐 값을 쓴다.
 
 [general]
-refresh_interval_minutes = 50         # cache TTL 만료 직전 알림/wake 까지의 sleep
-cache_ttl_minutes = 60                # Anthropic prompt cache TTL (띠 카운트다운·생존 시각 기준)
-max_refresh_count = 10                # wake 상한 (always 연쇄 / set 1회 충전 상한)
+auto_wakes = 2                        # 자리비움마다 자동 깨우기 최대 횟수 (0 = 깨우지 않음, 최대 10)
+refresh_interval_minutes = 50         # 캐시 마지막 적중 뒤 이만큼 지나면 깨우기
+cache_ttl_minutes = 60                # 캐시 수명 (띠 카운트다운·생존 시각 기준)
 language = "en"                       # 메시지 언어: ko | en | ja | zh
-
-[notify]
-enabled = true                        # 만료 임박 macOS 알림
-
-[wake]
-arm = "manual"                        # manual = /cn:set 시에만 소생 / always = 매 turn 자동
-grace_seconds = 60                    # 알림 후 wake 까지 대기 (notify.enabled=true 일 때)
 
 [display]
 countdown = true                      # 입력창 아래 띠에 캐시 남은 시간 카운트다운 (Claude Code v2.1.286+)
