@@ -1,6 +1,6 @@
-# cache-necromancer 구조 (v0.12.0)
+# cache-necromancer 구조 (v0.13.0)
 
-> 독자: 이 repo 를 고치는 사람. 기준: v0.12.0 코드 (`hooks/`·`scripts/`·`lib/`). 변경 이력은 [CHANGELOG](../CHANGELOG.md).
+> 독자: 이 repo 를 고치는 사람. 기준: v0.13.0 코드 (`hooks/`·`scripts/`·`lib/`). 변경 이력은 [CHANGELOG](../CHANGELOG.md).
 
 ## 구성요소
 
@@ -41,22 +41,25 @@ turn.step (메인 대화, 캐시 read+creation > 0)
 |---|---|---|
 | mod atom (세션 메모리) | mod 만 | `base`, 띠 `label`, `config`, 토스트·깨우기 1회 가드(`warnedFor`·`expiredFor`·`wokeFor`), 깨울 때 본 충전 시각 `wokeCharge`, 읽어 둔 `marker` |
 | `~/.cache-necromancer/marker/<sid>.json` | **Python 만** | `latest_fire`, `wake_count`, `last_wake_at`·`last_wake_at_ns`, `last_user_activity_at_ns`, `last_turn_start_at_ns`, `suppressed_at_ns`, `set_budget_remaining`·`set_budget_total`·`set_charged_at_ns`, `wake_off`, `last_prompt`·`cwd` |
-| `~/.cache-necromancer/config.toml` | 사용자·터미널 설정 메뉴(`scripts/cn_config.py`)·Python(템플릿 생성) | 설정 5개 키. 옛 키는 무시, 메뉴 저장 때 삭제 |
+| `~/.cache-necromancer/config.toml` | 사용자·설정 패널·터미널 설정 메뉴(`scripts/cn_config.py`, 원자 저장)·Python(템플릿 생성) | 설정 5개 키. 옛 키는 무시, 메뉴 저장 때 삭제 |
 | `~/.cache-necromancer/cn.log.YYYY-MM-DD` | Python (`lib/logger.py`) | `[refresh]`·`[return]` 등 판정 로그. 자동 삭제 없음 |
 
 mod 는 marker 를 기준 시각이 있는 동안 5초 간격·깨우기 직후에 **읽기만** 한다 (띠 표시와 무관 — 재판정에 필요). 경로 루트는 모두 `$CN_ROOT` 가 있으면 그것.
 
 ## 설정 반영 시점
 
-- mod: 세션 시작(`session.start`) 때, 또는 리로드 뒤 첫 tick 에 읽는다 → 띠·깨우기 시점(`cache_ttl_minutes`·`refresh_interval_minutes`·`countdown`·`language`, 뒤 정보용 `auto_wakes`)은 새 세션 또는 `/reload-plugins` 뒤부터. 매 tick 재읽기는 v0.13.0 예정.
+- mod: tick 에서 5초마다 `config.toml` 텍스트를 읽어 직전과 다르면(처음 포함) `cn_config.py --json` 을 실행해 `config` atom 을 갱신한다 — 해석은 Python 하나, TS 파서 없음. 실패하면 이전 값을 유지하고 다음 주기에 재시도. 그래서 새 세션·리로드 없이 열린 세션 모두 최대 5초 안에 반영된다.
 - Python: 실행마다 읽는다 → 깨우기 횟수(`auto_wakes`)·`/cn:*` 문구는 다음 판정부터.
+
+## 설정 패널
+
+띠 `[ ⚙ ]` 클릭 또는 `/cn:config`(`command.run`)가 같은 Pane 을 연다. 위쪽 "이 세션" 버튼은 `cn_set.py off|auto|1h|2h|4h` 를, 아래쪽 "전체 설정" 버튼은 `cn_config.py --set <id>=<value>` 를 실행한다(`--json` 의 `items` 로 그린다). 저장 성공 직후에는 5초를 기다리지 않고 설정·marker 를 강제로 다시 읽는다. `--set` 은 값 검증 후 원자 저장(tempfile → `os.replace`). mod 가 없으면 `/cn:config` 는 터미널 메뉴 실행 안내(`--hint`)로 폴백한다.
 
 ## 알려진 제약
 
 - mods 는 Claude Code v2.1.286 이상. 그 미만은 `modules` 를 무시해 띠·깨우기가 없고 Python 훅·`/cn:*` 만 동작한다.
-- `/reload-plugins` 뒤 `session.start` 가 안 올 수 있다 — 0.11.0 부터 `ui.render`·`turn.step` 중 먼저 오는 쪽에서 타이머를 건다. settings 훅(`hooks.json`)의 경로는 여전히 재시작해야 바뀐다 ([CLAUDE.md](../CLAUDE.md)).
+- `/reload-plugins` 뒤 `session.start` 가 안 올 수 있다 — 0.11.0 부터 `ui.render`·`turn.step` 중 먼저 오는 쪽에서 타이머를 건다. settings 훅(`hooks.json`)의 경로도 `/reload-plugins` 로 바뀐다는 실측은 [CLAUDE.md](../CLAUDE.md) 참고.
 - Esc 로 중단한 turn 은 Stop 이 없어 다음 완료 turn 까지 깨우지 않는다.
 - Claude Code 재시작은 SessionEnd 로 marker 를 지워 `/cn:set` 덮어쓰기·`wake_off` 가 사라진다 (resume 후 다시 설정).
-- 설정 파일 문법 오류 때 Python 은 전체 기본값, mod 는 읽히는 줄의 값을 쓴다 — 해석 통일은 v0.13.0 예정.
 
 실측 기록: 2026-10-07 깨우기 1회 cache_read 355,998 / creation 271
