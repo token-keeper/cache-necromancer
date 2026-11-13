@@ -31,6 +31,7 @@ const markerReadAt = atom({ plugin: 'cache-necromancer', key: 'markerReadAt' } a
 const tickErrorLogged = atom({ plugin: 'cache-necromancer', key: 'tickErrorLogged' } as const, false)
 const wakeErrorLogged = atom({ plugin: 'cache-necromancer', key: 'wakeErrorLogged' } as const, false)
 const commandErrorLogged = atom({ plugin: 'cache-necromancer', key: 'commandErrorLogged' } as const, false)
+const configErrorLogged = atom({ plugin: 'cache-necromancer', key: 'configErrorLogged' } as const, false)
 
 const MIN_MS = 60 * 1000
 // scripts/refresh.py 의 PING_PREFIX 와 같다 (on_user_prompt.py 도 이 문자열로 ping 을 거른다)
@@ -51,10 +52,13 @@ const MARKER_EVERY_MS = 5000
 // lib/session_id.py 의 _VALID_PATTERN — 이 모양이 아닌 id 는 Python 이 해시한 파일명을 쓰므로 읽지 않는다
 const SID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
 
-// 이 모듈 로드에서 타이머를 걸었는지 / 설정을 읽었는지.
+// 이 모듈 로드에서 타이머를 걸었는지, 설정을 해석한 config.toml 텍스트(null = 아직)·마지막으로 확인한 시각·실행 중인 읽기.
 // /reload-plugins 뒤엔 session.start 가 오지 않을 수 있어(2026-10-07 실측) 모듈 스코프로 둔다 — 새로 로드되면 처음부터
+// (atom 에 두면 리로드 직전 실행 중이던 표시가 남아 새 모듈이 영영 못 읽을 수 있다)
 let isStarted = false
-let isConfigLoaded = false
+let configText: string | null = null
+let configCheckedAt: number | null = null
+let configJob: Promise<void> | null = null
 
 // 문구는 lib/i18n.py 의 언어·용어를 따른다 (기본 en)
 const TEXT: Record<
@@ -114,66 +118,74 @@ const TEXT: Record<
 
 const pad = (n: number) => String(n).padStart(2, '0')
 
-// Python 쪽 lib/config.py 와 같은 파일에서 필요한 키만 읽는 최소 TOML 파서.
-// 분은 1 이상 정수, auto_wakes 는 0~10 정수, countdown 은 불리언, language 는 4종 문자열만 받고,
-// 그 밖의 값·다른 섹션의 같은 키·옛 키(arm·mode·max_refresh_count·notify·grace 등)는 무시해 기본값을 둔다
-function parseConfig(text: string): CacheNecromancerConfig {
-  const cfg = { ...DEFAULT_CONFIG }
-  let section = ''
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.replace(/#.*/, '').trim()
-    const header = /^\[\s*([A-Za-z0-9_.-]+)\s*\]$/.exec(line)
-    if (header) {
-      section = header[1] ?? ''
-      continue
-    }
-    // 헤더 모양이 깨진 줄도 새 섹션의 시작으로 보고, 앞 섹션의 키가 이어 붙지 않게 끊는다
-    if (line.startsWith('[')) {
-      section = ''
-      continue
-    }
-    const pair = /^([A-Za-z0-9_-]+)\s*=\s*(\S+)$/.exec(line)
-    if (!pair) continue
-    const [, key, value = ''] = pair
-    const int = /^\d+$/.test(value) ? Number(value) : undefined
-    const minutes = int !== undefined && int >= 1 ? int : undefined
-    if (section === 'general' && key === 'cache_ttl_minutes' && minutes) cfg.ttlMinutes = minutes
-    if (section === 'general' && key === 'refresh_interval_minutes' && minutes) cfg.warnAfterMinutes = minutes
-    if (section === 'general' && key === 'auto_wakes' && int !== undefined && int <= 10) cfg.autoWakes = int
-    if (section === 'display' && key === 'countdown' && (value === 'true' || value === 'false')) {
-      cfg.countdown = value === 'true'
-    }
-    const lang = /^(["'])(ko|en|ja|zh)\1$/.exec(value)?.[2] as CacheNecromancerLanguage | undefined
-    if (section === 'general' && key === 'language' && lang) cfg.language = lang
-  }
-  return cfg
-}
-
 // 다른 스크립트들과 같은 위치: $CN_ROOT 또는 ~/.cache-necromancer
 async function cnRoot($: EngineInterface): Promise<string | undefined> {
   const home = await $.env.get('HOME')
   return (await $.env.get('CN_ROOT')) || (home ? `${home}/.cache-necromancer` : undefined)
 }
 
-// 없거나 못 읽으면 기본값
-async function loadConfig($: EngineInterface): Promise<CacheNecromancerConfig> {
+const LANGUAGES: readonly unknown[] = ['ko', 'en', 'ja', 'zh']
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+const isMinutes = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 1
+
+// cn_config.py --json 의 config 가 CacheNecromancerConfig 모양인지만 본다 (값 검증은 Python 몫). 아니면 null
+function toConfig(data: unknown): CacheNecromancerConfig | null {
+  const c = isRecord(data) ? data['config'] : undefined
+  if (!isRecord(c)) return null
+  const { ttlMinutes, warnAfterMinutes, autoWakes, countdown, language } = c
+  if (!isMinutes(ttlMinutes) || !isMinutes(warnAfterMinutes) || !Number.isInteger(autoWakes)) return null
+  if (typeof countdown !== 'boolean' || !LANGUAGES.includes(language)) return null
+  return { ttlMinutes, warnAfterMinutes, autoWakes: autoWakes as number, countdown, language: language as CacheNecromancerLanguage }
+}
+
+// 설정 파일 텍스트, 없거나 못 읽으면 ''
+async function readConfigText($: EngineInterface): Promise<string> {
   try {
     const root = await cnRoot($)
-    if (!root) return DEFAULT_CONFIG
-    return parseConfig(await $.fs.read(`${root}/config.toml`))
+    return root ? await $.fs.read(`${root}/config.toml`) : ''
   } catch {
-    return DEFAULT_CONFIG
+    return ''
   }
 }
 
-// 설정을 읽어 atom 에 둔다. 리로드 전에 남은 띠 값은 바로 지우고,
-// 깨우기 창(경고 ~ 만료)이 비어 깨우기가 영영 없으면 알린다
-async function applyConfig($: EngineInterface): Promise<void> {
-  isConfigLoaded = true
-  const cfg = await loadConfig($)
+// config.toml 텍스트가 처음이거나 바뀌었으면(force 면 무조건) Python(lib/config.py)이 해석한 값(cn_config.py --json)으로 갈아 끼운다.
+// 해석기는 Python 하나. 실행 실패·출력이 깨지면 이전 설정을 두고(처음이면 DEFAULT_CONFIG) 다음 주기에 다시 한다
+async function loadConfig($: EngineInterface, force: boolean): Promise<void> {
+  const text = await readConfigText($)
+  if (!force && text === configText) return
+  try {
+    const r = await $.process.run(['python3', `${$.plugin.root}/scripts/cn_config.py`, '--json'], { timeoutMs: 10_000 })
+    if (r.exitCode !== 0) throw new Error(`exit ${r.exitCode}`)
+    const cfg = toConfig(JSON.parse(r.stdout))
+    if (cfg === null) throw new Error('unexpected --json output')
+    const isFirst = configText === null
+    configText = text
+    await applyConfig($, cfg, isFirst)
+  } catch (error) {
+    await logConfigOnce($, `config load failed (${errorText(error)})`)
+  }
+}
+
+// 겹친 tick·session.start 가 --json 을 중복 실행하지 않게 실행 중인 작업을 모듈에 둔다 (도중엔 그 작업을 기다린다).
+// force(패널 저장 직후)는 실행 중인 작업 뒤에 한 번 더 돌려, 저장 전 텍스트로 시작한 작업이 결과를 덮지 않게 한다
+function syncConfig($: EngineInterface, force = false): Promise<void> {
+  if (configJob !== null && !force) return configJob
+  const job = (configJob ?? Promise.resolve()).then(() => loadConfig($, force))
+  configJob = job
+  void job.finally(() => {
+    if (configJob === job) configJob = null
+  })
+  return job
+}
+
+// 설정을 atom 에 둔다. countdown 이 꺼지면 남은 띠 값을 바로 지우고, 깨우기 창(경고 ~ 만료)이 비면 알린다 —
+// 이 모듈의 첫 읽기이거나 창이 있다가 없어졌을 때만 (주기마다 반복하지 않는다)
+async function applyConfig($: EngineInterface, cfg: CacheNecromancerConfig, isFirst: boolean): Promise<void> {
+  const hasNoWindow = (c: CacheNecromancerConfig) => c.warnAfterMinutes >= c.ttlMinutes
+  const prev = await read($, config)
   await update($, config, () => cfg)
   if (!cfg.countdown) await update($, label, () => null)
-  if (cfg.warnAfterMinutes >= cfg.ttlMinutes) $.ui.toast(TEXT[cfg.language].noWindow)
+  if (hasNoWindow(cfg) && (isFirst || !hasNoWindow(prev))) $.ui.toast(TEXT[cfg.language].noWindow)
 }
 
 // Python(lib/marker.py)이 쓰는 이 세션의 marker 에서 깨우기 횟수·덮어쓰기·끔만 읽는다. 없음·깨짐·id 모양 밖이면 null
@@ -261,11 +273,14 @@ async function hasBusyAgent($: EngineInterface): Promise<boolean> {
 }
 
 async function tick($: EngineInterface): Promise<void> {
-  // session.start 없이(리로드 뒤 render·turn.step 으로) 시작했으면 첫 tick 이 설정을 읽는다
-  if (!isConfigLoaded) await applyConfig($)
+  // 설정 파일은 기준 시각과 무관하게 몇 초 간격으로 본다. session.start 없이(리로드 뒤 render·turn.step 으로) 시작했으면 첫 tick 이 읽는다
+  const now = await $.clock.now()
+  if (configCheckedAt === null || now - configCheckedAt >= MARKER_EVERY_MS) {
+    configCheckedAt = now
+    await syncConfig($)
+  }
   const cfg = await read($, config)
   const at = await read($, base)
-  const now = at === null ? 0 : await $.clock.now()
   // marker 는 Python 이 Stop·사용자 입력·깨우기·/cn:set 때 바꾼다. 기준 시각이 있으면 띠 표시와 무관하게 몇 초 간격으로 읽는다 (충전 재판정)
   const readAt = await read($, markerReadAt)
   if (at !== null && (readAt === null || now - readAt >= MARKER_EVERY_MS)) {
@@ -363,6 +378,13 @@ async function logWakeOnce($: EngineInterface, text: string): Promise<void> {
   $.ui.log(`cache-necromancer: ${text}; later failures are not logged`, { to: 'debug' })
 }
 
+// 설정 읽기도 같다: 첫 실패만 남기고 이전 설정으로 계속한다
+async function logConfigOnce($: EngineInterface, text: string): Promise<void> {
+  if (await read($, configErrorLogged)) return
+  await update($, configErrorLogged, () => true)
+  $.ui.log(`cache-necromancer: ${text}; later failures are not logged`, { to: 'debug' })
+}
+
 // /cn:* 명령도 같다: 첫 실패만 남기고 옛 경로로 넘긴다
 async function logCommandOnce($: EngineInterface, text: string): Promise<void> {
   if (await read($, commandErrorLogged)) return
@@ -431,10 +453,10 @@ export const register: Register = on => {
   }
 
 
-  // 설정은 세션 시작 때 읽는다 (Python 훅과 같은 "설정 변경 후 새 세션" 규칙).
+  // 설정은 세션 시작 때 읽고, 그 뒤엔 tick 이 파일이 바뀌었는지 보며 다시 읽는다 (열린 세션 모두에 바로 반영).
   // 리로드 뒤엔 session.start 가 안 올 수 있어 ui.render·turn.step 도 타이머를 건다 (먼저 오는 쪽 1회, 설정은 첫 tick 이 읽음)
   on('session.start', async ($, e, next) => {
-    await applyConfig($)
+    await syncConfig($)
     ensureTimer($)
     return next(e)
   })

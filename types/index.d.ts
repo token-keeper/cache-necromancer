@@ -21,7 +21,7 @@ export type CacheNecromancerMarker = {
   chargedAt: number
 } | null
 
-/** ~/.cache-necromancer/config.toml 에서 세션 시작 때 읽은 값 */
+/** ~/.cache-necromancer/config.toml 을 Python 이 해석한 값 (cn_config.py --json 의 config). 파일이 바뀌면 몇 초 안에 다시 읽는다 */
 export type CacheNecromancerConfig = {
   /** [general] cache_ttl_minutes */
   ttlMinutes: number
@@ -52,7 +52,7 @@ declare module 'claude-code' {
       wokeCharge: number | null
       /** 지금 띠에 그릴 줄 */
       label: Shaped<CacheNecromancerLabel>
-      /** 세션 시작 때 읽은 설정 */
+      /** 지금 쓰는 설정 (config.toml 이 바뀌면 몇 초 안에 갱신) */
       config: Shaped<CacheNecromancerConfig>
       /** 마지막으로 읽은 marker (띠 뒤 정보·충전 재판정용) */
       marker: CacheNecromancerMarker
@@ -64,6 +64,8 @@ declare module 'claude-code' {
       wakeErrorLogged: boolean
       /** /cn:* 명령 실행 실패를 디버그 로그에 이미 남겼는지 (첫 1회만 남긴다) */
       commandErrorLogged: boolean
+      /** 설정 읽기(cn_config.py --json) 실패를 디버그 로그에 이미 남겼는지 (첫 1회만 남긴다) */
+      configErrorLogged: boolean
     }
   }
 }

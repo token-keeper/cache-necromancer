@@ -32,11 +32,30 @@ type World = {
   sid: string
   // 플러그인이 next 로 넘긴 명령 (= 엔진의 옛 경로)
   commands: { command: string; args: string }[]
+  // cn_config.py --json 실행 횟수. configOut 이 있으면 설정 파일 대신 그 결과를, configError 면 실행 실패를 낸다. configGate 는 실행을 붙잡아 둔다
+  configRuns: number
+  configOut?: Pick<ProcessRunResult, 'exitCode' | 'stdout'>
+  configError?: Error
+  configGate?: Promise<void>
 }
 type Env = Readonly<Record<string, string>>
 type Files = Readonly<Record<string, string>>
 
 const CONFIG = '/home/t/.cache-necromancer/config.toml'
+
+// Python(cn_config.py --json → lib/config.py) 자리: 테스트 설정 파일에서 키 이름으로 값만 꺼낸다.
+// 섹션·범위·옛 키 검증은 Python 테스트 몫이라 여기선 흉내 내지 않는다
+function fakeConfig(text = '') {
+  const get = (key: string) => new RegExp(`^${key}\\s*=\\s*("?)(\\w+)\\1`, 'm').exec(text)?.[2]
+  const int = (key: string, fallback: number) => Number(get(key) ?? fallback)
+  return {
+    ttlMinutes: int('cache_ttl_minutes', 60),
+    warnAfterMinutes: int('refresh_interval_minutes', 50),
+    autoWakes: int('auto_wakes', 2),
+    countdown: get('countdown') !== 'false',
+    language: get('language') ?? 'en',
+  }
+}
 // 대부분의 테스트는 한국어 설정으로 돈다. 기본값(en)·다른 언어는 따로 확인한다
 const KO: Files = { [CONFIG]: '[general]\nlanguage = "ko"\n' }
 
@@ -54,6 +73,7 @@ function setup(on: On, env: Env = { HOME: '/home/t' }, files: Files = KO): World
     logs: [],
     sid: 'sid-1',
     commands: [],
+    configRuns: 0,
   }
   on('agent.list', async () => {
     await w.gate
@@ -80,7 +100,15 @@ function setup(on: On, env: Env = { HOME: '/home/t' }, files: Files = KO): World
     return <Text>below</Text>
   })
   on('session.id', () => ({ value: w.sid }))
+  const root = env['CN_ROOT'] || `${env['HOME']}/.cache-necromancer`
   on('process.run', async (_$, e) => {
+    if (e.argv[1]?.endsWith('/scripts/cn_config.py') && e.argv[2] === '--json') {
+      w.configRuns += 1
+      await w.configGate
+      if (w.configError) throw w.configError
+      const out = w.configOut ?? { exitCode: 0, stdout: JSON.stringify({ config: fakeConfig(files[`${root}/config.toml`]), items: [] }) }
+      return { value: { stderr: '', isStdoutTruncated: false, isStderrTruncated: false, ...out } }
+    }
     w.runs.push({ argv: e.argv, stdin: e.init?.stdin, timeoutMs: e.init?.timeoutMs, env: e.init?.env })
     await w.runGate
     if (w.runError) throw w.runError
@@ -287,7 +315,7 @@ test('띠가 떠 있는 동안 1초마다 글자가 바뀌어 다시 그려진�
   }
 })
 
-// ── 설정 연동 (~/.cache-necromancer/config.toml, 세션 시작 때 읽음) ──
+// ── 설정 연동 (~/.cache-necromancer/config.toml 을 cn_config.py --json 으로 읽고, 바뀌면 5초 안에 다시 읽음) ──
 
 test('cache_ttl_minutes·refresh_interval_minutes 를 읽어 남은 시간·경고 시점·문구를 정한다', async ($, on) => {
   const toml = [
@@ -295,8 +323,6 @@ test('cache_ttl_minutes·refresh_interval_minutes 를 읽어 남은 시간·경�
     'language = "ko"',
     'refresh_interval_minutes = 25   # 경고까지',
     'cache_ttl_minutes = 30',
-    '[wake]',
-    'cache_ttl_minutes = 5           # 다른 섹션의 같은 키는 무시',
   ].join('\n')
   const w = setup(on, undefined, { [CONFIG]: toml })
   await start($)
@@ -333,27 +359,97 @@ test('CN_ROOT 가 있으면 그 아래 config.toml 을 읽는다', async ($, on)
   expect((await shown($))?.text).toBe('캐시 29:11 남음')
 })
 
-for (const [name, toml] of [
-  ['파일 없음', undefined],
-  ['깨진 파일', '[general\ncache_ttl_minutes = = 30\ncountdown = maybe\nlanguage = ko'],
-  ['범위 밖·문자열 값', '[general]\ncache_ttl_minutes = 0\nrefresh_interval_minutes = "50"\nlanguage = "fr"\n[display]\ncountdown = "false"\n'],
+// --json 이 실패하면 처음엔 기본값(60분·50분 경고·표시·en)
+for (const [name, fail] of [
+  ['실행 실패', (w: World) => (w.configError = new Error('spawn python3 ENOENT'))],
+  ['exit≠0', (w: World) => (w.configOut = { exitCode: 1, stdout: '' })],
+  ['JSON 깨짐', (w: World) => (w.configOut = { exitCode: 0, stdout: '{"config": ' })],
+  ['config 모양 틀림', (w: World) => (w.configOut = { exitCode: 0, stdout: JSON.stringify({ config: { ...fakeConfig(), ttlMinutes: '60' } }) })],
 ] as const) {
-  test(`설정을 못 읽으면 기본값(60분·50분 경고·표시·en) — ${name}`, async ($, on) => {
-    const w = setup(on, undefined, toml === undefined ? {} : { [CONFIG]: toml })
+  test(`--json 을 못 쓰면 기본값, 디버그 로그는 1회만 — ${name}`, async ($, on) => {
+    const w = setup(on)
+    fail(w)
     await start($)
     await step($, w)
     await w.clock.advance(49_000)
     expect((await shown($))?.text).toBe('Cache 59:11 left')
+    expect(w.configRuns).toBeGreaterThan(2) // 다음 주기마다 다시 해 본다
+    expect(w.logs).toHaveLength(1)
+    expect(w.logs[0]).toMatch(/^cache-necromancer: config load failed \(.+\); later failures are not logged$/)
   })
 }
 
-test('헤더 모양이 깨진 줄에서 섹션을 끊어, 앞 섹션 키로 잘못 읽지 않는다', async ($, on) => {
-  const toml = '[general]\nlanguage = "ko"\n[[broken\ncache_ttl_minutes = 30\n'
-  const w = setup(on, undefined, { [CONFIG]: toml })
+test('config.toml 이 바뀌면 5초 안에 --json 을 다시 돌려 반영하고, 그대로면 다시 돌리지 않는다 (기준 시각 없어도)', async ($, on) => {
+  const files: Record<string, string> = { ...KO }
+  const w = setup(on, undefined, files)
+  await start($)
+  expect(w.configRuns).toBe(1)
+  await w.clock.advance(30_000)
+  expect(w.configRuns).toBe(1)
+  files[CONFIG] = '[general]\nlanguage = "en"\ncache_ttl_minutes = 30\n'
+  await w.clock.advance(5000)
+  expect(w.configRuns).toBe(2)
+  await step($, w)
+  await w.clock.advance(1000)
+  expect((await shown($))?.text).toBe('Cache 29:59 left')
+  // countdown 을 끄면 띠를 바로 비운다
+  files[CONFIG] = '[display]\ncountdown = false\n'
+  await w.clock.advance(5000)
+  expect((await shown($))?.text).toBeUndefined()
+})
+
+test('--json 이 실패하면 이전 설정을 두고 다음 주기에 다시 읽는다', async ($, on) => {
+  const files: Record<string, string> = { ...KO }
+  const w = setup(on, undefined, files)
   await start($)
   await step($, w)
-  await w.clock.advance(49_000)
-  expect((await shown($))?.text).toBe('캐시 59:11 남음')
+  await w.clock.advance(1000) // 첫 tick 의 확인 (텍스트 그대로라 실행 안 함)
+  files[CONFIG] = '[general]\nlanguage = "en"\n'
+  w.configOut = { exitCode: 1, stdout: '' }
+  await w.clock.advance(5000)
+  expect(w.configRuns).toBe(2)
+  expect((await shown($))?.text).toBe('캐시 59:54 남음')
+  w.configOut = undefined
+  await w.clock.advance(5000)
+  expect(w.configRuns).toBe(3)
+  expect((await shown($))?.text).toBe('Cache 59:49 left')
+})
+
+test('겹친 tick 이 --json 을 중복 실행하지 않는다', async ($, on) => {
+  const files: Record<string, string> = { ...KO }
+  const w = setup(on, undefined, files)
+  await start($)
+  let release = () => {}
+  w.configGate = new Promise(resolve => (release = resolve))
+  files[CONFIG] = '[general]\nlanguage = "en"\n'
+  // 실행이 붙잡힌 동안 10초(확인 주기 2번) — 다음 tick 들은 실행 중인 읽기를 기다린다
+  void w.clock.advance(10_000)
+  await wait(30)
+  expect(w.configRuns).toBe(2)
+  release()
+  await wait(30)
+  expect(w.configRuns).toBe(2)
+})
+
+test('깨우기 창이 없어지면(interval ≥ ttl 로 바뀌면) 그때 1회만 "깨우기 꺼짐" 토스트', async ($, on) => {
+  const files: Record<string, string> = { ...KO }
+  const w = setup(on, undefined, files)
+  await start($)
+  const NO_WINDOW = '캐시 깨우기 꺼짐 — refresh_interval_minutes 가 cache_ttl_minutes 이상'
+  files[CONFIG] = '[general]\nlanguage = "ko"\nrefresh_interval_minutes = 60\n'
+  await w.clock.advance(5000)
+  expect(w.toasts).toEqual([NO_WINDOW])
+  // 창 없는 채로 다른 값만 바뀌면 다시 울리지 않는다
+  files[CONFIG] = '[general]\nlanguage = "ko"\nrefresh_interval_minutes = 70\n'
+  await w.clock.advance(5000)
+  expect(w.configRuns).toBe(3)
+  expect(w.toasts).toEqual([NO_WINDOW])
+  // 창이 생겼다 없어지면 다시 1회
+  files[CONFIG] = '[general]\nlanguage = "ko"\n'
+  await w.clock.advance(5000)
+  files[CONFIG] = '[general]\nlanguage = "ko"\nrefresh_interval_minutes = 60\n'
+  await w.clock.advance(5000)
+  expect(w.toasts).toEqual([NO_WINDOW, NO_WINDOW])
 })
 
 // 타이머 수를 세려고 mock.clock 대신 clock.every 를 직접 받는다 (같은 이벤트를 두 번 등록할 수 없다)
@@ -412,6 +508,7 @@ test('tick 이 실패하면 첫 실패만 디버그 로그에 남기고 이후�
   const logs: { text: string; to: string }[] = []
   mock.env(on, { HOME: '/home/t' })
   on('fs.read', () => ({ value: '[general]\nlanguage = "ko"\n' }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify({ config: fakeConfig() }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('agent.list', () => ({ value: [] }))
   on('clock.now', () => {
@@ -670,9 +767,12 @@ function heldClock(on: On) {
   on('ui.toast', () => ({ value: undefined }))
   on('clock.now', () => ({ value: c.now }))
   on('clock.every', () => new Promise(resolve => c.periods.push(() => resolve({ value: undefined }))))
-  on('process.run', () => {
-    c.runs += 1
-    return { value: { stdout: '', stderr: '', exitCode: 0, isStdoutTruncated: false, isStderrTruncated: false } }
+  on('process.run', (_$, e) => {
+    // 설정 읽기(--json)는 깨우기 횟수에서 뺀다
+    const isConfig = e.argv[2] === '--json'
+    if (!isConfig) c.runs += 1
+    const stdout = isConfig ? JSON.stringify({ config: fakeConfig('language = "ko"') }) : ''
+    return { value: { stdout, stderr: '', exitCode: 0, isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('turn.step', async function* (_$, e) {
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as const, usage: CACHED }
@@ -798,16 +898,6 @@ for (const [name, toml, mark, tail] of [
   ['auto_wakes = 10 (상한)', `${AUTO}auto_wakes = 10\n`, '{}', ` · 깨우기 10회 남음 (${until(10)}까지)`],
   ['auto_wakes = 0: 자동 몫 없음', `${AUTO}auto_wakes = 0\n`, '{}', ''],
   ['auto_wakes = 0 이어도 덮어쓰기는 보인다', `${AUTO}auto_wakes = 0\n`, '{"set_budget_remaining": 1, "set_budget_total": 1}', ` · 깨우기 1회 남음 (${until(1)}까지)`],
-  ['auto_wakes = 11 (범위 밖) 은 기본 2', `${AUTO}auto_wakes = 11\n`, '{}', ` · 깨우기 2회 남음 (${until(2)}까지)`],
-  ['auto_wakes = -1 은 기본 2', `${AUTO}auto_wakes = -1\n`, '{}', ` · 깨우기 2회 남음 (${until(2)}까지)`],
-  ['auto_wakes = "3"(문자열) 은 기본 2', `${AUTO}auto_wakes = "3"\n`, '{}', ` · 깨우기 2회 남음 (${until(2)}까지)`],
-  ['다른 섹션의 auto_wakes 는 무시', `${AUTO}[wake]\nauto_wakes = 5\n`, '{}', ` · 깨우기 2회 남음 (${until(2)}까지)`],
-  [
-    '옛 키(max_refresh_count·mode·arm·grace·notify)는 무시 — 기본 2·grace 없음',
-    `${AUTO}mode = "hybrid"\nmax_refresh_count = 5\n[wake]\narm = "always"\ngrace_seconds = 300\n[notify]\nenabled = true\n[refresh]\nhybrid_wait_seconds = 120\n`,
-    '{}',
-    ` · 깨우기 2회 남음 (${until(2)}까지)`,
-  ],
   ['refresh_interval ≥ ttl(깨우기 창 없음)이면 남은 0 — 자동·덮어쓰기 모두 생략', `${AUTO}refresh_interval_minutes = 60\n`, '{"wake_count": 1, "set_budget_remaining": 2, "set_budget_total": 3}', ' · 1번 살림'],
   ['marker 없음', AUTO, undefined, ''],
   ['marker 깨짐', AUTO, '{"wake_count": ', ''],
