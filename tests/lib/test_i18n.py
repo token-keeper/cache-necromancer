@@ -104,7 +104,8 @@ class TestSetLabels:
     def test_known_keys_all_langs(self):
         keys = ("status_off", "status_set", "status_auto", "status_auto_disabled",
                 "turned_off", "charged", "capped_note", "session_only", "usage",
-                "save_failed", "no_session", "until_time", "until_expired")
+                "save_failed", "no_session", "until_time", "until_expired",
+                "back_to_auto", "already_alive", "no_window", "no_live_cache")
         for lang in ("ko", "en", "ja", "zh"):
             assert set(SET_LABELS[lang].keys()) == set(keys)
             for k in keys:

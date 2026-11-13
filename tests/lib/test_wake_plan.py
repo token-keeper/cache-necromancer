@@ -1,7 +1,9 @@
 """Tests for lib/wake_plan.py — 깨우기 판정 공통 규칙 (v0.12.0)."""
 from lib.config import Config
 from lib.marker import Marker
-from lib.wake_plan import cache_expired, can_wake, remaining_wakes, survive_until_ns, wake_mode
+from lib.wake_plan import (
+    cache_expired, can_wake, remaining_wakes, survive_until_ns, wake_mode, wakes_for_target,
+)
 
 MIN_NS = 60 * 1_000_000_000
 
@@ -52,3 +54,17 @@ def test_cache_expired():
     assert not cache_expired(0, 10**18, c)                     # Stop 없음 → 판단 안 함
     assert not cache_expired(1_000, 1_000 + 59 * MIN_NS, c)
     assert cache_expired(1_000, 1_000 + 60 * MIN_NS, c)
+
+
+def test_wakes_for_target_ceil_and_nonpositive():
+    c = Config(refresh_interval_minutes=50, cache_ttl_minutes=60)
+    a = 1_000 * MIN_NS
+    assert wakes_for_target(a, a + 60 * MIN_NS, c) == 0     # ttl 만으로 딱 닿음
+    assert wakes_for_target(a, a + 30 * MIN_NS, c) <= 0     # 이미 살아 있음
+    assert wakes_for_target(a, a + 61 * MIN_NS, c) == 1
+    assert wakes_for_target(a, a + 110 * MIN_NS, c) == 1
+    assert wakes_for_target(a, a + 111 * MIN_NS, c) == 2
+    assert wakes_for_target(a, a + 240 * MIN_NS, c) == 4    # ceil(180/50)
+    # 결과 횟수로 survive_until 이 target 이상
+    n = wakes_for_target(a, a + 240 * MIN_NS, c)
+    assert survive_until_ns(a, n, c) >= a + 240 * MIN_NS

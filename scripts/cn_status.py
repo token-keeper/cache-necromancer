@@ -136,6 +136,8 @@ def _wake_state(marker: Marker, config: Config, lang) -> str:
     mode = wake_mode(marker)
     if mode == "off":
         return status_label(lang, "state_off")
+    if not can_wake(config):  # 띠(register.tsx extraFor)처럼 남은 횟수를 보이지 않는다
+        return status_label(lang, "state_no_window")
     key = "state_set" if mode == "set" else "state_auto"
     return status_label(lang, key).format(n=remaining_wakes(marker, config))
 
